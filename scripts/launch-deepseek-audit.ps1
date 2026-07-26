@@ -1,93 +1,59 @@
 [CmdletBinding()]
 param(
-  [string]$DataDir = (Join-Path (Split-Path -Parent $PSScriptRoot) '.cc-haha-audit'),
-  [switch]$ConfigureDeepSeekKey,
-  [switch]$ForgetDeepSeekKey
+  [string]$DataDir
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$keyFile = Join-Path $DataDir 'deepseek-api-key.dpapi'
-
-function Save-DeepSeekApiKey {
-  $secureKey = Read-Host 'Paste DeepSeek API Key (input is hidden)' -AsSecureString
-  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
-  try {
-    $plainKey = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    if ([string]::IsNullOrWhiteSpace($plainKey)) {
-      throw 'DeepSeek API Key cannot be empty.'
-    }
-  } finally {
-    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-  }
-
-  # Without an explicit encryption key, DPAPI binds this value to the current
-  # Windows user and machine. The encrypted file is not portable or shareable.
-  $secureKey | ConvertFrom-SecureString | Set-Content -LiteralPath $keyFile -Encoding ascii -NoNewline
-  Write-Host "DeepSeek API Key saved with Windows user encryption: $keyFile" -ForegroundColor Green
-}
-
-function Get-DeepSeekApiKey {
-  $encryptedKey = Get-Content -LiteralPath $keyFile -Raw -Encoding ascii
-  $secureKey = ConvertTo-SecureString -String $encryptedKey
-  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
-  try {
-    return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-  } finally {
-    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-  }
+if ([string]::IsNullOrWhiteSpace($DataDir)) {
+  $DataDir = Join-Path $repoRoot '.cc-haha-audit'
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'desktop\package.json'))) {
   throw "Claude Code Haha repository was not found at: $repoRoot"
 }
-if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+$bunCommand = Get-Command bun -ErrorAction SilentlyContinue
+if (-not $bunCommand) {
   throw 'Bun was not found. Install Bun before launching the source desktop app.'
 }
+$bunExe = if ($bunCommand.CommandType -eq 'Application') {
+  $bunCommand.Source
+} else {
+  Join-Path $env:APPDATA 'npm\node_modules\bun\bin\bun.exe'
+}
+if (-not (Test-Path -LiteralPath $bunExe)) {
+  throw "A runnable bun.exe was not found. Install Bun or add it to PATH: $bunExe"
+}
+# electron-dev.ts starts nested `bun` processes, which cannot resolve an npm
+# PowerShell shim. Put the real executable directory on PATH for those children.
+$bunDir = Split-Path -Parent $bunExe
+$env:Path = "$bunDir;$env:Path"
+$env:PATH = "$bunDir;$env:PATH"
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
-if ($ForgetDeepSeekKey -and (Test-Path -LiteralPath $keyFile)) {
-  Remove-Item -LiteralPath $keyFile -Force
-  Write-Host 'Deleted the locally encrypted DeepSeek API Key.' -ForegroundColor Yellow
-  if (-not $ConfigureDeepSeekKey) {
-    return
-  }
-}
-if ($ConfigureDeepSeekKey -or -not (Test-Path -LiteralPath $keyFile)) {
-  Save-DeepSeekApiKey
-}
-
-$apiKey = Get-DeepSeekApiKey
-if ([string]::IsNullOrWhiteSpace($apiKey)) {
-  throw 'Could not read the DeepSeek API Key. Run with -ConfigureDeepSeekKey to save it again.'
-}
-
 $env:CLAUDE_CONFIG_DIR = $DataDir
-$env:ANTHROPIC_AUTH_TOKEN = $apiKey
-$env:ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic'
-$env:ANTHROPIC_MODEL = 'deepseek-v4-pro'
-$env:ANTHROPIC_DEFAULT_OPUS_MODEL = 'deepseek-v4-pro'
-$env:ANTHROPIC_DEFAULT_SONNET_MODEL = 'deepseek-v4-pro'
-$env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'deepseek-v4-flash'
-$env:CLAUDE_CODE_SUBAGENT_MODEL = 'deepseek-v4-flash'
 $env:CC_HAHA_TRACE_API_CALLS = '1'
-$env:CC_HAHA_TRACE_PROVIDER_ID = 'deepseek-direct'
-$env:CC_HAHA_TRACE_PROVIDER_NAME = 'DeepSeek Direct Anthropic'
-$env:CC_HAHA_TRACE_PROVIDER_FORMAT = 'anthropic'
 $env:DISABLE_TELEMETRY = '1'
 $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
 $env:NO_PROXY = 'localhost,127.0.0.1,::1'
 $env:no_proxy = $env:NO_PROXY
 
-Write-Host 'Starting Claude Code Haha with DeepSeek and API Trace enabled.' -ForegroundColor Cyan
+Write-Host 'Starting Claude Code Haha with API Trace enabled.' -ForegroundColor Cyan
 Write-Host "Isolated data directory: $DataDir" -ForegroundColor DarkCyan
+Write-Host 'Configure DeepSeek in Settings > Providers > Add Provider, then select the built-in DeepSeek preset.' -ForegroundColor DarkCyan
 
 Push-Location (Join-Path $repoRoot 'desktop')
 try {
-  bun run electron:dev
+  $sidecarPath = Join-Path (Get-Location) 'src-tauri\binaries\claude-sidecar-x86_64-pc-windows-msvc.exe'
+  if (-not (Test-Path -LiteralPath $sidecarPath)) {
+    Write-Host 'Building the local desktop sidecar for this first launch...' -ForegroundColor Cyan
+    & $bunExe run build:sidecars
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sidecarPath)) {
+      throw 'Desktop sidecar build failed. See the output above for details.'
+    }
+  }
+  & $bunExe run electron:dev
 } finally {
-  Remove-Item Env:ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue
-  $apiKey = $null
   Pop-Location
 }

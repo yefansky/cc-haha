@@ -102,21 +102,11 @@ ANTHROPIC_DEFAULT_OPUS_MODEL=provider-model
 & .\scripts\launch-deepseek-audit.ps1
 ```
 
-首次启动会要求输入一次 DeepSeek API Key（不会回显）；脚本使用当前 Windows 用户的 DPAPI 加密保存到 `.cc-haha-audit/deepseek-api-key.dpapi`，后续启动无需重复输入。它会使用隔离的 `CLAUDE_CONFIG_DIR`、DeepSeek Anthropic 兼容接口、`deepseek-v4-pro`/`deepseek-v4-flash` 模型映射，并启用 API Trace。
+启动器使用隔离的 `CLAUDE_CONFIG_DIR` 并启用 API Trace；它不会通过环境变量固定 API Key、Base URL 或模型，因此这些配置在界面中始终可见、可修改。
 
-更换 Key：
+在应用中打开 **设置 → Providers → 添加 Provider**，选择内置 **DeepSeek** 预设，输入 API Key；可按需要修改 Base URL，并设置主模型、Haiku、Sonnet、Opus 的模型映射。测试连接后保存并激活，配置会存入该启动器的隔离数据目录，后续启动自动复用。会话中使用 `/model` 选择已配置的模型槽位。
 
-```powershell
-& .\scripts\launch-deepseek-audit.ps1 -ConfigureDeepSeekKey
-```
-
-只删除本机保存的 Key：
-
-```powershell
-& .\scripts\launch-deepseek-audit.ps1 -ForgetDeepSeekKey
-```
-
-`.cc-haha-audit/` 已被 Git 忽略。不要复制、提交或共享其中的加密 Key 文件或 Trace 数据。启动脚本是该环境唯一的 Provider 配置入口；不要同时在 Desktop Providers 页面保存另一套 DeepSeek Key。
+`.cc-haha-audit/` 已被 Git 忽略。不要复制、提交或共享其中的 Provider 配置或 Trace 数据。当前上游的 Provider 存储会把 API Key 写入本地配置，应将该目录视为含密钥的私有数据。
 
 ### `settings.json`
 
