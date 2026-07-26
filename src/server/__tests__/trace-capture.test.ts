@@ -361,6 +361,30 @@ describe('trace capture service', () => {
     expect(trace.calls[0].usage).toEqual({ inputTokens: 31, outputTokens: 7 })
   })
 
+  test('backfills a raw request body for an older complete JSONL snapshot', async () => {
+    const sessionId = 'session-legacy-complete-body'
+    const body = createTraceBodySnapshot({ model: 'audit-test', messages: [{ role: 'user', content: 'legacy evidence' }] })
+    const traceDir = path.join(tmpDir, 'cc-haha', 'traces')
+    await fs.mkdir(traceDir, { recursive: true })
+    await fs.writeFile(path.join(traceDir, `${sessionId}.jsonl`), `${JSON.stringify({
+      type: 'call',
+      record: {
+        id: 'legacy-call',
+        sessionId,
+        source: 'anthropic',
+        status: 'ok',
+        startedAt: '2026-07-26T16:36:00.000Z',
+        request: { method: 'POST', url: 'https://example.test/v1/messages', headers: {}, body },
+      },
+    })}\n`)
+
+    const trace = await traceCaptureService.getSessionTrace(sessionId)
+
+    expect(trace.calls[0]?.request.body.fullCapture?.file).toMatch(/^raw[\\/]session-legacy-complete-body[\\/]/)
+    const raw = await traceCaptureService.getSessionTraceRawBody(sessionId, 'legacy-call', 'request')
+    expect(raw?.content).toContain('legacy evidence')
+  })
+
   test('builds stable body snapshots without throwing on non-json input', () => {
     const snapshot = createTraceBodySnapshot('plain text response', { maxPreviewChars: 20 })
 
