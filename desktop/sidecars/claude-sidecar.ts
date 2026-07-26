@@ -19,6 +19,13 @@
 
 import { parseLauncherArgs, resolveSidecarInvocation } from './launcherRouting'
 
+// Keep optional IM packages out of the compiled default server. Bun eagerly
+// resolves literal dynamic imports while compiling, which otherwise makes a
+// missing IM-only dependency prevent normal desktop startup.
+function importOptionalAdapterModule(modulePath: string): Promise<unknown> {
+  return import(modulePath)
+}
+
 const rawArgs = process.argv.slice(2)
 const invocation = resolveSidecarInvocation(rawArgs)
 if (!invocation.mode) {
@@ -123,7 +130,7 @@ async function runAdapters(rawArgs: string[]): Promise<void> {
     } else {
       console.log('[claude-sidecar] starting Feishu adapter')
       // 副作用 import：feishu/index.ts 顶层会自动 new WSClient + start()
-      await import('../../adapters/feishu/index.ts')
+      await importOptionalAdapterModule('../../adapters/feishu/index.ts')
       started += 1
     }
   }
@@ -136,7 +143,7 @@ async function runAdapters(rawArgs: string[]): Promise<void> {
     } else {
       console.log('[claude-sidecar] starting Telegram adapter')
       // 副作用 import：telegram/index.ts 顶层会自动 bot.start()
-      await import('../../adapters/telegram/index.ts')
+      await importOptionalAdapterModule('../../adapters/telegram/index.ts')
       started += 1
     }
   }
@@ -148,7 +155,7 @@ async function runAdapters(rawArgs: string[]): Promise<void> {
       )
     } else {
       console.log('[claude-sidecar] starting WeChat adapter')
-      await import('../../adapters/wechat/index.ts')
+      await importOptionalAdapterModule('../../adapters/wechat/index.ts')
       started += 1
     }
   }
@@ -160,20 +167,22 @@ async function runAdapters(rawArgs: string[]): Promise<void> {
       )
     } else {
       console.log('[claude-sidecar] starting DingTalk adapter')
-      await import('../../adapters/dingtalk/index.ts')
+      await importOptionalAdapterModule('../../adapters/dingtalk/index.ts')
       started += 1
     }
   }
 
   if (enableWhatsApp) {
-    const { hasWhatsAppAuth } = await import('../../adapters/whatsapp/session.ts')
+    const { hasWhatsAppAuth } = await importOptionalAdapterModule(
+      '../../adapters/whatsapp/session.ts',
+    ) as { hasWhatsAppAuth: (authDir: string) => boolean }
     if (!hasWhatsAppAuth(config.whatsapp.authDir)) {
       console.warn(
         '[claude-sidecar] --whatsapp requested but no QR-linked WhatsApp account found in env or ~/.claude/adapters.json — skipping',
       )
     } else {
       console.log('[claude-sidecar] starting WhatsApp adapter')
-      await import('../../adapters/whatsapp/index.ts')
+      await importOptionalAdapterModule('../../adapters/whatsapp/index.ts')
       started += 1
     }
   }
