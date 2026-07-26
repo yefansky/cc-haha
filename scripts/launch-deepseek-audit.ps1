@@ -50,6 +50,7 @@ try {
     (Join-Path $repoRoot 'src\services\api\traceCapture.ts'),
     (Join-Path $repoRoot 'src\server\api\sessions.ts'),
     (Join-Path $repoRoot 'src\server\api\traces.ts'),
+    (Join-Path $repoRoot 'src\utils\shell\powershellProvider.ts'),
     (Join-Path (Get-Location) 'scripts\build-sidecars.ts')
   )
   $sidecarNeedsBuild = -not (Test-Path -LiteralPath $sidecarPath)
