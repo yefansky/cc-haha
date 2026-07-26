@@ -6,7 +6,7 @@ import { diffLines } from 'diff'
 import type { MessageEntry } from './sessionService.js'
 import type { FileHistorySnapshot } from '../../utils/fileHistory.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
-import { isWithinRegisteredFilesystemRoot } from './filesystemAccessRoots.js'
+import { isWithinRegisteredFilesystemRoot, registerFilesystemAccessRoot } from './filesystemAccessRoots.js'
 import { collectErroredToolUseIds } from './transcriptToolResults.js'
 import {
   isSameOrInsidePathForPlatform,
@@ -104,6 +104,8 @@ export type WorkspaceTreeEntry = {
   name: string
   path: string
   isDirectory: boolean
+  /** A directory link is intentionally browseable in the local file viewer. */
+  isSymlink?: boolean
 }
 
 export type WorkspaceTreeResult = {
@@ -158,6 +160,7 @@ type WorkspacePathResolution = {
   workspaceRoot: string
   canonicalWorkspaceRoot: string
   canonicalTargetPath: string
+  isExternalRoot: boolean
 }
 
 type WorkspaceStatResult =
@@ -243,6 +246,22 @@ export class WorkspaceService {
       sessionId: string,
     ) => Promise<FileHistorySnapshot[]> = async () => [],
   ) {}
+
+  /**
+   * Explicitly grant the local file viewer read access to an additional root.
+   * This is a user-selected, read-only viewer capability; it does not change
+   * an agent session's working directory or grant write permission.
+   */
+  async registerExternalRoot(rootPath: string): Promise<string> {
+    const absolutePath = path.resolve(normalizeDriveRootPathForPlatform(rootPath))
+    const stat = await this.safeStat(absolutePath)
+    if (stat.kind === 'missing' || !stat.stat.isDirectory()) {
+      throw new Error(`Additional workspace folder is missing or not a directory: ${rootPath}`)
+    }
+    if (stat.kind === 'error') throw new Error(stat.message)
+    registerFilesystemAccessRoot(absolutePath)
+    return absolutePath
+  }
 
   async getStatus(sessionId: string): Promise<WorkspaceStatusResult> {
     const workDir = await this.requireWorkDir(sessionId)
@@ -522,23 +541,33 @@ export class WorkspaceService {
         ),
       }
     }
-    const visibleEntries = entries
-      .filter((entry) => !(entry.isDirectory() && isVcsMetadataDirectoryName(entry.name)))
+    const entriesWithMetadata = await Promise.all(entries.map(async (entry) => {
+      const absoluteEntryPath = path.join(resolvedPath.absolutePath, entry.name)
+      const isSymlink = entry.isSymbolicLink()
+      let isDirectory = entry.isDirectory()
+      if (isSymlink) {
+        const targetStat = await this.safeStat(absoluteEntryPath)
+        isDirectory = targetStat.kind === 'ok' && targetStat.stat.isDirectory()
+        // A directory symlink is an intentional local navigation edge. Add it
+        // as a viewer root so following it does not get rejected merely because
+        // its target is outside the session's primary working directory.
+        if (isDirectory) registerFilesystemAccessRoot(absoluteEntryPath)
+      }
+      return { entry, absoluteEntryPath, isDirectory, isSymlink }
+    }))
+    const visibleEntries = entriesWithMetadata
+      .filter(({ entry, isDirectory }) => !(isDirectory && isVcsMetadataDirectoryName(entry.name)))
       .sort((a, b) => {
-        if (a.isDirectory() !== b.isDirectory()) {
-          return a.isDirectory() ? -1 : 1
-        }
-        return a.name.localeCompare(b.name)
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+        return a.entry.name.localeCompare(b.entry.name)
       })
-      .map((entry) => ({
+      .map(({ entry, absoluteEntryPath, isDirectory, isSymlink }) => ({
         name: entry.name,
-        path: this.normalizeRelativePath(
-          path.relative(
-            resolvedPath.workspaceRoot,
-            path.join(resolvedPath.absolutePath, entry.name),
-          ),
-        ),
-        isDirectory: entry.isDirectory(),
+        path: resolvedPath.isExternalRoot
+          ? absoluteEntryPath
+          : this.normalizeRelativePath(path.relative(resolvedPath.workspaceRoot, absoluteEntryPath)),
+        isDirectory,
+        ...(isSymlink ? { isSymlink: true } : {}),
       }))
 
     return {
@@ -1107,11 +1136,22 @@ export class WorkspaceService {
       throw new Error(`Path is outside workspace: ${requestedPath}`)
     }
 
-    const canonicalTargetPath = await this.resolveCanonicalTargetPath(
-      workspaceRoot.canonicalWorkspaceRoot,
-      absolutePath,
-      requestedPath,
-    )
+    let canonicalTargetPath: string
+    try {
+      canonicalTargetPath = await this.resolveCanonicalTargetPath(
+        workspaceRoot.canonicalWorkspaceRoot,
+        absolutePath,
+        requestedPath,
+      )
+    } catch (error) {
+      // `readTree` registers directory symlinks as explicit local viewer
+      // roots. Following such a link is therefore allowed even if it resolves
+      // outside the primary session working directory.
+      if (isWithinRegisteredFilesystemRoot(absolutePath)) {
+        return this.resolveOutsideWorkspacePath(absolutePath, requestedPath)
+      }
+      throw error
+    }
 
     return {
       absolutePath,
@@ -1119,6 +1159,7 @@ export class WorkspaceService {
       workspaceRoot: workspaceRoot.workspaceRoot,
       canonicalWorkspaceRoot: workspaceRoot.canonicalWorkspaceRoot,
       canonicalTargetPath,
+      isExternalRoot: false,
       relativePath: this.normalizeRelativePath(
         path.relative(workspaceRoot.workspaceRoot, absolutePath),
       ),
@@ -1148,6 +1189,7 @@ export class WorkspaceService {
       workspaceRoot: path.dirname(absolutePath),
       canonicalWorkspaceRoot: path.dirname(canonicalTargetPath),
       canonicalTargetPath,
+      isExternalRoot: true,
       relativePath: this.normalizeRequestedPath(requestedPath),
     }
   }

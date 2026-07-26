@@ -283,6 +283,7 @@ export type WorkspaceTreeEntry = {
   name: string
   path: string
   isDirectory: boolean
+  isSymlink?: boolean
 }
 
 export type WorkspaceTreeResult = {
@@ -440,6 +441,10 @@ export const sessionsApi = {
 
   getWorkspaceTree(sessionId: string, workspacePath = '') {
     return api.get<WorkspaceTreeResult>(buildWorkspacePath(sessionId, 'tree', workspacePath))
+  },
+
+  registerWorkspaceRoot(sessionId: string, path: string) {
+    return api.post<{ path: string }>(`/api/sessions/${sessionId}/workspace/roots`, { path })
   },
 
   searchWorkspace(sessionId: string, query: string) {

@@ -555,6 +555,38 @@ describe('WorkspaceService', () => {
     })
   })
 
+  it('expands a directory symlink and explicit additional root as read-only viewer trees', async () => {
+    const workDir = await makeTempDir('workspace-service-linked-tree-')
+    const projectBrain = await makeTempDir('workspace-service-project-brain-')
+    await fs.writeFile(path.join(projectBrain, 'index.md'), '# project brain\n')
+    await fs.symlink(projectBrain, path.join(workDir, '项目大脑'), 'junction')
+    const service = new WorkspaceService(async () => workDir)
+
+    const root = await service.readTree('session-1')
+    expect(root.entries).toContainEqual({
+      name: '项目大脑',
+      path: '项目大脑',
+      isDirectory: true,
+      isSymlink: true,
+    })
+
+    const linked = await service.readTree('session-1', '项目大脑')
+    const linkedFile = linked.entries.find((entry) => entry.name === 'index.md')!
+    expect(linkedFile.path).toBe(path.join(workDir, '项目大脑', 'index.md'))
+    await expect(service.readFile('session-1', linkedFile.path)).resolves.toMatchObject({
+      state: 'ok',
+      content: '# project brain\n',
+    })
+
+    const registeredRoot = await service.registerExternalRoot(projectBrain)
+    const external = await service.readTree('session-1', registeredRoot)
+    expect(external.entries).toContainEqual({
+      name: 'index.md',
+      path: path.join(projectBrain, 'index.md'),
+      isDirectory: false,
+    })
+  })
+
   it('returns diffs for modified, added, deleted, and untracked files', async () => {
     const repoDir = await createGitWorkspace()
     const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? repoDir : null)
