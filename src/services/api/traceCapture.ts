@@ -537,10 +537,11 @@ class TraceCaptureService {
     syncTraceIndexMode()
     const context = currentTraceScopeContext()
     const { calls, events } = await readTraceEntries(sessionId, context)
+    const hydratedCalls = await hydrateRecoverableFullBodies(calls, sessionId, context)
     return {
       sessionId,
-      summary: summarizeCalls(calls),
-      calls,
+      summary: summarizeCalls(hydratedCalls),
+      calls: hydratedCalls,
       events,
     }
   }
@@ -548,17 +549,27 @@ class TraceCaptureService {
   async getSessionTraceCall(sessionId: string, callId: string): Promise<TraceCallRecord | null> {
     const mode = syncTraceIndexMode()
     const context = currentTraceScopeContext()
-    if (mode === 'off') return readCanonicalTraceCall(sessionId, callId, context)
+    if (mode === 'off') {
+      return hydrateRecoverableTraceCall(
+        await readCanonicalTraceCall(sessionId, callId, context),
+        sessionId,
+        context,
+      )
+    }
 
     if (mode === 'shadow') {
       const canonical = await readCanonicalTraceCall(sessionId, callId, context)
       const projected = await readProjectedTraceCall(sessionId, callId, context)
       recordTraceShadowComparison(traceCallMatches(canonical, projected))
-      return canonical
+      return hydrateRecoverableTraceCall(canonical, sessionId, context)
     }
 
-    return await readProjectedTraceCall(sessionId, callId, context)
-      ?? await readCanonicalTraceCall(sessionId, callId, context)
+    return hydrateRecoverableTraceCall(
+      await readProjectedTraceCall(sessionId, callId, context)
+        ?? await readCanonicalTraceCall(sessionId, callId, context),
+      sessionId,
+      context,
+    )
   }
 
   async getSessionTraceRawBody(
@@ -2393,6 +2404,74 @@ function traceRawBodyRelativePath(sessionId: string, callId: string, direction: 
   return join('raw', sanitizeTraceFileName(sessionId), `${sanitizeTraceFileName(callId)}.${direction}.${extension}`)
 }
 
+async function hydrateRecoverableFullBodies(
+  calls: TraceCallRecord[],
+  sessionId: string,
+  context: TraceScopeContext,
+): Promise<TraceCallRecord[]> {
+  const hydrated = await Promise.all(calls.map(call => hydrateRecoverableTraceCall(call, sessionId, context)))
+  return hydrated.filter((call): call is TraceCallRecord => call !== null)
+}
+
+async function hydrateRecoverableTraceCall(
+  call: TraceCallRecord | null,
+  sessionId: string,
+  context: TraceScopeContext,
+): Promise<TraceCallRecord | null> {
+  if (!call) return null
+  const requestBody = await recoverFullTraceBodyFromSnapshot(
+    sessionId,
+    call.id,
+    'request',
+    call.request.body,
+    context,
+  )
+  const responseBody = call.response
+    ? await recoverFullTraceBodyFromSnapshot(sessionId, call.id, 'response', call.response.body, context)
+    : undefined
+  if (requestBody === call.request.body && responseBody === call.response?.body) return call
+  return {
+    ...call,
+    request: { ...call.request, body: requestBody },
+    ...(call.response && responseBody ? { response: { ...call.response, body: responseBody } } : {}),
+  }
+}
+
+/**
+ * Pre-sidecar audit records keep the whole redacted body in `preview` when it
+ * was below the preview limit. Recover only when the saved hash and byte count
+ * prove that this is the complete original; truncated records remain untouched.
+ */
+async function recoverFullTraceBodyFromSnapshot(
+  sessionId: string,
+  callId: string,
+  direction: 'request' | 'response',
+  snapshot: TraceBodySnapshot,
+  context: TraceScopeContext,
+): Promise<TraceBodySnapshot> {
+  if (snapshot.fullCapture || snapshot.truncated || snapshot.contentType === 'empty') return snapshot
+  const bytes = Buffer.byteLength(snapshot.preview)
+  const sha256 = createHash('sha256').update(snapshot.preview).digest('hex')
+  if (bytes !== snapshot.bytes || sha256 !== snapshot.sha256) return snapshot
+
+  const file = traceRawBodyRelativePath(sessionId, callId, direction, snapshot.contentType)
+  const existing = await readFullTraceBody(file, context)
+  if (existing?.bytes === snapshot.bytes && existing.sha256 === snapshot.sha256) {
+    return withFullCapture(snapshot, file)
+  }
+
+  try {
+    const destination = join(context.storageDir, file)
+    const temporary = `${destination}.tmp.${process.pid}.${randomUUID()}`
+    await fs.mkdir(dirname(destination), { recursive: true })
+    await fs.writeFile(temporary, snapshot.preview, 'utf-8')
+    await fs.rename(temporary, destination)
+    return withFullCapture(snapshot, file)
+  } catch {
+    return snapshot
+  }
+}
+
 async function persistFullTraceBody(
   sessionId: string,
   callId: string,
@@ -2423,11 +2502,12 @@ function withFullCapture(snapshot: TraceBodySnapshot, file: string | null): Trac
 
 async function readFullTraceBody(
   relativeFile: string,
+  context = currentTraceScopeContext(),
 ): Promise<TraceRawBody | null> {
   const normalized = relativeFile.replace(/\\/g, '/')
   if (!normalized.startsWith('raw/') || normalized.includes('..')) return null
   try {
-    const filePath = join(getTraceStorageDir(), relativeFile)
+    const filePath = join(context.storageDir, relativeFile)
     const content = await fs.readFile(filePath, 'utf-8')
     return {
       content,
