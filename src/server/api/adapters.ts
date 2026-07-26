@@ -16,11 +16,6 @@ import {
   startWechatLoginWithQr,
   WECHAT_DEFAULT_BASE_URL,
 } from '../../../adapters/wechat/protocol.js'
-import {
-  logoutWhatsAppAuth,
-  pollWhatsAppLoginWithQr,
-  startWhatsAppLoginWithQr,
-} from '../../../adapters/whatsapp/protocol.js'
 import { loadConfig } from '../../../adapters/common/config.js'
 
 const ALLOWED_TOP_KEYS = new Set(['serverUrl', 'defaultProjectDir', 'allowedProjectRoots', 'telegram', 'feishu', 'wechat', 'dingtalk', 'whatsapp', 'pairing'])
@@ -28,6 +23,25 @@ const MAX_TEXT_LENGTH = 16_384
 const MAX_PATH_LENGTH = 4_096
 const MAX_LIST_LENGTH = 1_000
 const WHATSAPP_STAGING_TTL_MS = 3 * 60 * 1000
+type WhatsAppProtocol = {
+  logoutWhatsAppAuth: (authDir: string) => Promise<void>
+  pollWhatsAppLoginWithQr: (options: { sessionKey: string }) => Promise<{ connected: boolean; accountJid?: string; authDir?: string; qr?: string; status?: 'waiting' | 'expired' | 'error'; message?: string }>
+  startWhatsAppLoginWithQr: (options: { authDir: string; force?: boolean }) => Promise<{ sessionKey: string; qr?: string }>
+}
+
+function importOptionalAdapterModule(modulePath: string): Promise<unknown> { return import(modulePath) }
+
+async function loadWhatsAppProtocol(): Promise<WhatsAppProtocol> {
+  try {
+    return await importOptionalAdapterModule('../../../adapters/whatsapp/protocol.js') as WhatsAppProtocol
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    if (detail.includes('@whiskeysockets/baileys')) {
+      throw new ApiError(503, 'WhatsApp adapter is not installed in this desktop build. It is optional and does not affect normal local use.', 'OPTIONAL_ADAPTER_UNAVAILABLE')
+    }
+    throw error
+  }
+}
 const whatsappLoginDirs = new Map<string, {
   stagingDir: string
   targetDir: string
@@ -323,6 +337,42 @@ const DINGTALK_REGISTRATION_BASE_URL =
 const DINGTALK_REGISTRATION_SOURCE =
   process.env.DINGTALK_REGISTRATION_SOURCE?.trim() || 'DING_DWS_CLAW'
 
+type WhatsAppProtocol = {
+  logoutWhatsAppAuth: (authDir: string) => Promise<void>
+  pollWhatsAppLoginWithQr: (sessionKey: string) => Promise<{
+    connected: boolean
+    accountJid?: string
+    authDir?: string
+    qr?: string
+  }>
+  startWhatsAppLoginWithQr: (options: { authDir: string; force?: boolean }) => Promise<{
+    sessionKey: string
+    qr?: string
+  }>
+}
+
+// WhatsApp has a large optional dependency tree. Keep it out of the default
+// desktop server so users who never enable WhatsApp can still start locally.
+function importOptionalAdapterModule(modulePath: string): Promise<unknown> {
+  return import(modulePath)
+}
+
+async function loadWhatsAppProtocol(): Promise<WhatsAppProtocol> {
+  try {
+    return await importOptionalAdapterModule('../../../adapters/whatsapp/protocol.js') as WhatsAppProtocol
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    if (detail.includes('@whiskeysockets/baileys')) {
+      throw new ApiError(
+        503,
+        'WhatsApp adapter is not installed in this desktop build. It is optional and does not affect normal local use.',
+        'OPTIONAL_ADAPTER_UNAVAILABLE',
+      )
+    }
+    throw error
+  }
+}
+
 async function postDingtalkRegistration<T extends Record<string, unknown>>(
   path: string,
   body: Record<string, unknown>,
@@ -531,6 +581,7 @@ async function handleWechatAdaptersApi(req: Request, tail: string[]): Promise<Re
 async function handleWhatsAppAdaptersApi(req: Request, tail: string[]): Promise<Response> {
   if (req.method === 'POST' && tail[0] === 'login' && tail[1] === 'start') {
     await cleanupExpiredWhatsAppStaging()
+    const { startWhatsAppLoginWithQr } = await loadWhatsAppProtocol()
     const config = loadConfig()
     const configuredTarget = path.resolve(config.whatsapp.authDir)
     const targetDir = isManagedWhatsAppAuthDir(configuredTarget)
@@ -573,6 +624,7 @@ async function handleWhatsAppAdaptersApi(req: Request, tail: string[]): Promise<
         message: 'WhatsApp login session expired. Generate a new QR code.',
       })
     }
+    const { pollWhatsAppLoginWithQr } = await loadWhatsAppProtocol()
     const result = await pollWhatsAppLoginWithQr({ sessionKey })
     if (result.connected) {
       whatsappLoginDirs.delete(sessionKey)
@@ -599,6 +651,7 @@ async function handleWhatsAppAdaptersApi(req: Request, tail: string[]): Promise<
   if (req.method === 'POST' && tail[0] === 'unbind') {
     const config = loadConfig()
     if (isManagedWhatsAppAuthDir(config.whatsapp.authDir)) {
+      const { logoutWhatsAppAuth } = await loadWhatsAppProtocol()
       await logoutWhatsAppAuth(config.whatsapp.authDir)
     }
     await adapterService.updateConfig({

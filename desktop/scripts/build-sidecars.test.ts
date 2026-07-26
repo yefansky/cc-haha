@@ -360,8 +360,8 @@ async function terminateCompiledSidecar(processHandle: SidecarProcess): Promise<
 }
 
 describe('build-sidecars Windows x64 target mapping', () => {
-  it('uses the baseline Bun runtime so older CPUs do not crash with Illegal Instruction', () => {
-    expect(extractWindowsX64BunTarget(readBuildScript())).toBe('bun-windows-x64-baseline')
+  it('uses the Windows x64 Bun runtime available in the supported local Bun release', () => {
+    expect(extractWindowsX64BunTarget(readBuildScript())).toBe('bun-windows-x64')
   })
 
   it('compiles the sidecar with the transcript classifier feature', () => {
