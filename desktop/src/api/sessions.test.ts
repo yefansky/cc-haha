@@ -57,6 +57,33 @@ describe('sessionsApi', () => {
     expect(init).toMatchObject({ method: 'GET' })
   })
 
+  it('creates a local diagnostic bundle for a captured trace call', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      file: 'C:/audit/diagnostics/session-1/call-1.md',
+      directory: 'C:/audit/diagnostics/session-1',
+      workDir: 'C:/audit',
+      prompt: 'Read the diagnostic bundle.',
+      source: { sessionId: 'session-1', callId: 'call-1', rawRequestFile: 'C:/audit/raw.json', comparisonRawRequestFile: null },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await sessionsApi.createTraceDiagnosticBundle('session-1', 'call-1', {
+      question: 'Why was the rule ignored?',
+      comparisonCallId: 'call-0',
+    })
+
+    expect(result.workDir).toBe('C:/audit')
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('http://127.0.0.1:3456/api/sessions/session-1/trace/calls/call-1/diagnostic-bundle')
+    expect(init).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ question: 'Why was the rule ignored?', comparisonCallId: 'call-0' }),
+    })
+  })
+
   it('reads pet activity without opening a websocket session', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({

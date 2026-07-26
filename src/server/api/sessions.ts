@@ -125,6 +125,15 @@ export async function handleSessionsApi(
     }
 
     if (subResource === 'trace') {
+      if (segments[4] === 'calls' && segments[6] === 'diagnostic-bundle') {
+        if (req.method !== 'POST') {
+          return Response.json(
+            { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+            { status: 405 },
+          )
+        }
+        return await createSessionTraceDiagnosticBundle(req, sessionId, segments[5])
+      }
       if (req.method !== 'GET') {
         return Response.json(
           { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
@@ -402,6 +411,40 @@ async function getSessionTraceRawBody(
     throw ApiError.notFound(`Full trace ${direction} body not found for call: ${callId}`)
   }
   return Response.json(body)
+}
+
+async function createSessionTraceDiagnosticBundle(
+  req: Request,
+  sessionId: string,
+  callId: string | undefined,
+): Promise<Response> {
+  if (!callId || callId.trim().length === 0) {
+    throw ApiError.badRequest('callId is required')
+  }
+  let body: { question?: unknown; comparisonCallId?: unknown }
+  try {
+    body = await req.json() as { question?: unknown; comparisonCallId?: unknown }
+  } catch {
+    throw ApiError.badRequest('Expected a JSON diagnostic request')
+  }
+  if (typeof body.question !== 'undefined' && typeof body.question !== 'string') {
+    throw ApiError.badRequest('question must be a string')
+  }
+  if (typeof body.comparisonCallId !== 'undefined' && typeof body.comparisonCallId !== 'string') {
+    throw ApiError.badRequest('comparisonCallId must be a string')
+  }
+  const bundle = await traceCaptureService.createDiagnosticBundle({
+    sessionId,
+    callId,
+    question: typeof body.question === 'string' ? body.question : '',
+    ...(typeof body.comparisonCallId === 'string' && body.comparisonCallId.trim()
+      ? { comparisonCallId: body.comparisonCallId.trim() }
+      : {}),
+  })
+  if (!bundle) {
+    throw ApiError.notFound(`Trace call not found: ${callId}`)
+  }
+  return Response.json(bundle)
 }
 
 async function handleSessionWorkspaceRoute(
