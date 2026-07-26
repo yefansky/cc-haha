@@ -224,6 +224,15 @@ export async function handleSessionsApi(
     }
 
     if (subResource === 'workspace') {
+      if (segments[4] === 'roots') {
+        if (req.method !== 'POST') {
+          return Response.json(
+            { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+            { status: 405 },
+          )
+        }
+        return await registerSessionWorkspaceRoot(req, sessionId)
+      }
       if (req.method !== 'GET') {
         return Response.json(
           { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
@@ -490,6 +499,21 @@ async function handleSessionWorkspaceRoute(
     default:
       throw ApiError.notFound(`Unknown workspace resource: ${workspaceResource || 'workspace'}`)
   }
+}
+
+async function registerSessionWorkspaceRoot(req: Request, sessionId: string): Promise<Response> {
+  await requireSessionWorkspace(sessionId)
+  let body: { path?: unknown }
+  try {
+    body = await req.json() as { path?: unknown }
+  } catch {
+    throw ApiError.badRequest('Expected a JSON workspace root request')
+  }
+  if (typeof body.path !== 'string' || !body.path.trim()) {
+    throw ApiError.badRequest('path must be a non-empty directory path')
+  }
+  const path = await workspaceService.registerExternalRoot(body.path.trim())
+  return Response.json({ path })
 }
 
 async function createSession(req: Request): Promise<Response> {

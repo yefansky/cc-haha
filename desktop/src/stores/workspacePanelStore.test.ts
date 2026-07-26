@@ -92,6 +92,23 @@ describe('workspacePanelStore', () => {
     expect(useWorkspacePanelStore.getState().width).toBe(WORKSPACE_PANEL_MAX_WIDTH)
   })
 
+  it('persists user-added extra workspace roots and can remove them', () => {
+    const root = 'G:\\private_brain\\项目大脑'
+    useWorkspacePanelStore.getState().addMountedRoot(root)
+
+    expect(useWorkspacePanelStore.getState().mountedRoots).toContainEqual({
+      path: root,
+      label: '项目大脑',
+    })
+    expect(JSON.parse(localStorage.getItem('cc-haha-workspace-mounted-roots')!)).toEqual([
+      { path: root, label: '项目大脑' },
+    ])
+
+    useWorkspacePanelStore.getState().removeMountedRoot(root)
+    expect(useWorkspacePanelStore.getState().mountedRoots).toEqual([])
+    expect(JSON.parse(localStorage.getItem('cc-haha-workspace-mounted-roots')!)).toEqual([])
+  })
+
   it('keeps a preview opener origin at session scope after the originating card unmounts', async () => {
     mocks.getWorkspaceDiffMock.mockResolvedValue({ state: 'ok', diff: '' })
 

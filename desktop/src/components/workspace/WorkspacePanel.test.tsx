@@ -34,6 +34,7 @@ type WorkspaceApiMocks = {
   searchWorkspaceMock: ReturnType<typeof vi.fn>
   getWorkspaceFileMock: ReturnType<typeof vi.fn>
   getWorkspaceDiffMock: ReturnType<typeof vi.fn>
+  registerWorkspaceRootMock: ReturnType<typeof vi.fn>
 }
 
 var mocks: WorkspaceApiMocks | undefined
@@ -263,6 +264,7 @@ vi.mock('../../api/sessions', () => ({
         searchWorkspaceMock: vi.fn(),
         getWorkspaceFileMock: vi.fn(),
         getWorkspaceDiffMock: vi.fn(),
+        registerWorkspaceRootMock: vi.fn(),
       }
     }
 
@@ -272,6 +274,7 @@ vi.mock('../../api/sessions', () => ({
       searchWorkspace: mocks.searchWorkspaceMock,
       getWorkspaceFile: mocks.getWorkspaceFileMock,
       getWorkspaceDiff: mocks.getWorkspaceDiffMock,
+      registerWorkspaceRoot: mocks.registerWorkspaceRootMock,
     }
   })(),
 }))
@@ -329,6 +332,7 @@ describe('WorkspacePanel', () => {
         entries: [],
       },
     )
+    getMocks().registerWorkspaceRootMock.mockImplementation(async (_sessionId: string, path: string) => ({ path }))
   })
 
   afterEach(async () => {
@@ -448,6 +452,30 @@ describe('WorkspacePanel', () => {
     expect(expandedPanel.style.width).toBe('860px')
     expect(expandedPanel.style.maxWidth).toBe('min(62%, calc(100% - 328px))')
     expect(expandedPanel.style.minWidth).toBe('min(420px, 54%)')
+  })
+
+  it('restores and renders an extra mounted folder alongside the current workspace tree', async () => {
+    const sessionId = 'session-mounted-root'
+    const root = 'G:\\project-brain'
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: {
+        ...state.panelBySession,
+        [sessionId]: { isOpen: true, activeView: 'all', hasUserSelectedView: true },
+      },
+      mountedRoots: [{ path: root, label: 'project-brain' }],
+      treeBySessionPath: {
+        [sessionId]: {
+          '': { state: 'ok', path: '', entries: [{ name: 'src', path: 'src', isDirectory: true }] },
+          [root]: { state: 'ok', path: root, entries: [{ name: 'index.md', path: `${root}\\index.md`, isDirectory: false }] },
+        },
+      },
+    }))
+
+    const view = await renderPanel(sessionId)
+    expect(await view.findByText('project-brain')).not.toBeNull()
+    expect(await view.findByText('index.md')).not.toBeNull()
+    await waitFor(() => expect(getMocks().registerWorkspaceRootMock).toHaveBeenCalledWith(sessionId, root))
   })
 
   it.each([

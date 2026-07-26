@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type RefObject } from 'react'
-import { CircleAlert, Code2, File as FileIcon, FileText, FolderOpen, Image as ImageIcon, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, Settings2, X, type LucideIcon } from 'lucide-react'
+import { CircleAlert, Code2, File as FileIcon, FileText, FolderOpen, FolderPlus, Image as ImageIcon, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, Settings2, X, type LucideIcon } from 'lucide-react'
 import { Highlight } from 'prism-react-renderer'
 import {
   sessionsApi,
@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 import { useDismissable } from '@/hooks/useDismissable'
 import { copyTextToClipboard } from '@/lib/clipboard'
+import { getDesktopHost } from '../../lib/desktopHost'
 import { clearWindowSelection, getSelectionPopoverPosition, useSelectionPopoverDismiss } from '../../hooks/useSelectionPopoverDismiss'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { createWorkspaceMarkdownImageResolver } from '../../lib/markdownImages'
@@ -1174,6 +1175,7 @@ function TreeNode({
       >
         <FileTypeBadge name={entry.name} subtle={!isActive} />
         <span className="min-w-0 truncate text-[14px] font-medium text-[var(--color-text-primary)]">{entry.name}</span>
+        {entry.isSymlink ? <Link2 size={12} aria-label="软链接" className="shrink-0 text-[var(--color-text-tertiary)]" /> : null}
       </button>
     )
   }
@@ -1192,6 +1194,7 @@ function TreeNode({
           {isVisuallyExpanded ? 'expand_more' : 'chevron_right'}
         </span>
         <span className="min-w-0 truncate text-[15px] font-medium text-[var(--color-text-primary)]">{entry.name}</span>
+        {entry.isSymlink ? <Link2 size={12} aria-label="软链接目录" className="shrink-0 text-[var(--color-text-tertiary)]" /> : null}
       </button>
 
       {isVisuallyExpanded && (
@@ -1287,6 +1290,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const treeErrorsByPath = useWorkspacePanelStore(
     useShallow((state) => getSessionScopedRecord(state.errors.treeBySessionPath, sessionId)),
   )
+  const mountedRoots = useWorkspacePanelStore((state) => state.mountedRoots)
   const setActiveView = useWorkspacePanelStore((state) => state.setActiveView)
   const loadStatus = useWorkspacePanelStore((state) => state.loadStatus)
   const loadTree = useWorkspacePanelStore((state) => state.loadTree)
@@ -1295,6 +1299,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const closePreview = useWorkspacePanelStore((state) => state.closePreview)
   const closePreviewTabs = useWorkspacePanelStore((state) => state.closePreviewTabs)
   const closePanel = useWorkspacePanelStore((state) => state.closePanel)
+  const addMountedRoot = useWorkspacePanelStore((state) => state.addMountedRoot)
+  const removeMountedRoot = useWorkspacePanelStore((state) => state.removeMountedRoot)
   const addWorkspaceReference = useWorkspaceChatContextStore((state) => state.addReference)
   const chatState = useChatStore((state) => state.sessions[sessionId]?.chatState ?? 'idle')
   const shouldRender = forceVisible || isOpen
@@ -1392,6 +1398,18 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   }, [isNavigatorVisible, loadTree, navigatorView, rootTree, rootTreeError, rootTreeLoading, sessionId, shouldRender])
 
   useEffect(() => {
+    if (!shouldRender || navigatorView !== 'all') return
+    for (const root of mountedRoots) {
+      void sessionsApi.registerWorkspaceRoot(sessionId, root.path)
+        .then(() => loadTree(sessionId, root.path))
+        .catch(() => {
+          // Keep the persisted root visible: it may be a temporarily missing
+          // network drive and the tree row will show its existing load state.
+        })
+    }
+  }, [loadTree, mountedRoots, navigatorView, sessionId, shouldRender])
+
+  useEffect(() => {
     const requestId = workspaceSearchRequestIdRef.current + 1
     workspaceSearchRequestIdRef.current = requestId
 
@@ -1464,6 +1482,28 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       setWorkspaceSearchRevision((revision) => revision + 1)
     } else if (navigatorView === 'all') {
       void loadTree(sessionId, '')
+      for (const root of mountedRoots) void loadTree(sessionId, root.path)
+    }
+  }
+
+  const handleAddWorkspaceFolder = async () => {
+    const host = getDesktopHost()
+    if (!host.capabilities.dialogs) {
+      addToast({ type: 'error', message: '仅桌面版可以选择额外文件夹。' })
+      return
+    }
+    try {
+      const selected = await host.dialogs.open({
+        directory: true,
+        multiple: false,
+        title: '加入文件视图',
+      })
+      if (typeof selected !== 'string' || !selected.trim()) return
+      const root = await sessionsApi.registerWorkspaceRoot(sessionId, selected)
+      addMountedRoot(root.path)
+      await loadTree(sessionId, root.path)
+    } catch (error) {
+      addToast({ type: 'error', message: error instanceof Error ? error.message : '无法加入文件夹。' })
     }
   }
 
@@ -1741,11 +1781,11 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       return <PanelMessage icon="progress_activity" message={t('common.loading')} />
     }
 
-    if (rootTree.entries.length === 0) {
+    if (rootTree.entries.length === 0 && mountedRoots.length === 0) {
       return <PanelMessage icon="folder_open" message={t('workspace.noFiles')} />
     }
 
-    if (filteredRootEntries.length === 0) {
+    if (filteredRootEntries.length === 0 && mountedRoots.length === 0) {
       return <PanelMessage icon="search_off" message={t('workspace.noMatchingFiles')} />
     }
 
@@ -1762,14 +1802,57 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             treeLoadingByPath={treeLoadingByPath}
             treeErrorsByPath={treeErrorsByPath}
             filterQuery={normalizedFilterQuery}
-            onToggle={(path) => {
-              void toggleTreeNode(sessionId, path)
-            }}
+            onToggle={(path) => void toggleTreeNode(sessionId, path)}
             onOpenFile={handleOpenFile}
             onFileContextMenu={handleFileContextMenu}
             activePath={activeTreePath}
           />
         ))}
+        {mountedRoots.map((root) => {
+          const tree = treeByPath[root.path]
+          const isLoading = treeLoadingByPath[makeTreeStateKey(sessionId, root.path)] ?? false
+          const error = treeErrorsByPath[makeTreeStateKey(sessionId, root.path)] ?? null
+          const entries = tree?.state === 'ok'
+            ? tree.entries.filter((entry) => treeEntryMatchesFilter(entry, normalizedFilterQuery, treeByPath))
+            : []
+          return (
+            <section key={root.path} className="mt-2 border-t border-[var(--color-border)] pt-1.5">
+              <div className="group flex min-h-8 items-center gap-1.5 px-3 text-[11px] font-medium text-[var(--color-text-secondary)]" title={root.path}>
+                <FolderOpen size={14} className="shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate">{root.label}</span>
+                <button
+                  type="button"
+                  aria-label={`移除已加入文件夹 ${root.label}`}
+                  onClick={() => removeMountedRoot(root.path)}
+                  className="hidden rounded p-0.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] group-hover:inline-flex"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+              {isLoading && !tree ? <PanelMessage compact icon="progress_activity" message={t('common.loading')} /> : null}
+              {error ? <PanelMessage compact icon="error" tone="error" message={error} /> : null}
+              {!isLoading && !error && tree?.state === 'missing' ? <PanelMessage compact icon="folder_off" message="文件夹不可用" /> : null}
+              {!isLoading && !error && tree?.state === 'error' ? <PanelMessage compact icon="error" tone="error" message={tree.error || t('workspace.loadError')} /> : null}
+              {!isLoading && !error && tree?.state === 'ok' && entries.map((entry) => (
+                <TreeNode
+                  key={entry.path}
+                  sessionId={sessionId}
+                  entry={entry}
+                  depth={0}
+                  expandedPaths={expandedPathSet}
+                  treeByPath={treeByPath}
+                  treeLoadingByPath={treeLoadingByPath}
+                  treeErrorsByPath={treeErrorsByPath}
+                  filterQuery={normalizedFilterQuery}
+                  onToggle={(path) => void toggleTreeNode(sessionId, path)}
+                  onOpenFile={handleOpenFile}
+                  onFileContextMenu={handleFileContextMenu}
+                  activePath={activeTreePath}
+                />
+              ))}
+            </section>
+          )
+        })}
       </div>
     )
   }
@@ -2121,6 +2204,9 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                 </div>
               )}
               </div>
+              {activeView === 'all' && (
+                <ToolbarIconButton Icon={FolderPlus} label="加入文件夹" onClick={() => void handleAddWorkspaceFolder()} />
+              )}
               {!hasPreviewTabs && (
                 <div className="ml-auto flex shrink-0 items-center gap-0.5">
                   <IconButton

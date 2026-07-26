@@ -50,6 +50,11 @@ export type WorkspacePreviewTab = {
   size?: number
 }
 
+export type WorkspaceMountedRoot = {
+  path: string
+  label: string
+}
+
 export type WorkspacePanelSessionState = {
   isOpen: boolean
   activeView: WorkspacePanelView
@@ -79,6 +84,7 @@ type WorkspacePanelStore = {
   previewTabsBySession: Record<string, WorkspacePreviewTab[] | undefined>
   activePreviewTabIdBySession: Record<string, string | null | undefined>
   originBySession: Record<string, WorkspacePanelOrigin | undefined>
+  mountedRoots: WorkspaceMountedRoot[]
   loading: WorkspacePanelLoadingState
   errors: WorkspacePanelErrorState
 
@@ -93,6 +99,8 @@ type WorkspacePanelStore = {
   togglePanel: (sessionId: string) => void
   setWidth: (width: number) => void
   setActiveView: (sessionId: string, view: WorkspacePanelView) => void
+  addMountedRoot: (path: string) => void
+  removeMountedRoot: (path: string) => void
   loadStatus: (sessionId: string) => Promise<void>
   loadTree: (sessionId: string, path?: string) => Promise<void>
   toggleTreeNode: (sessionId: string, path: string) => Promise<void>
@@ -115,6 +123,35 @@ const DEFAULT_PANEL_STATE: WorkspacePanelSessionState = {
 }
 
 const DEFAULT_WORKBENCH_MODE: WorkbenchMode = 'workspace'
+const WORKSPACE_MOUNTS_STORAGE_KEY = 'cc-haha-workspace-mounted-roots'
+
+function mountedRootLabel(value: string): string {
+  const normalized = value.replace(/[\\/]+$/, '')
+  const parts = normalized.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? value
+}
+
+function readMountedRoots(): WorkspaceMountedRoot[] {
+  if (typeof localStorage === 'undefined') return []
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WORKSPACE_MOUNTS_STORAGE_KEY) ?? '[]') as unknown
+    if (!Array.isArray(parsed)) return []
+    const seen = new Set<string>()
+    return parsed.flatMap((item) => {
+      if (!item || typeof item !== 'object' || typeof (item as WorkspaceMountedRoot).path !== 'string') return []
+      const path = (item as WorkspaceMountedRoot).path.trim()
+      if (!path || seen.has(path.toLowerCase())) return []
+      seen.add(path.toLowerCase())
+      return [{ path, label: typeof (item as WorkspaceMountedRoot).label === 'string' && (item as WorkspaceMountedRoot).label.trim() ? (item as WorkspaceMountedRoot).label : mountedRootLabel(path) }]
+    })
+  } catch {
+    return []
+  }
+}
+
+function persistMountedRoots(roots: WorkspaceMountedRoot[]): void {
+  try { localStorage.setItem(WORKSPACE_MOUNTS_STORAGE_KEY, JSON.stringify(roots)) } catch { /* local storage unavailable */ }
+}
 
 const statusRequestIds = new Map<string, number>()
 const treeRequestIds = new Map<string, number>()
@@ -227,6 +264,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
   previewTabsBySession: {},
   activePreviewTabIdBySession: {},
   originBySession: {},
+  mountedRoots: readMountedRoots(),
   loading: {
     statusBySession: {},
     treeBySessionPath: {},
@@ -304,6 +342,20 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         },
       },
     })),
+
+  addMountedRoot: (path) => set((state) => {
+    const normalized = path.trim()
+    if (!normalized || state.mountedRoots.some((root) => root.path.toLowerCase() === normalized.toLowerCase())) return state
+    const mountedRoots = [...state.mountedRoots, { path: normalized, label: mountedRootLabel(normalized) }]
+    persistMountedRoots(mountedRoots)
+    return { mountedRoots }
+  }),
+
+  removeMountedRoot: (path) => set((state) => {
+    const mountedRoots = state.mountedRoots.filter((root) => root.path !== path)
+    persistMountedRoots(mountedRoots)
+    return { mountedRoots }
+  }),
 
   loadStatus: async (sessionId) => {
     const requestId = nextRequestId(statusRequestIds, sessionId)
