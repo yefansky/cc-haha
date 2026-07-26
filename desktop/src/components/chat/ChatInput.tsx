@@ -145,6 +145,12 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const [launchTransitioning, setLaunchTransitioning] = useState(false)
   const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<string | null>(null)
   const [editingQueuedMessageText, setEditingQueuedMessageText] = useState('')
+  const [runningConfigBySession, setRunningConfigBySession] = useState<Record<string, {
+    modelLabel: string
+    permissionMode: PermissionMode
+  }>>({})
+  const [pendingPermissionBySession, setPendingPermissionBySession] = useState<Record<string, PermissionMode>>({})
+  const [dismissedBypassWarningBySession, setDismissedBypassWarningBySession] = useState<Record<string, boolean>>({})
   const composingRef = useRef(false)
   const composerRef = useRef<MentionComposerHandle>(null)
   const composerContainerRef = useRef<HTMLDivElement>(null)
@@ -201,6 +207,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     activeTabId ? state.selections[activeTabId] : undefined,
   )
   const currentModel = useSettingsStore((state) => state.currentModel)
+  const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const runtimeSelectionKey = runtimeSelection
     ? `${runtimeSelection.providerId ?? 'official'}:${runtimeSelection.modelId}:${runtimeSelection.effortLevel ?? 'auto'}`
@@ -255,6 +262,14 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const isMemberSession = !!memberInfo
   const isActive = chatState !== 'idle'
   const hasRunningSubagents = hasRunningSubagentTasks(sessionState?.backgroundAgentTasks)
+  const activePermissionMode = (activeSession?.permissionMode as PermissionMode | undefined) ?? defaultPermissionMode
+  const runningConfig = activeTabId ? runningConfigBySession[activeTabId] : undefined
+  const pendingPermissionMode = activeTabId ? pendingPermissionBySession[activeTabId] : undefined
+  const displayedPermissionMode = pendingPermissionMode ?? activePermissionMode
+  const pendingModelLabel = runtimeModelLabel ?? t('model.selectModel')
+  const isBypassWarningVisible = activeTabId &&
+    !dismissedBypassWarningBySession[activeTabId] &&
+    (displayedPermissionMode === 'bypassPermissions' || runningConfig?.permissionMode === 'bypassPermissions')
   const workspaceState = getSessionWorkspaceState(activeSession)
   const isWorkspaceMissing = workspaceState !== 'available'
   const hasWorkspaceReferences = !isMemberSession && workspaceReferences.length > 0
@@ -338,6 +353,40 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     setEditingQueuedMessageText('')
     previousActiveTabIdRef.current = activeTabId
   }, [activeTabId, invalidatePendingPastes, saveComposerDraft, setComposerAttachments, setComposerInput])
+
+  useEffect(() => {
+    if (!activeTabId) return
+    if (!isActive) {
+      setRunningConfigBySession((current) => {
+        if (!(activeTabId in current)) return current
+        const { [activeTabId]: _finished, ...rest } = current
+        return rest
+      })
+      setPendingPermissionBySession((current) => {
+        if (!(activeTabId in current)) return current
+        const { [activeTabId]: _applied, ...rest } = current
+        return rest
+      })
+      return
+    }
+
+    setRunningConfigBySession((current) => current[activeTabId]
+      ? current
+      : {
+          ...current,
+          [activeTabId]: {
+            modelLabel: runtimeModelLabel ?? t('model.selectModel'),
+            permissionMode: activePermissionMode,
+          },
+        })
+  }, [activePermissionMode, activeTabId, isActive, runtimeModelLabel, t])
+
+  const handlePendingPermissionModeChange = useCallback((mode: PermissionMode) => {
+    if (!activeTabId) return
+    setPendingPermissionBySession((current) => ({ ...current, [activeTabId]: mode }))
+    setDismissedBypassWarningBySession((current) => ({ ...current, [activeTabId]: false }))
+    useChatStore.getState().setSessionPermissionMode(activeTabId, mode)
+  }, [activeTabId])
 
   useEffect(() => {
     return () => {
@@ -1278,6 +1327,28 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             )
           )}
 
+          {isBypassWarningVisible && (
+            <div className={`mb-2 flex items-start gap-2 rounded-lg border border-[var(--color-error)]/45 bg-[var(--color-error-container)] px-3 py-2 text-xs text-[var(--color-on-error-container)] ${isHeroComposer ? '' : 'mx-0'}`}>
+              <span className="material-symbols-outlined mt-0.5 text-[16px]" aria-hidden="true">warning</span>
+              <span className="min-w-0 flex-1">{t('chat.bypassPermissionWarning')}</span>
+              <button
+                type="button"
+                onClick={() => activeTabId && setDismissedBypassWarningBySession((current) => ({ ...current, [activeTabId]: true }))}
+                aria-label={t('chat.dismissWarning')}
+                className="material-symbols-outlined text-[16px]"
+              >
+                close
+              </button>
+            </div>
+          )}
+
+          {isActive && runningConfig && (runningConfig.modelLabel !== pendingModelLabel || runningConfig.permissionMode !== displayedPermissionMode) && (
+            <div data-testid="pending-runtime-config" className="mb-2 flex flex-wrap gap-x-3 gap-y-1 rounded-lg bg-[var(--color-surface-container-low)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">
+              <span>{t('chat.currentRunConfig', { model: runningConfig.modelLabel, permission: t(`permMode.label.${runningConfig.permissionMode}` as 'permMode.label.default') })}</span>
+              <span className="font-medium text-[var(--color-brand)]">{t('chat.nextRunConfig', { model: pendingModelLabel, permission: t(`permMode.label.${displayedPermissionMode}` as 'permMode.label.default') })}</span>
+            </div>
+          )}
+
           {isHeroComposer ? (
             <div className="flex items-start gap-3">
               <MentionComposer
@@ -1398,7 +1469,11 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                     )}
                   </div>
 
-                  <PermissionModeSelector compact={useCompactControls} />
+                  <PermissionModeSelector
+                    compact={useCompactControls}
+                    value={displayedPermissionMode}
+                    onChange={handlePendingPermissionModeChange}
+                  />
 
                   {showLocationInToolbar && (
                     embedLaunchControlsInToolbar ? (
@@ -1452,7 +1527,6 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                 <ModelSelector
                   ref={modelSelectorRef}
                   runtimeKey={activeTabId}
-                  disabled={isActive}
                   compact={useCompactControls}
                   fluid={isMobileComposer}
                 />

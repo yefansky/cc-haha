@@ -544,8 +544,11 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     const normalizedSelection = normalizeRuntimeSelection(selection, apiFormat)
     onRuntimeSelectionChange?.(normalizedSelection)
     if (runtimeKey) {
-      useSessionRuntimeStore.getState().setSelection(runtimeKey, normalizedSelection)
+      const runtimeStore = useSessionRuntimeStore.getState()
+      runtimeStore.setSelection(runtimeKey, normalizedSelection)
       if (runtimeKey !== DRAFT_RUNTIME_SELECTION_KEY) {
+        // A session-specific switch is also the user's preference for the next window.
+        runtimeStore.setSelection(DRAFT_RUNTIME_SELECTION_KEY, normalizedSelection)
         useChatStore.getState().setSessionRuntime(runtimeKey, normalizedSelection)
       }
     }

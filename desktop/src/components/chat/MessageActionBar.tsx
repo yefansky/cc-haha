@@ -1,4 +1,4 @@
-import { Check, Copy, GitFork } from 'lucide-react'
+import { Check, Copy, GitFork, Pencil } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { formatExactMessageTimestamp, formatMessageHoverTime } from '../../lib/formatMessageTimestamp'
 import { CopyButton } from '@/components/ui/CopyButton'
@@ -11,8 +11,8 @@ export type MessageBranchAction = {
 }
 
 /**
- * The copy chip and the branch chip sit side by side and must look identical.
- * The branch one is an `IconButton size="sm" tone="muted" shape="circle"`;
+ * The copy, edit, and branch chips sit side by side and must look identical.
+ * The edit and branch actions use `IconButton size="sm" tone="muted" shape="circle"`;
  * `CopyButton` is styled by className, so its shell is mirrored here.
  */
 const ACTION_CHIP_CLASS = [
@@ -22,10 +22,27 @@ const ACTION_CHIP_CLASS = [
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]',
 ].join(' ')
 
+export type MessageEditAction = {
+  label: string
+  loading?: boolean
+  onEdit: () => void
+}
+
+export type MessageEditComposer = {
+  value: string
+  submitLabel: string
+  cancelLabel: string
+  submitting?: boolean
+  onChange: (value: string) => void
+  onSubmit: () => void
+  onCancel: () => void
+}
+
 type Props = {
   copyText?: string
   copyLabel: string
   branchAction?: MessageBranchAction
+  editAction?: MessageEditAction
   align?: 'start' | 'end'
   timestamp?: number
 }
@@ -34,6 +51,7 @@ export function MessageActionBar({
   copyText,
   copyLabel,
   branchAction,
+  editAction,
   align = 'start',
   timestamp,
 }: Props) {
@@ -46,7 +64,7 @@ export function MessageActionBar({
     ? formatExactMessageTimestamp(timestamp, locale)
     : ''
 
-  if (!hasCopy && !branchAction) return null
+  if (!hasCopy && !branchAction && !editAction) return null
 
   return (
     <div
@@ -65,6 +83,18 @@ export function MessageActionBar({
             displayCopiedLabel={<Check size={13} strokeWidth={2.4} aria-hidden="true" />}
             onPointerUp={(event) => event.currentTarget.blur()}
             className={ACTION_CHIP_CLASS}
+          />
+        ) : null}
+        {editAction ? (
+          <IconButton
+            icon={<Pencil size={13} strokeWidth={2.2} aria-hidden="true" />}
+            label={editAction.label}
+            size="sm"
+            tone="muted"
+            shape="circle"
+            onClick={editAction.onEdit}
+            disabled={editAction.loading}
+            onPointerUp={(event) => event.currentTarget.blur()}
           />
         ) : null}
         {branchAction ? (

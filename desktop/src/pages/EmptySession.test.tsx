@@ -581,7 +581,7 @@ describe('EmptySession', () => {
     expect(useSessionRuntimeStore.getState().selections['draft-session']).toBeUndefined()
   })
 
-  it('stores and replays a draft runtime only when the user explicitly selected one', async () => {
+  it('keeps an explicit draft runtime as the default for the next new session', async () => {
     useSessionRuntimeStore.getState().setSelection('__draft__', {
       providerId: 'provider-explicit',
       modelId: 'model-explicit',
@@ -601,7 +601,10 @@ describe('EmptySession', () => {
       providerId: 'provider-explicit',
       modelId: 'model-explicit',
     })
-    expect(useSessionRuntimeStore.getState().selections['__draft__']).toBeUndefined()
+    expect(useSessionRuntimeStore.getState().selections['__draft__']).toEqual({
+      providerId: 'provider-explicit',
+      modelId: 'model-explicit',
+    })
     expect(mocks.wsSend.mock.calls.slice(0, 2)).toEqual([
       [
         'draft-session',

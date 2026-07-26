@@ -5601,6 +5601,36 @@ describe('Sessions API', () => {
       .toContain(userId)
   })
 
+  it('POST /api/sessions/:id/rewind should keep workspace files for a message-only edit', async () => {
+    const sessionId = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeef0'
+    const workDir = path.join(tmpDir, 'message-only-edit-fixture')
+    const targetFile = path.join(workDir, 'src', 'app.js')
+    const userId = crypto.randomUUID()
+    const backupName = 'message-only-edit@v1'
+
+    await fs.mkdir(path.dirname(targetFile), { recursive: true })
+    await fs.writeFile(targetFile, "export const VALUE = 'keep-this-change'\n", 'utf-8')
+    await writeFileHistoryBackup(sessionId, backupName, "export const VALUE = 'before-turn'\n")
+    await writeSessionFile('-tmp-api-message-only-edit', sessionId, [
+      makeSessionMetaEntry(workDir),
+      makeFileHistorySnapshotEntry(userId, {
+        'src/app.js': { backupFileName: backupName, version: 1, backupTime: '2026-01-01T00:00:00.000Z' },
+      }),
+      { ...makeUserEntry('edit app.js', userId), cwd: workDir, sessionId },
+      makeAssistantEntry('DONE', userId),
+    ])
+
+    const executeRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/rewind`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userMessageIndex: 0, mode: 'conversation' }),
+    })
+    expect(executeRes.status).toBe(200)
+    expect(await executeRes.json()).toMatchObject({ mode: 'conversation', restoreAvailable: true })
+    expect(await fs.readFile(targetFile, 'utf-8')).toBe("export const VALUE = 'keep-this-change'\n")
+    expect(await service.getSessionMessages(sessionId)).toHaveLength(0)
+  })
+
   it('POST /api/sessions/:id/rewind should resolve checkpoint paths from the target prompt cwd', async () => {
     const sessionId = 'bbbbbbbb-bbbb-cccc-dddd-ffffffffffff'
     const parentDir = path.join(tmpDir, 'nested-cwd-parent')
