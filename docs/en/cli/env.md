@@ -109,21 +109,11 @@ The source repository includes `scripts/launch-deepseek-audit.cmd`. Double-click
 & .\scripts\launch-deepseek-audit.ps1
 ```
 
-On first launch it prompts once for a DeepSeek API key without echoing it. The script stores it with the current Windows user's DPAPI at `.cc-haha-audit/deepseek-api-key.dpapi`, so subsequent launches do not prompt again. It uses an isolated `CLAUDE_CONFIG_DIR`, DeepSeek's Anthropic-compatible endpoint, `deepseek-v4-pro` / `deepseek-v4-flash` model mappings, and API Trace.
+The launcher starts an isolated `CLAUDE_CONFIG_DIR` with API Trace enabled. It deliberately does not set an API key, Base URL, or model through environment variables: configure those in the Desktop UI so they remain visible and editable.
 
-Replace the key:
+In the app, open **Settings → Providers → Add Provider**, select the built-in **DeepSeek** preset, paste the API key, optionally change the Base URL, set the main/Haiku/Sonnet/Opus model mapping, test the connection, save, and activate the provider. The provider is persisted in the launcher's isolated data directory and reused on later starts. Use the session `/model` picker to choose among the configured model slots.
 
-```powershell
-& .\scripts\launch-deepseek-audit.ps1 -ConfigureDeepSeekKey
-```
-
-Delete the locally stored key only:
-
-```powershell
-& .\scripts\launch-deepseek-audit.ps1 -ForgetDeepSeekKey
-```
-
-`.cc-haha-audit/` is Git-ignored. Do not copy, commit, or share the encrypted key file or Trace data in that directory. The launcher is the single provider configuration source for this setup; do not also save another DeepSeek key in the Desktop Providers page.
+`.cc-haha-audit/` is Git-ignored. Do not copy, commit, or share its provider configuration or Trace data. The current upstream provider store persists API keys in its local configuration; treat this directory as secret-bearing local data.
 
 ### `settings.json`
 
