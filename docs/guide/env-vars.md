@@ -94,6 +94,30 @@ ANTHROPIC_DEFAULT_OPUS_MODEL=provider-model
 
 `.env` 只用于源码启动脚本。桌面端创建的 CLI 子进程会跳过仓库 `.env`，避免旧密钥覆盖当前激活的 Provider。
 
+### Windows：一键启动 DeepSeek 审计环境
+
+源码仓库提供 `scripts/launch-deepseek-audit.cmd`。双击它，或在 PowerShell 中运行：
+
+```powershell
+& .\scripts\launch-deepseek-audit.ps1
+```
+
+首次启动会要求输入一次 DeepSeek API Key（不会回显）；脚本使用当前 Windows 用户的 DPAPI 加密保存到 `.cc-haha-audit/deepseek-api-key.dpapi`，后续启动无需重复输入。它会使用隔离的 `CLAUDE_CONFIG_DIR`、DeepSeek Anthropic 兼容接口、`deepseek-v4-pro`/`deepseek-v4-flash` 模型映射，并启用 API Trace。
+
+更换 Key：
+
+```powershell
+& .\scripts\launch-deepseek-audit.ps1 -ConfigureDeepSeekKey
+```
+
+只删除本机保存的 Key：
+
+```powershell
+& .\scripts\launch-deepseek-audit.ps1 -ForgetDeepSeekKey
+```
+
+`.cc-haha-audit/` 已被 Git 忽略。不要复制、提交或共享其中的加密 Key 文件或 Trace 数据。启动脚本是该环境唯一的 Provider 配置入口；不要同时在 Desktop Providers 页面保存另一套 DeepSeek Key。
+
 ### `settings.json`
 
 用户级设置位于 `~/.claude/settings.json`：

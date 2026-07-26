@@ -94,6 +94,30 @@ ANTHROPIC_DEFAULT_OPUS_MODEL=provider-model
 
 The repository `.env` is only for source launches. CLI processes created by Desktop skip it so a stale key cannot replace the active provider.
 
+### Windows: one-click DeepSeek audit launcher
+
+The source repository includes `scripts/launch-deepseek-audit.cmd`. Double-click it, or run:
+
+```powershell
+& .\scripts\launch-deepseek-audit.ps1
+```
+
+On first launch it prompts once for a DeepSeek API key without echoing it. The script stores it with the current Windows user's DPAPI at `.cc-haha-audit/deepseek-api-key.dpapi`, so subsequent launches do not prompt again. It uses an isolated `CLAUDE_CONFIG_DIR`, DeepSeek's Anthropic-compatible endpoint, `deepseek-v4-pro` / `deepseek-v4-flash` model mappings, and API Trace.
+
+Replace the key:
+
+```powershell
+& .\scripts\launch-deepseek-audit.ps1 -ConfigureDeepSeekKey
+```
+
+Delete the locally stored key only:
+
+```powershell
+& .\scripts\launch-deepseek-audit.ps1 -ForgetDeepSeekKey
+```
+
+`.cc-haha-audit/` is Git-ignored. Do not copy, commit, or share the encrypted key file or Trace data in that directory. The launcher is the single provider configuration source for this setup; do not also save another DeepSeek key in the Desktop Providers page.
+
 ### `settings.json`
 
 User settings live at `~/.claude/settings.json`:
