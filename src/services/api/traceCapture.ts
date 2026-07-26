@@ -38,6 +38,8 @@ const SENSITIVE_KEY_RE = /authorization|api[-_]?key|secret|token(?!s)|cookie|pas
 
 export type TraceCaptureSettings = {
   enabled: boolean
+  /** Keep a complete, redacted local copy alongside the JSONL preview. */
+  fullBodies: boolean
   storageDir: string
 }
 
@@ -53,6 +55,17 @@ export type TraceBodySnapshot = {
   sha256: string
   preview: string
   truncated: boolean
+  /** Present only when the complete, redacted body was saved locally. */
+  fullCapture?: {
+    file: string
+  }
+}
+
+export type TraceRawBody = {
+  content: string
+  bytes: number
+  sha256: string
+  file: string
 }
 
 export type TraceCallStatus = 'pending' | 'ok' | 'error'
@@ -313,7 +326,7 @@ export async function readTraceCaptureSettings(): Promise<TraceCaptureSettings> 
   return normalizeTraceCaptureSettings(settings, scope)
 }
 
-export async function updateTraceCaptureSettings(input: Partial<Pick<TraceCaptureSettings, 'enabled'>>): Promise<TraceCaptureSettings> {
+export async function updateTraceCaptureSettings(input: Partial<Pick<TraceCaptureSettings, 'enabled' | 'fullBodies'>>): Promise<TraceCaptureSettings> {
   const scope = getClaudeConfigHomeDir()
   const current = await readManagedSettings(scope)
   const traceCapture = current[TRACE_SETTINGS_KEY]
@@ -323,6 +336,7 @@ export async function updateTraceCaptureSettings(input: Partial<Pick<TraceCaptur
   const nextTraceCapture = {
     ...previous,
     ...(typeof input.enabled === 'boolean' ? { enabled: input.enabled } : {}),
+    ...(typeof input.fullBodies === 'boolean' ? { fullBodies: input.fullBodies } : {}),
   }
   const nextSettings = {
     ...current,
@@ -429,10 +443,23 @@ class TraceCaptureService {
     if (!input.sessionId.trim()) return null
     if (!isTraceCaptureEnabled()) return null
 
+    const callId = input.id ?? createTraceCallId()
     const startedAt = input.startedAt ?? new Date().toISOString()
     const completedAt = input.completedAt
+    const requestBody = input.request.bodySnapshot ?? createTraceBodySnapshot(input.request.body ?? null)
+    const responseBody = input.response
+      ? input.response.bodySnapshot ?? createTraceBodySnapshot(input.response.body ?? null)
+      : undefined
+    const settings = readTraceCaptureSettingsSync()
+    const storedRequestBody = settings.fullBodies && input.request.body !== undefined
+      ? await persistFullTraceBody(input.sessionId, callId, 'request', input.request.body, requestBody)
+      : null
+    const storedResponseBody = settings.fullBodies && input.response?.body !== undefined
+      ? await persistFullTraceBody(input.sessionId, callId, 'response', input.response.body, responseBody)
+      : null
+
     const record: TraceCallRecord = {
-      id: input.id ?? createTraceCallId(),
+      id: callId,
       sessionId: input.sessionId,
       source: input.source,
       ...(input.querySource ? { querySource: input.querySource } : {}),
@@ -447,14 +474,14 @@ class TraceCaptureService {
         method: input.request.method ?? 'POST',
         url: sanitizeUrl(input.request.url ?? ''),
         headers: sanitizeHeaders(input.request.headers),
-        body: input.request.bodySnapshot ?? createTraceBodySnapshot(input.request.body ?? null),
+        body: withFullCapture(requestBody, storedRequestBody),
       },
       ...(input.response
         ? {
             response: {
               status: input.response.status,
               headers: sanitizeHeaders(input.response.headers),
-              body: input.response.bodySnapshot ?? createTraceBodySnapshot(input.response.body ?? null),
+              body: withFullCapture(responseBody!, storedResponseBody),
             },
           }
         : {}),
@@ -514,6 +541,38 @@ class TraceCaptureService {
 
     return await readProjectedTraceCall(sessionId, callId, context)
       ?? await readCanonicalTraceCall(sessionId, callId, context)
+  }
+
+  async getSessionTraceRawBody(
+    sessionId: string,
+    callId: string,
+    direction: 'request' | 'response',
+  ): Promise<TraceRawBody | null> {
+    const call = await this.getSessionTraceCall(sessionId, callId)
+    if (!call) return null
+    const snapshot = direction === 'request' ? call.request.body : call.response?.body
+    if (!snapshot?.fullCapture) return null
+    return readFullTraceBody(snapshot.fullCapture.file)
+  }
+
+  async exportSessionTrace(sessionId: string): Promise<Record<string, unknown>> {
+    const trace = await this.getSessionTrace(sessionId)
+    const rawBodies: Array<{ callId: string; direction: 'request' | 'response'; body: TraceRawBody }> = []
+    for (const call of trace.calls) {
+      for (const direction of ['request', 'response'] as const) {
+        const snapshot = direction === 'request' ? call.request.body : call.response?.body
+        if (!snapshot?.fullCapture) continue
+        const body = await readFullTraceBody(snapshot.fullCapture.file)
+        if (body) rawBodies.push({ callId: call.id, direction, body })
+      }
+    }
+    return {
+      format: 'cc-haha-context-audit-export/v1',
+      exportedAt: new Date().toISOString(),
+      storageDir: getTraceStorageDir(),
+      trace,
+      rawBodies,
+    }
   }
 
   async getSessionTraceRevision(
@@ -614,6 +673,7 @@ class TraceCaptureService {
     const filePath = getTraceFilePath(normalizedSessionId, context)
     try {
       await fs.unlink(filePath)
+      await fs.rm(getTraceRawSessionDir(normalizedSessionId, context), { recursive: true, force: true })
       traceReadCache.delete(filePath)
       canonicalTraceRevisions.delete(filePath)
       withTraceIndex(index => index.deleteSession(normalizedSessionId), target)
@@ -971,6 +1031,7 @@ function redactSecretsInText(value: string): string {
   return value
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
     .replace(/\bsk-[A-Za-z0-9._-]{8,}\b/g, 'sk-[redacted]')
+    .replace(/\b(api[-_]?key|secret|access[-_]?token|refresh[-_]?token|password)\s*([:=])\s*([^\s"',;]+)/gi, '$1$2[redacted]')
 }
 
 function sanitizeHeaders(headers: Headers | Record<string, string> | null | undefined): Record<string, string> {
@@ -2230,6 +2291,66 @@ function getTraceFilePath(
   return join(context.storageDir, `${sanitizeTraceFileName(sessionId)}.jsonl`)
 }
 
+function getTraceRawSessionDir(
+  sessionId: string,
+  context = currentTraceScopeContext(),
+): string {
+  return join(context.storageDir, 'raw', sanitizeTraceFileName(sessionId))
+}
+
+function traceRawBodyRelativePath(sessionId: string, callId: string, direction: 'request' | 'response', contentType: TraceBodySnapshot['contentType']): string {
+  const extension = contentType === 'json' ? 'json' : 'txt'
+  return join('raw', sanitizeTraceFileName(sessionId), `${sanitizeTraceFileName(callId)}.${direction}.${extension}`)
+}
+
+async function persistFullTraceBody(
+  sessionId: string,
+  callId: string,
+  direction: 'request' | 'response',
+  body: unknown,
+  snapshot: TraceBodySnapshot | undefined,
+): Promise<string | null> {
+  if (!callId || !snapshot) return null
+  try {
+    const { serialized } = serializeTraceBody(body)
+    const context = currentTraceScopeContext()
+    const file = traceRawBodyRelativePath(sessionId, callId, direction, snapshot.contentType)
+    const destination = join(context.storageDir, file)
+    const temporary = `${destination}.tmp.${process.pid}.${randomUUID()}`
+    await fs.mkdir(dirname(destination), { recursive: true })
+    await fs.writeFile(temporary, serialized, 'utf-8')
+    await fs.rename(temporary, destination)
+    return file
+  } catch {
+    // A trace must remain useful even if a local full-body write fails.
+    return null
+  }
+}
+
+function withFullCapture(snapshot: TraceBodySnapshot, file: string | null): TraceBodySnapshot {
+  return file ? { ...snapshot, fullCapture: { file } } : snapshot
+}
+
+async function readFullTraceBody(
+  relativeFile: string,
+): Promise<TraceRawBody | null> {
+  const normalized = relativeFile.replace(/\\/g, '/')
+  if (!normalized.startsWith('raw/') || normalized.includes('..')) return null
+  try {
+    const filePath = join(getTraceStorageDir(), relativeFile)
+    const content = await fs.readFile(filePath, 'utf-8')
+    return {
+      content,
+      bytes: Buffer.byteLength(content),
+      sha256: createHash('sha256').update(content).digest('hex'),
+      file: relativeFile,
+    }
+  } catch {
+    // A user may have moved or deleted the raw sidecar while retaining JSONL.
+    return null
+  }
+}
+
 function sanitizeTraceFileName(sessionId: string): string {
   return sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')
 }
@@ -2243,6 +2364,7 @@ function defaultTraceCaptureSettings(
 ): TraceCaptureSettings {
   return {
     enabled: true,
+    fullBodies: true,
     storageDir: join(scope, 'cc-haha', 'traces'),
   }
 }
@@ -2260,6 +2382,7 @@ function normalizeTraceCaptureSettings(
   return {
     ...defaultSettings,
     enabled: (traceCapture as Record<string, unknown>).enabled !== false,
+    fullBodies: (traceCapture as Record<string, unknown>).fullBodies !== false,
   }
 }
 

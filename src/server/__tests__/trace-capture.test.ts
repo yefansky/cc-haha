@@ -349,6 +349,14 @@ describe('trace capture service', () => {
     expect(trace.calls[0].request.body.preview.length).toBe(240_000)
     expect(trace.calls[0].request.body.bytes).toBeGreaterThan(240_000)
     expect(trace.calls[0].request.body.truncated).toBe(true)
+    expect(trace.calls[0].request.body.fullCapture?.file).toMatch(/^raw[\\/]session-trace-1[\\/]/)
+    const rawRequest = await traceCaptureService.getSessionTraceRawBody(
+      'session-trace-1',
+      trace.calls[0].id,
+      'request',
+    )
+    expect(rawRequest?.content.length).toBeGreaterThan(240_000)
+    expect(rawRequest?.content).not.toContain('sk-body-secret')
     expect(trace.calls[0].response.body.preview).toContain('chatcmpl-742')
     expect(trace.calls[0].usage).toEqual({ inputTokens: 31, outputTokens: 7 })
   })
@@ -1406,7 +1414,7 @@ describe('session trace API', () => {
       traces: Array<{ sessionId: string; summary: { apiCalls: number }; fileSize: number }>
       total: number
       storageDir: string
-      settings: { enabled: boolean; storageDir: string }
+      settings: { enabled: boolean; fullBodies: boolean; storageDir: string }
     }
 
     expect(res.status).toBe(200)
@@ -1417,6 +1425,7 @@ describe('session trace API', () => {
     expect(body.storageDir).toBe(path.join(tmpDir, 'cc-haha', 'traces'))
     expect(body.settings).toEqual({
       enabled: true,
+      fullBodies: true,
       storageDir: path.join(tmpDir, 'cc-haha', 'traces'),
     })
   })

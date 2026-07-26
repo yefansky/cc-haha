@@ -53,13 +53,20 @@ export async function handleTracesApi(
         }
         if (req.method === 'PUT') {
           const body = await parseJsonBody(req)
-          const input: { enabled?: boolean } = {}
+          const input: { enabled?: boolean; fullBodies?: boolean } = {}
           if (typeof body.enabled === 'boolean') input.enabled = body.enabled
+          if (typeof body.fullBodies === 'boolean') input.fullBodies = body.fullBodies
           return Response.json(await updateTraceCaptureSettings(input))
         }
         throw methodNotAllowed(req.method, '/api/traces/settings')
 
       default:
+        if (segments.length === 4 && segments[3] === 'export') {
+          if (req.method !== 'GET') {
+            throw methodNotAllowed(req.method, '/api/traces/:sessionId/export')
+          }
+          return await exportTraceSession(sub)
+        }
         if (segments.length === 4 && segments[3] === 'revision') {
           if (req.method !== 'GET') {
             throw methodNotAllowed(req.method, '/api/traces/:sessionId/revision')
@@ -103,6 +110,19 @@ async function deleteTraceSession(segment: string): Promise<Response> {
   if (!sessionId) throw ApiError.badRequest('Trace session id is required')
   const result = await traceCaptureService.deleteSessionTrace(sessionId)
   return Response.json(result)
+}
+
+async function exportTraceSession(segment: string): Promise<Response> {
+  const sessionId = decodePathSegment(segment).trim()
+  if (!sessionId) throw ApiError.badRequest('Trace session id is required')
+  const payload = await traceCaptureService.exportSessionTrace(sessionId)
+  const safeFileName = sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')
+  return new Response(JSON.stringify(payload, null, 2), {
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'content-disposition': `attachment; filename="cc-haha-context-audit-${safeFileName}.json"`,
+    },
+  })
 }
 
 async function listTraces(url: URL): Promise<Response> {

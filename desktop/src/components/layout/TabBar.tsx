@@ -28,7 +28,7 @@ import { getDesktopHost } from '../../lib/desktopHost'
 import { hasRunningBackgroundTasks } from '../../lib/backgroundTasks'
 import { WindowControls, showWindowControls } from './WindowControls'
 import { OpenProjectMenu } from './OpenProjectMenu'
-import { Folder, FolderOpen, SquareTerminal } from 'lucide-react'
+import { Folder, FolderOpen, ShieldCheck, SquareTerminal } from 'lucide-react'
 import { ActionDialog } from '@/components/ui/ActionDialog'
 import { buildSessionActivityModel, hasVisibleSessionActivity } from '../activity/sessionActivityModel'
 import { SessionActivityButton } from '../activity/SessionActivityButton'
@@ -132,6 +132,7 @@ export function TabBar() {
     activeTabId && isActiveSessionTab ? state.getMode(activeTabId) : 'workspace',
   )
   const isWorkspacePanelOpen = isWorkbenchOpen && workbenchMode === 'workspace'
+  const isContextAuditOpen = isWorkbenchOpen && workbenchMode === 'context-audit'
   const isTerminalPanelOpen = useTerminalPanelStore((state) =>
     activeTabId && isActiveSessionTab ? state.isPanelOpen(activeTabId) : false,
   )
@@ -612,6 +613,13 @@ export function TabBar() {
           pressed={isTerminalPanelOpen}
           data-active={isTerminalPanelOpen ? 'true' : 'false'}
         />
+        {isActiveSessionTab && activeTabId && (
+          <IconButton icon={<ShieldCheck size={17} strokeWidth={1.9} />} label="上下文审计" onClick={() => {
+            const workbench = useWorkspacePanelStore.getState()
+            if (workbench.isPanelOpen(activeTabId) && workbench.getMode(activeTabId) === 'context-audit') workbench.closePanel(activeTabId)
+            else { workbench.setMode(activeTabId, 'context-audit'); workbench.openPanel(activeTabId) }
+          }} size="md" tone={isContextAuditOpen ? 'default' : 'muted'} pressed={isContextAuditOpen} data-active={isContextAuditOpen ? 'true' : 'false'} />
+        )}
         {isActiveSessionTab && activeTabId && (
           <IconButton
             icon={isWorkspacePanelOpen ? <FolderOpen size={18} strokeWidth={1.9} /> : <Folder size={18} strokeWidth={1.9} />}

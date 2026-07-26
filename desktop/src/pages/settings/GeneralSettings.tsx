@@ -78,6 +78,7 @@ export function GeneralSettings() {
     setNetwork,
     traceCapture,
     setTraceCaptureEnabled,
+    setTraceCaptureFullBodies,
     responseLanguage,
     setResponseLanguage,
     appMode,
@@ -830,6 +831,11 @@ export function GeneralSettings() {
               {t('settings.general.thinkingHint')}
             </div>
           </div>
+        </label>
+        <label className="relative mt-2 flex items-start gap-3 rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
+          <input type="checkbox" aria-label="保存完整本地上下文原文" checked={traceCapture.fullBodies} onChange={(e) => void setTraceCaptureFullBodies(e.target.checked)} className={SETTINGS_CHECKBOX_INPUT_CLASS} />
+          <SettingsCheckboxMark checked={traceCapture.fullBodies} />
+          <div className="min-w-0 flex-1"><div className="text-sm font-medium text-[var(--color-text-primary)]">保存完整本地上下文原文</div><div className="text-xs text-[var(--color-text-tertiary)] mt-1 leading-5">在 Trace 预览之外保存每次实际上行请求的完整脱敏副本，仅存本机；关闭后仍保留摘要和哈希。</div></div>
         </label>
       </div>
 

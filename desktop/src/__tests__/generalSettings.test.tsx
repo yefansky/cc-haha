@@ -241,7 +241,7 @@ describe('Settings > General tab', () => {
       autoDreamEnabled: false,
       skipWebFetchPreflight: true,
       desktopNotificationsEnabled: true,
-      traceCapture: { enabled: true, storageDir: '/Users/test/.claude/cc-haha/traces' },
+      traceCapture: { enabled: true, fullBodies: true, storageDir: '/Users/test/.claude/cc-haha/traces' },
       chatSendBehavior: 'enter',
       responseLanguage: '',
       uiZoom: 1,

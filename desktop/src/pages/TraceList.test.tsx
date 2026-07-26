@@ -36,6 +36,7 @@ const traceList: TraceSessionList = {
   storageDir: '/tmp/cc-haha/traces',
   settings: {
     enabled: true,
+    fullBodies: true,
     storageDir: '/tmp/cc-haha/traces',
   },
   traces: [{
@@ -293,7 +294,7 @@ describe('TraceList', () => {
   it('shows the paused badge when capture is disabled', async () => {
     vi.mocked(tracesApi.list).mockResolvedValue({
       ...traceList,
-      settings: { enabled: false, storageDir: '/tmp/cc-haha/traces' },
+      settings: { enabled: false, fullBodies: true, storageDir: '/tmp/cc-haha/traces' },
     })
 
     render(<TraceList />)

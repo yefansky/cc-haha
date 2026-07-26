@@ -12,7 +12,7 @@ export const WORKSPACE_PANEL_MIN_WIDTH = 420
 export const WORKSPACE_PANEL_MAX_WIDTH = 1120
 
 export type WorkspacePanelView = 'changed' | 'all'
-export type WorkbenchMode = 'workspace' | 'browser'
+export type WorkbenchMode = 'workspace' | 'browser' | 'context-audit'
 export type WorkspacePreviewKind = 'file' | 'diff'
 export type WorkspacePreviewCloseScope = 'current' | 'others' | 'left' | 'right' | 'all'
 export type WorkspacePanelOrigin = {

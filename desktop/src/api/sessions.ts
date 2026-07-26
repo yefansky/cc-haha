@@ -3,7 +3,7 @@ import type { SlashCommandOption } from '../types/slashCommand'
 import type { AgentTaskNotification } from '../types/chat'
 import type { LocalIndexStatus, SessionListItem, MessageEntry } from '../types/session'
 import type { PermissionMode } from '../types/settings'
-import type { TraceCallRecord, TraceSession } from '../types/trace'
+import type { TraceCallRecord, TraceRawBody, TraceSession } from '../types/trace'
 
 export type SessionsResponse = {
   sessions: SessionListItem[]
@@ -380,6 +380,12 @@ export const sessionsApi = {
 
   getTraceCall(sessionId: string, callId: string) {
     return api.get<{ call: TraceCallRecord }>(`/api/sessions/${sessionId}/trace/calls/${callId}`)
+  },
+
+  getTraceRawBody(sessionId: string, callId: string, direction: 'request' | 'response') {
+    return api.get<TraceRawBody>(
+      `/api/sessions/${sessionId}/trace/calls/${callId}/raw?direction=${direction}`,
+    )
   },
 
   create(input?: string | CreateSessionRequest) {

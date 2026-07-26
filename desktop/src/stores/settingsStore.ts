@@ -108,6 +108,7 @@ type SettingsStore = {
   setUpdateProxy: (settings: UpdateProxySettings) => Promise<void>
   setNetwork: (settings: NetworkSettings) => Promise<void>
   setTraceCaptureEnabled: (enabled: boolean) => Promise<void>
+  setTraceCaptureFullBodies: (enabled: boolean) => Promise<void>
   enableH5Access: () => Promise<string>
   disableH5Access: () => Promise<void>
   regenerateH5AccessToken: () => Promise<string>
@@ -170,6 +171,7 @@ const DEFAULT_OUTPUT_STYLE_OPTIONS: OutputStyleOption[] = [
 
 const DEFAULT_TRACE_CAPTURE_SETTINGS: TraceCaptureSettings = {
   enabled: true,
+  fullBodies: true,
   storageDir: '',
 }
 
@@ -525,6 +527,18 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 
+  setTraceCaptureFullBodies: async (fullBodies) => {
+    const prev = get().traceCapture
+    set({ traceCapture: { ...prev, fullBodies } })
+    try {
+      const next = await tracesApi.updateSettings({ fullBodies })
+      set({ traceCapture: normalizeTraceCaptureSettings(next) })
+    } catch (error) {
+      set({ traceCapture: prev })
+      throw error
+    }
+  },
+
   enableH5Access: async () => {
     set({ h5AccessError: null })
     try {
@@ -717,6 +731,7 @@ function normalizeTraceCaptureSettings(
 ): TraceCaptureSettings {
   return {
     enabled: settings?.enabled !== false,
+    fullBodies: settings?.fullBodies !== false,
     storageDir: typeof settings?.storageDir === 'string' ? settings.storageDir : '',
   }
 }
