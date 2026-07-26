@@ -6,6 +6,7 @@ import { formatBytes } from '../../lib/formatBytes'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { parseTraceRequestBody } from '../../lib/trace/requestParse'
 import type { TraceCallRecord, TraceRawBody, TraceSession } from '../../types/trace'
+import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { CopyButton } from '../shared/CopyButton'
 
 const POLL_INTERVAL_MS = 1_500
@@ -145,6 +146,7 @@ export function ContextAuditPanel({ sessionId }: ContextAuditPanelProps) {
               call={call}
               previous={findPreviousCall(trace?.calls ?? [], call)}
               newestIndex={index}
+              callCount={calls.length}
             />
           ))}
         </div>
@@ -158,11 +160,13 @@ function ContextAuditCall({
   call,
   previous,
   newestIndex,
+  callCount,
 }: {
   sessionId: string
   call: TraceCallRecord
   previous: TraceCallRecord | undefined
   newestIndex: number
+  callCount: number
 }) {
   const [open, setOpen] = useState(false)
   const [currentBody, setCurrentBody] = useState<BodyLoad>({ text: call.request.body.preview, isFull: false })
@@ -214,7 +218,7 @@ function ContextAuditCall({
         <ChevronDown size={15} className="shrink-0 transition-transform group-open:rotate-180" />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-[var(--color-text-primary)]">第 {newestIndex + 1} 条上行</span>
+            <span className="text-xs font-semibold text-[var(--color-text-primary)]">第 {callCount - newestIndex} 条上行</span>
             {activeCall.status === 'pending' ? <Status label="发送中" tone="warning" /> : null}
             {activeCall.status === 'error' || activeCall.error ? <Status label="失败" tone="error" /> : null}
             {currentBody.isFull ? <Status label="完整" tone="success" /> : <Status label="预览" tone="muted" />}
@@ -268,20 +272,122 @@ function ContextAuditCall({
           </details>
 
           <details className="mt-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
-            <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">上行原文（脱敏）</summary>
+            <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">上行内容（脱敏）</summary>
             <div className="border-t border-[var(--color-border)] p-2.5">
               <div className="mb-2 flex items-center gap-2 text-[10px] text-[var(--color-text-tertiary)]">
                 <span>{currentBody.isFull ? '完整本地副本' : '仅有预览副本'}</span>
                 {currentBody.file ? <span className="truncate font-mono">{currentBody.file}</span> : null}
                 <CopyButton text={currentBody.text} label="复制原文" copiedLabel="已复制" className="ml-auto shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 hover:text-[var(--color-text-primary)]" />
               </div>
-              <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{currentBody.text || '(空请求体)'}</pre>
+              <FormattedRequestView call={activeCall} text={currentBody.text} />
+              <details className="mt-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
+                <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-secondary)]">原始 JSON（逐字保留）</summary>
+                <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words border-t border-[var(--color-border)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{currentBody.text || '(空请求体)'}</pre>
+              </details>
             </div>
           </details>
         </div>
       ) : null}
     </details>
   )
+}
+
+type JsonRecord = Record<string, unknown>
+
+function FormattedRequestView({ call, text }: { call: TraceCallRecord; text: string }) {
+  const request = useMemo(() => parseCapturedRequest(text, call.source), [call.source, text])
+  if (!request) {
+    return <div className="rounded border border-dashed border-[var(--color-border)] p-2 text-[10px] text-[var(--color-text-tertiary)]">此请求不是可解析的 JSON；请在下方查看原始内容。</div>
+  }
+
+  const system = request.system
+  const messages = Array.isArray(request.messages) ? request.messages : []
+  const tools = Array.isArray(request.tools) ? request.tools : []
+  const parameters = Object.fromEntries(Object.entries(request).filter(([key]) => !new Set(['system', 'messages', 'tools']).has(key)))
+
+  return (
+    <div className="flex flex-col gap-2">
+      {system !== undefined ? (
+        <details open className="rounded border border-[var(--color-border)]">
+          <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">系统提示</summary>
+          <div className="border-t border-[var(--color-border)] p-2"><ReadableContent value={system} /></div>
+        </details>
+      ) : null}
+      <details open className="rounded border border-[var(--color-border)]">
+        <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">消息链（{messages.length}）</summary>
+        <div className="flex flex-col gap-1.5 border-t border-[var(--color-border)] p-2">
+          {messages.map((message, index) => (
+            <details key={index} className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
+              <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-primary)]">
+                {index + 1}. {typeof message.role === 'string' ? message.role : 'message'} · {formatBytes(byteLength(contentToText(message.content)))}
+              </summary>
+              <div className="border-t border-[var(--color-border)] p-2"><ReadableContent value={message.content} /></div>
+            </details>
+          ))}
+          {messages.length === 0 ? <div className="text-[10px] text-[var(--color-text-tertiary)]">无消息</div> : null}
+        </div>
+      </details>
+      {tools.length > 0 ? (
+        <details className="rounded border border-[var(--color-border)]">
+          <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">工具定义（{tools.length}）</summary>
+          <div className="border-t border-[var(--color-border)] p-2">
+            {tools.map((tool, index) => (
+              <details key={index} className="border-b border-[var(--color-border)]/70 py-1 last:border-b-0">
+                <summary className="cursor-pointer font-mono text-[10px] text-[var(--color-text-secondary)]">{toolName(tool, index)}</summary>
+                <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-surface-container-low)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{JSON.stringify(tool, null, 2)}</pre>
+              </details>
+            ))}
+          </div>
+        </details>
+      ) : null}
+      <details className="rounded border border-[var(--color-border)]">
+        <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">模型与参数</summary>
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words border-t border-[var(--color-border)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{JSON.stringify(parameters, null, 2)}</pre>
+      </details>
+    </div>
+  )
+}
+
+function ReadableContent({ value }: { value: unknown }) {
+  const text = contentToText(value)
+  if (!text) return <span className="text-[10px] text-[var(--color-text-tertiary)]">（空）</span>
+  if (text.length > 80_000) {
+    return <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-surface-container-low)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{text}</pre>
+  }
+  return <MarkdownRenderer content={text} variant="compact" cache={false} className="context-audit-markdown break-words text-xs leading-5" />
+}
+
+function parseCapturedRequest(text: string, source: TraceCallRecord['source']): JsonRecord | null {
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (!isJsonRecord(parsed)) return null
+    return source === 'proxy' && isJsonRecord(parsed.anthropic) ? parsed.anthropic : parsed
+  } catch {
+    return null
+  }
+}
+
+function contentToText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return value === undefined ? '' : JSON.stringify(value, null, 2)
+  return value.map((block) => {
+    if (typeof block === 'string') return block
+    if (!isJsonRecord(block)) return JSON.stringify(block)
+    if (typeof block.text === 'string') return block.text
+    if (typeof block.thinking === 'string') return block.thinking
+    if (typeof block.content === 'string') return block.content
+    return JSON.stringify(block, null, 2)
+  }).join('\n\n')
+}
+
+function toolName(value: unknown, index: number): string {
+  if (!isJsonRecord(value)) return `tool-${index + 1}`
+  if (typeof value.name === 'string') return value.name
+  return isJsonRecord(value.function) && typeof value.function.name === 'string' ? value.function.name : `tool-${index + 1}`
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 async function loadRequestBody(sessionId: string, call: TraceCallRecord): Promise<BodyLoad> {
