@@ -62,6 +62,9 @@ credentials*.json
 # TS build cache
 *.tsbuildinfo
 
+# Bun leaves these beside a locked Windows executable when replacing a sidecar.
+*.bun-build
+
 # Temp markdown snapshots
 sidebar-snapshot.md
 

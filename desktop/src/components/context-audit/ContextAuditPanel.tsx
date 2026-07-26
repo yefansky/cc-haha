@@ -12,6 +12,7 @@ import { CopyButton } from '../shared/CopyButton'
 
 const POLL_INTERVAL_MS = 1_500
 const LARGE_BODY_BYTES = 100 * 1024
+const MAX_MARKDOWN_RENDER_CHARS = 500_000
 const HIGH_TOKEN_COUNT = 50_000
 
 type BodyLoad = {
@@ -353,16 +354,27 @@ const ROLE_LABELS: Record<NormalizedMessage['role'], string> = {
 
 function ContextMessageView({ message, index, toolNames }: { message: NormalizedMessage; index: number; toolNames: Map<string, string> }) {
   const contentBytes = message.content.reduce((total, block) => total + byteLength(blockText(block)), 0)
+  const summaryLabel = messageSummaryLabel(message, toolNames)
   return (
     <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
       <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-primary)]">
-        {index + 1}. {ROLE_LABELS[message.role]} · {message.content.length} 个内容块 · {formatBytes(contentBytes)}
+        {index + 1}. {summaryLabel} · 协议角色：{ROLE_LABELS[message.role]} · {message.content.length} 个内容块 · {formatBytes(contentBytes)}
       </summary>
       <div className="flex flex-col gap-2 border-t border-[var(--color-border)] p-2">
         {message.content.map((block, blockIndex) => <ContextBlockView key={blockIndex} block={block} toolNames={toolNames} />)}
       </div>
     </details>
   )
+}
+
+function messageSummaryLabel(message: NormalizedMessage, toolNames: Map<string, string>): string {
+  const toolResult = message.content.find((block): block is Extract<NormalizedBlock, { type: 'tool_result' }> => block.type === 'tool_result')
+  if (toolResult) {
+    return `${toolResult.isError ? '工具执行失败' : '工具执行回包'} · ${toolResult.toolUseId ? toolNames.get(toolResult.toolUseId) ?? toolResult.toolUseId : '未知工具'}`
+  }
+  const toolUse = message.content.find((block): block is Extract<NormalizedBlock, { type: 'tool_use' }> => block.type === 'tool_use')
+  if (toolUse) return `工具调用 · ${toolUse.name || '未命名工具'}`
+  return ROLE_LABELS[message.role]
 }
 
 function ContextBlockView({ block, toolNames }: { block: NormalizedBlock; toolNames: Map<string, string> }) {
@@ -397,9 +409,9 @@ function ContentBlock({ label, meta, children }: { label: string; meta?: string;
 function ReadableContent({ value }: { value: unknown }) {
   const text = contentToText(value)
   if (!text) return <span className="text-[10px] text-[var(--color-text-tertiary)]">（空）</span>
-  const parsedJson = tryParseJsonText(text)
+  const parsedJson = tryParseJsonText(extractJsonPayload(text))
   if (parsedJson !== null) return <JsonValueView value={parsedJson} />
-  if (text.length > 80_000) {
+  if (text.length > MAX_MARKDOWN_RENDER_CHARS) {
     return <>
       <EncodingNotice text={text} />
       <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-surface-container-low)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{beautifyDisplayText(text)}</pre>
@@ -465,6 +477,15 @@ function tryParseJsonText(text: string): unknown | null {
   } catch {
     return null
   }
+}
+
+function extractJsonPayload(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return trimmed
+  // Some command tools emit a bare language marker before a JSON document.
+  // Accept only a short marker so ordinary prose containing JSON is not reclassified.
+  const match = /^(?:json|JSON|application\/json)\s*\r?\n([\s\S]+)$/i.exec(trimmed)
+  return match?.[1]?.trim() ?? trimmed
 }
 
 function safeJson(value: unknown): string {

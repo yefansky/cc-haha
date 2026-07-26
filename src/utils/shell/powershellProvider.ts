@@ -63,7 +63,12 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
       // exit code (was 0 — old logic only looked at $? which the trailing
       // cmdlet set true). Both rarer than the git/npm/curl stderr case.
       const cwdTracking = `\n; $_ec = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }\n; (Get-Location).Path | Out-File -FilePath '${escapedCwdFilePath}' -Encoding utf8 -NoNewline\n; exit $_ec`
-      const psCommand = command + cwdTracking
+      // The agent must preserve tool output exactly. On Windows, PowerShell 5.1
+      // and Python otherwise often choose the active ANSI code page (for example
+      // GBK) when stdout is redirected to the task file, while TaskOutput reads
+      // that file as UTF-8. Force the PowerShell side of the boundary to UTF-8.
+      const utf8Output = '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); '
+      const psCommand = utf8Output + command + cwdTracking
 
       // Sandbox wraps the returned commandString as `<binShell> -c '<cmd>'` —
       // hardcoded `-c`, no way to inject -NoProfile -NonInteractive. So for
@@ -112,6 +117,10 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
       for (const [key, value] of getSessionEnvVars()) {
         env[key] = value
       }
+      // Python checks these before its locale when stdout is redirected. This is
+      // especially important for project startup scripts on Chinese Windows.
+      env.PYTHONIOENCODING ??= 'utf-8'
+      env.PYTHONUTF8 ??= '1'
       if (currentSandboxTmpDir) {
         // PowerShell on Linux/macOS honors TMPDIR for [System.IO.Path]::GetTempPath()
         env.TMPDIR = currentSandboxTmpDir
