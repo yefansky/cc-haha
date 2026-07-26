@@ -245,6 +245,11 @@ describe('ModelSelector', () => {
       modelId: 'provider-fast',
       effortLevel: 'max',
     })
+    expect(useSessionRuntimeStore.getState().selections.__draft__).toEqual({
+      providerId: 'provider-a',
+      modelId: 'provider-fast',
+      effortLevel: 'max',
+    })
     expect(setSessionRuntime).toHaveBeenCalledWith('session-1', {
       providerId: 'provider-a',
       modelId: 'provider-fast',
