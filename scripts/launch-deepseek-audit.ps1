@@ -61,7 +61,24 @@ try {
     } | Select-Object -First 1
     $sidecarNeedsBuild = $null -ne $newerSource
   }
+  if (-not $sidecarNeedsBuild) {
+    $runningDesktop = Get-CimInstance Win32_Process | Where-Object {
+      $_.Name -eq 'electron.exe' -and $_.CommandLine -like "*$repoRoot\desktop*"
+    } | Select-Object -First 1
+    if ($runningDesktop) {
+      Write-Host "Claude Code Haha is already running (PID: $($runningDesktop.ProcessId))." -ForegroundColor Yellow
+      return
+    }
+  }
   if ($sidecarNeedsBuild) {
+    $runningSidecars = Get-CimInstance Win32_Process | Where-Object {
+      $_.Name -eq (Split-Path -Leaf $sidecarPath) -and
+      $_.CommandLine -like "*$sidecarPath*"
+    }
+    if ($runningSidecars) {
+      $processIds = ($runningSidecars | ForEach-Object { $_.ProcessId }) -join ', '
+      throw ("Existing cc-haha sidecar is still running (PID: $processIds). Close the Claude Code Haha window and its active session, then run startup.bat again.")
+    }
     Write-Host 'Building the local desktop sidecar because its source changed...' -ForegroundColor Cyan
     & $bunExe run build:sidecars
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sidecarPath)) {
