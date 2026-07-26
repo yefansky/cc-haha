@@ -387,7 +387,9 @@ function ContextBlockView({ block, toolNames }: { block: NormalizedBlock; toolNa
       return <ContentBlock label={`工具调用 · ${block.name || '未命名工具'}`} meta={block.id}><JsonValueView value={block.input} /></ContentBlock>
     case 'tool_result': {
       const toolName = block.toolUseId ? toolNames.get(block.toolUseId) : undefined
-      return <ContentBlock label={`${block.isError ? '工具执行失败' : '工具执行回包'} · ${toolName ?? block.toolUseId ?? '未知工具'}`}><ReadableContent value={block.content} /></ContentBlock>
+      return <ContentBlock label={`${block.isError ? '工具执行失败' : '工具执行回包'} · ${toolName ?? block.toolUseId ?? '未知工具'}`}>
+        <ReadableContent value={block.content} stripReadLineNumbers={toolName?.toLowerCase() === 'read'} />
+      </ContentBlock>
     }
     case 'image':
       return <ContentBlock label={`图像内容${block.mediaType ? ` · ${block.mediaType}` : ''}`} />
@@ -406,8 +408,9 @@ function ContentBlock({ label, meta, children }: { label: string; meta?: string;
   )
 }
 
-function ReadableContent({ value }: { value: unknown }) {
-  const text = contentToText(value)
+function ReadableContent({ value, stripReadLineNumbers = false }: { value: unknown; stripReadLineNumbers?: boolean }) {
+  const rawText = contentToText(value)
+  const text = stripReadLineNumbers ? stripToolReadLineNumbers(rawText) : rawText
   if (!text) return <span className="text-[10px] text-[var(--color-text-tertiary)]">（空）</span>
   const parsedJson = tryParseJsonText(extractJsonPayload(text))
   if (parsedJson !== null) return <JsonValueView value={parsedJson} />
@@ -421,6 +424,20 @@ function ReadableContent({ value }: { value: unknown }) {
     <EncodingNotice text={text} />
     <MarkdownRenderer content={beautifyDisplayText(text)} variant="compact" cache={false} className="context-audit-markdown break-words text-xs leading-5" />
   </>
+}
+
+/**
+ * The Read tool prefixes every returned source line with its original line
+ * number. That is useful to the agent, but turns `# heading`, `| table |`, and
+ * `{ json }` into ordinary prose in a human reader. This is display-only: the
+ * captured request and the raw JSON remain untouched for audit evidence.
+ */
+function stripToolReadLineNumbers(text: string): string {
+  const lines = text.split(/\r?\n/)
+  const numbered = lines.map((line) => /^(\d+)(?:\s(.*))?$/.exec(line))
+  const numberedCount = numbered.filter(Boolean).length
+  if (numberedCount < 3 || numberedCount / Math.max(lines.length, 1) < 0.7) return text
+  return numbered.map((match, index) => match ? (match[2] ?? '') : lines[index]!).join('\n')
 }
 
 function JsonValueView({ value, depth = 0 }: { value: unknown; depth?: number }) {
