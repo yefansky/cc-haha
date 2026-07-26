@@ -261,6 +261,18 @@ export async function createBashShellProvider(
       }
       const claudeTmuxEnv = getClaudeTmuxEnv()
       const env: Record<string, string> = {}
+      // Git Bash on Windows inherits the console code page.  Without explicit
+      // Python UTF-8 settings, Chinese output can be decoded as replacement
+      // characters before the trace collector ever sees it.  Keep a user's
+      // explicit environment value intact, but make UTF-8 the safe default.
+      if (getPlatform() === 'windows') {
+        if (!process.env.PYTHONIOENCODING) {
+          env.PYTHONIOENCODING = 'utf-8'
+        }
+        if (!process.env.PYTHONUTF8) {
+          env.PYTHONUTF8 = '1'
+        }
+      }
       // CRITICAL: Override TMUX to isolate ALL tmux commands to Claude's socket.
       // This is NOT the user's TMUX value - it points to Claude's isolated socket.
       // When null (before socket initializes), user's TMUX is preserved.
