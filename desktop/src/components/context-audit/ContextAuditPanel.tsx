@@ -5,6 +5,9 @@ import { tracesApi } from '../../api/traces'
 import { formatBytes } from '../../lib/formatBytes'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { parseTraceRequestBody } from '../../lib/trace/requestParse'
+import { useChatStore } from '../../stores/chatStore'
+import { useSessionStore } from '../../stores/sessionStore'
+import { useTabStore } from '../../stores/tabStore'
 import type { NormalizedBlock, NormalizedMessage } from '../../lib/trace/types'
 import type { TraceCallRecord, TraceRawBody, TraceSession } from '../../types/trace'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
@@ -175,6 +178,9 @@ function ContextAuditCall({
   const [previousBody, setPreviousBody] = useState<BodyLoad | null>(null)
   const [detail, setDetail] = useState<TraceCallRecord | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [diagnosticQuestion, setDiagnosticQuestion] = useState('')
+  const [creatingDiagnostic, setCreatingDiagnostic] = useState(false)
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -210,6 +216,28 @@ function ContextAuditCall({
     [activeCall, currentBody.text, previousBody?.text],
   )
   const risks = getRisks(activeCall, currentBody, analysis)
+
+  const createDiagnosticSession = async () => {
+    setCreatingDiagnostic(true)
+    setDiagnosticError(null)
+    try {
+      const bundle = await sessionsApi.createTraceDiagnosticBundle(sessionId, activeCall.id, {
+        question: diagnosticQuestion,
+        ...(previous ? { comparisonCallId: previous.id } : {}),
+      })
+      const newSessionId = await useSessionStore.getState().createSession(bundle.workDir)
+      await sessionsApi.rename(newSessionId, '上下文诊断')
+      useSessionStore.getState().updateSessionTitle(newSessionId, '上下文诊断')
+      useTabStore.getState().openTab(newSessionId, '上下文诊断')
+      const chat = useChatStore.getState()
+      chat.connectToSession(newSessionId, { prewarm: false })
+      chat.setComposerDraft(newSessionId, { input: bundle.prompt, attachments: [] })
+    } catch (cause) {
+      setDiagnosticError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setCreatingDiagnostic(false)
+    }
+  }
 
   return (
     <details
@@ -270,6 +298,23 @@ function ContextAuditCall({
                   </div>
                 </div>
               ) : null}
+              <details className="mt-3 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
+                <summary className="cursor-pointer px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-primary)]">KV Cache、换出与关键材料</summary>
+                <div className="space-y-3 border-t border-[var(--color-border)] p-2">
+                  <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">“实际”来自本次请求和服务端 usage；“候选”只说明本地观察到的连续相同前缀，不把它当成提供商已命中的 KV Cache。</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Metric label="候选共同前缀" value={analysis.cachePrefix.label} />
+                    <Metric label="候选前缀大小" value={formatBytes(analysis.cachePrefix.bytes)} />
+                    <Metric label="服务端缓存读取" value={formatTokenMetric(activeCall.usage?.cacheReadInputTokens)} />
+                    <Metric label="服务端缓存创建" value={formatTokenMetric(activeCall.usage?.cacheCreationInputTokens)} />
+                    <Metric label="换出观察" value={analysis.compaction.label} />
+                    <Metric label="消息链正文" value={formatBytes(analysis.messageBytes)} />
+                  </div>
+                  <MessageFootprint messages={analysis.messageFootprints} />
+                  <MaterialWatch materials={analysis.materials} />
+                  <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">注意力风险依据：材料是否实际在场、距消息链尾部的距离、正文体积、以及是否连续保留。它不能直接测量模型注意力权重。</p>
+                </div>
+              </details>
             </div>
           </details>
 
@@ -288,6 +333,33 @@ function ContextAuditCall({
               </details>
             </div>
           </details>
+
+          <details className="mt-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
+            <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">建立诊断会话</summary>
+            <div className="space-y-2 border-t border-[var(--color-border)] p-2.5">
+              <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">
+                将在本机审计目录的 diagnostics 下写入一份诊断包，并新开一个只读诊断会话；其中预填来源会话、这条上行和相邻上行的脱敏原文位置。不会自动发送给模型，方便你先检查再确认发送。
+              </p>
+              <textarea
+                value={diagnosticQuestion}
+                onChange={(event) => setDiagnosticQuestion(event.target.value)}
+                rows={3}
+                placeholder="例如：为什么没有执行 process.md 中的留痕要求？"
+                className="w-full resize-y rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-2 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
+              />
+              {diagnosticError ? <p role="alert" className="text-[10px] text-[var(--color-error)]">{diagnosticError}</p> : null}
+              <button
+                type="button"
+                onClick={() => void createDiagnosticSession()}
+                disabled={creatingDiagnostic || !currentBody.isFull}
+                title={currentBody.isFull ? undefined : '需要先成功保存这条完整的脱敏请求正文'}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2 py-1 text-[11px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {creatingDiagnostic ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />}
+                创建诊断会话
+              </button>
+            </div>
+          </details>
         </div>
       ) : null}
     </details>
@@ -295,6 +367,64 @@ function ContextAuditCall({
 }
 
 type JsonRecord = Record<string, unknown>
+
+type MessageFootprint = {
+  index: number
+  role: NormalizedMessage['role']
+  label: string
+  bytes: number
+  blocks: number
+  distanceFromTail: number
+}
+
+type ReadMaterial = {
+  path: string
+  bytes: number
+  messageIndex: number
+  distanceFromTail: number
+  fingerprint: string
+  watched: boolean
+  state: '首次出现' | '连续保留' | '内容更新' | '相对上次换出'
+}
+
+function MessageFootprint({ messages }: { messages: MessageFootprint[] }) {
+  if (messages.length === 0) return null
+  return (
+    <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
+      <summary className="cursor-pointer px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-primary)]">消息链子项大小（{messages.length}）</summary>
+      <div className="max-h-48 overflow-y-auto border-t border-[var(--color-border)]">
+        {messages.map((message) => (
+          <div key={message.index} className="grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b border-[var(--color-border)]/60 px-2 py-1.5 text-[10px] last:border-b-0">
+            <span className="font-mono text-[var(--color-text-tertiary)]">{message.index}.</span>
+            <span className="min-w-0 truncate text-[var(--color-text-secondary)]">{message.label} · {message.blocks} 块 · 距尾部 {message.distanceFromTail}</span>
+            <span className="font-mono text-[var(--color-text-primary)]">{formatBytes(message.bytes)}</span>
+          </div>
+        ))}
+      </div>
+    </details>
+  )
+}
+
+function MaterialWatch({ materials }: { materials: ReadMaterial[] }) {
+  const watched = materials.filter((material) => material.watched)
+  if (watched.length === 0) return <p className="text-[10px] text-[var(--color-text-tertiary)]">本次上行未发现四件套或项目大脑核心文件的实际 Read 回包。</p>
+  return (
+    <div>
+      <p className="mb-1 text-[10px] font-medium text-[var(--color-text-primary)]">关键材料在场（来自实际 Read 回包）</p>
+      <div className="max-h-48 overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
+        {watched.map((material) => (
+          <div key={`${material.path}:${material.state}`} className="border-b border-[var(--color-border)]/60 px-2 py-1.5 text-[10px] last:border-b-0">
+            <div className="flex items-center gap-2">
+              <span className={`rounded px-1 py-0.5 ${material.state === '相对上次换出' ? 'bg-[var(--color-warning)]/10 text-[var(--color-warning)]' : 'bg-[var(--color-success)]/10 text-[var(--color-success)]'}`}>{material.state}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[var(--color-text-secondary)]" title={material.path}>{material.path}</span>
+            </div>
+            <div className="mt-1 text-[var(--color-text-tertiary)]">{formatBytes(material.bytes)} · 消息 {material.messageIndex || '—'} · 距尾部 {material.distanceFromTail || '—'} · 版本 {material.fingerprint}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function FormattedRequestView({ call, text }: { call: TraceCallRecord; text: string }) {
   const request = useMemo(() => parseTraceRequestBody(text, call.source), [call.source, text])
@@ -576,6 +706,7 @@ function analyzeRequest(call: TraceCallRecord, body: string, previousBody: strin
   const messages = parsed?.messages ?? []
   const signatures = messages.map((message) => `${message.role}:${JSON.stringify(message.content)}`)
   const priorParsed = previousBody ? parseTraceRequestBody(previousBody, call.source) : null
+  const priorMessages = priorParsed?.messages ?? []
   const priorSignatures = new Set((priorParsed?.messages ?? []).map((message) => `${message.role}:${JSON.stringify(message.content)}`))
   const currentSignatures = new Set(signatures)
   const newMessages = signatures.filter((signature) => !priorSignatures.has(signature)).length
@@ -587,16 +718,140 @@ function analyzeRequest(call: TraceCallRecord, body: string, previousBody: strin
     ? '无可比上行'
     : `${newMessages} 新增 / ${omittedMessages} 未继续出现 / ${retainedMessages} 保留${systemChanged ? ' / 系统变更' : ''}${toolsChanged ? ' / 工具变更' : ''}`
   const text = [system, ...messages.map((message) => JSON.stringify(message.content))].join('\n')
+  const messageFootprints = messages.map((message, index) => ({
+    index: index + 1,
+    role: message.role,
+    label: messageSummaryLabel(message, collectToolNames(messages)),
+    bytes: byteLength(JSON.stringify(message.content)),
+    blocks: message.content.length,
+    distanceFromTail: messages.length - index,
+  }))
+  const currentMaterials = extractReadMaterials(messages)
+  const priorMaterials = extractReadMaterials(priorMessages)
+  const materials = compareMaterials(currentMaterials, priorMaterials, messages.length)
+  const cachePrefix = getCandidateCachePrefix(parsed, priorParsed)
+  const compaction = getCompactionObservation(parsed, priorParsed, omittedMessages)
 
   return {
     systemBytes: byteLength(system),
+    messageBytes: messageFootprints.reduce((total, message) => total + message.bytes, 0),
     messages: messages.length,
     userMessages: messages.filter((message) => message.role === 'user').length,
     assistantMessages: messages.filter((message) => message.role === 'assistant').length,
     tools: parsed?.tools.length ?? 0,
     files: extractExplicitFileHints(text),
     deltaLabel,
+    messageFootprints,
+    materials,
+    cachePrefix,
+    compaction,
   }
+}
+
+function collectToolNames(messages: NormalizedMessage[]): Map<string, string> {
+  const names = new Map<string, string>()
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === 'tool_use' && block.id) names.set(block.id, block.name)
+    }
+  }
+  return names
+}
+
+function extractReadMaterials(messages: NormalizedMessage[]): Array<Omit<ReadMaterial, 'distanceFromTail' | 'watched' | 'state'>> {
+  const calls = new Map<string, { name: string; input: unknown }>()
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === 'tool_use' && block.id) calls.set(block.id, { name: block.name, input: block.input })
+    }
+  }
+  const materials: Array<Omit<ReadMaterial, 'distanceFromTail' | 'watched' | 'state'>> = []
+  for (const [messageIndex, message] of messages.entries()) {
+    for (const block of message.content) {
+      if (block.type !== 'tool_result' || !block.toolUseId) continue
+      const call = calls.get(block.toolUseId)
+      if (call?.name.toLowerCase() !== 'read') continue
+      const path = readToolPath(call.input)
+      if (!path) continue
+      const content = contentToText(block.content)
+      materials.push({ path, bytes: byteLength(content), messageIndex: messageIndex + 1, fingerprint: shortFingerprint(content) })
+    }
+  }
+  return materials
+}
+
+function readToolPath(input: unknown): string | null {
+  if (!isJsonRecord(input)) return null
+  for (const key of ['file_path', 'filePath', 'path']) {
+    const value = input[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+function compareMaterials(
+  current: Array<Omit<ReadMaterial, 'distanceFromTail' | 'watched' | 'state'>>,
+  previous: Array<Omit<ReadMaterial, 'distanceFromTail' | 'watched' | 'state'>>,
+  messageCount: number,
+): ReadMaterial[] {
+  const currentByPath = new Map(current.map((item) => [item.path, item]))
+  const previousByPath = new Map(previous.map((item) => [item.path, item]))
+  const paths = new Set([...currentByPath.keys(), ...previousByPath.keys()])
+  return Array.from(paths).map((path) => {
+    const item = currentByPath.get(path)
+    const prior = previousByPath.get(path)
+    const watched = isWatchedMaterial(path)
+    if (!item) return { path, bytes: 0, messageIndex: 0, distanceFromTail: 0, fingerprint: prior?.fingerprint ?? '—', watched, state: '相对上次换出' as const }
+    const state: ReadMaterial['state'] = !prior ? '首次出现' : prior.fingerprint === item.fingerprint ? '连续保留' : '内容更新'
+    return { ...item, distanceFromTail: messageCount - item.messageIndex + 1, watched, state }
+  }).sort((left, right) => Number(right.watched) - Number(left.watched) || right.bytes - left.bytes)
+}
+
+function isWatchedMaterial(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/').toLowerCase()
+  return /(?:^|\/)(?:process|design)\.md$/.test(normalized)
+    || /(?:^|\/)(?:任务范围|任务指标)\.md$/.test(normalized)
+    || /项目大脑\/(?:启动|主流程|主规则|index)\.md$/.test(normalized)
+}
+
+function shortFingerprint(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+function getCandidateCachePrefix(current: ReturnType<typeof parseTraceRequestBody>, previous: ReturnType<typeof parseTraceRequestBody>) {
+  if (!current || !previous) return { bytes: 0, label: '无可比上行' }
+  const segments = [
+    ['系统提示', current.system ?? '', previous.system ?? ''],
+    ['工具定义', safeJson(current.tools), safeJson(previous.tools)],
+    ...current.messages.map((message, index) => [`消息 ${index + 1}`, safeJson({ role: message.role, content: message.content }), previous.messages[index] ? safeJson({ role: previous.messages[index]!.role, content: previous.messages[index]!.content }) : undefined] as const),
+  ] as const
+  let bytes = 0
+  let matchedMessages = 0
+  let stableSystemAndTools = true
+  for (const [label, currentValue, previousValue] of segments) {
+    if (currentValue !== previousValue) {
+      if (label === '系统提示' || label === '工具定义') stableSystemAndTools = false
+      break
+    }
+    bytes += byteLength(currentValue)
+    if (label.startsWith('消息')) matchedMessages += 1
+  }
+  const prefix = stableSystemAndTools ? `系统+工具+${matchedMessages} 条消息` : '系统或工具定义已变'
+  return { bytes, label: prefix }
+}
+
+function getCompactionObservation(current: ReturnType<typeof parseTraceRequestBody>, previous: ReturnType<typeof parseTraceRequestBody>, omittedMessages: number) {
+  if (!previous) return { label: '无可比上行' }
+  const text = (current?.messages ?? []).flatMap((message) => message.content).map(blockText).join('\n')
+  if (/session is being continued from a previous conversation|context for continuing work|上下文已压缩/i.test(text)) return { label: '检测到摘要压缩' }
+  if (isJsonRecord(current?.params?.context_management)) return { label: '请求启用 API 上下文编辑' }
+  if (omittedMessages > 0) return { label: `${omittedMessages} 条未继续出现` }
+  return { label: '未观察到换出' }
 }
 
 function extractExplicitFileHints(text: string): Array<{ path: string; contextBytes: number; kind: 'content' | 'marker' }> {
@@ -642,6 +897,10 @@ function byteLength(value: string): number {
 function formatInputTokens(call: TraceCallRecord): string {
   const count = call.usage?.inputTokens
   return typeof count === 'number' && count > 0 ? `${count.toLocaleString()} tokens` : 'tokens 未返回'
+}
+
+function formatTokenMetric(value: number | undefined): string {
+  return typeof value === 'number' && value >= 0 ? `${value.toLocaleString()} tokens` : '提供商未返回'
 }
 
 function formatDate(value: string): string {
