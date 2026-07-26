@@ -53,11 +53,52 @@ Write-Host 'Configure DeepSeek in Settings > Providers > Add Provider, then sele
 
 Push-Location (Join-Path $repoRoot 'desktop')
 try {
+  # `electron:dev` leaves Vite running when its parent terminal is closed
+  # unexpectedly.  Starting a second instance then fails with "Port 1420 is
+  # already in use".  Match the full laboratory path before touching a
+  # process: another project's Vite server must never be stopped here.
+  $desktopRoot = (Join-Path $repoRoot 'desktop').TrimEnd('\')
+  $viteEntry = (Join-Path $desktopRoot 'node_modules\vite\bin\vite.js')
+  $allProcesses = @(Get-CimInstance Win32_Process)
+  $runningDesktop = $allProcesses | Where-Object {
+    $_.Name -eq 'electron.exe' -and
+    -not [string]::IsNullOrWhiteSpace($_.CommandLine) -and
+    $_.CommandLine.IndexOf($desktopRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+  } | Select-Object -First 1
+  if ($runningDesktop) {
+    Write-Host "Claude Code Haha is already running (PID: $($runningDesktop.ProcessId))." -ForegroundColor Yellow
+    return
+  }
+
+  $staleVite = @($allProcesses | Where-Object {
+    $_.Name -eq 'node.exe' -and
+    -not [string]::IsNullOrWhiteSpace($_.CommandLine) -and
+    $_.CommandLine.IndexOf($viteEntry, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+  })
+  if ($staleVite.Count -gt 0) {
+    $processIds = ($staleVite | ForEach-Object { $_.ProcessId }) -join ', '
+    Write-Host "Removing stale cc-haha Vite process (PID: $processIds) before launch..." -ForegroundColor Yellow
+    $staleVite | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 500
+  }
+
+  # Give a useful, safe error when a different application owns the fixed
+  # Tauri/Vite development port.  Do not stop a process outside this lab.
+  $portOwner = Get-NetTCPConnection -State Listen -LocalPort 1420 -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($portOwner) {
+    $ownerProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($portOwner.OwningProcess)" -ErrorAction SilentlyContinue
+    $ownerName = if ($ownerProcess) { "$($ownerProcess.Name) (PID: $($ownerProcess.ProcessId))" } else { "PID: $($portOwner.OwningProcess)" }
+    throw "Port 1420 is occupied by $ownerName, not by a stale cc-haha Vite process. Close that application, then run startup.bat again."
+  }
+
   $sidecarPath = Join-Path (Get-Location) 'src-tauri\binaries\claude-sidecar-x86_64-pc-windows-msvc.exe'
   $sidecarSources = @(
     (Join-Path $repoRoot 'src\services\api\traceCapture.ts'),
     (Join-Path $repoRoot 'src\server\api\sessions.ts'),
     (Join-Path $repoRoot 'src\server\api\traces.ts'),
+    (Join-Path $repoRoot 'src\server\services\traceCaptureService.ts'),
+    (Join-Path $repoRoot 'src\server\services\workspaceService.ts'),
     (Join-Path $repoRoot 'src\utils\shell\bashProvider.ts'),
     (Join-Path $repoRoot 'src\utils\shell\powershellProvider.ts'),
     (Join-Path (Get-Location) 'scripts\build-sidecars.ts')
@@ -69,15 +110,6 @@ try {
       (Test-Path -LiteralPath $_) -and (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt $sidecarWriteTime
     } | Select-Object -First 1
     $sidecarNeedsBuild = $null -ne $newerSource
-  }
-  if (-not $sidecarNeedsBuild) {
-    $runningDesktop = Get-CimInstance Win32_Process | Where-Object {
-      $_.Name -eq 'electron.exe' -and $_.CommandLine -like "*$repoRoot\desktop*"
-    } | Select-Object -First 1
-    if ($runningDesktop) {
-      Write-Host "Claude Code Haha is already running (PID: $($runningDesktop.ProcessId))." -ForegroundColor Yellow
-      return
-    }
   }
   if ($sidecarNeedsBuild) {
     $runningSidecars = Get-CimInstance Win32_Process | Where-Object {
