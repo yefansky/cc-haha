@@ -46,8 +46,22 @@ Write-Host 'Configure DeepSeek in Settings > Providers > Add Provider, then sele
 Push-Location (Join-Path $repoRoot 'desktop')
 try {
   $sidecarPath = Join-Path (Get-Location) 'src-tauri\binaries\claude-sidecar-x86_64-pc-windows-msvc.exe'
-  if (-not (Test-Path -LiteralPath $sidecarPath)) {
-    Write-Host 'Building the local desktop sidecar for this first launch...' -ForegroundColor Cyan
+  $sidecarSources = @(
+    (Join-Path $repoRoot 'src\services\api\traceCapture.ts'),
+    (Join-Path $repoRoot 'src\server\api\sessions.ts'),
+    (Join-Path $repoRoot 'src\server\api\traces.ts'),
+    (Join-Path (Get-Location) 'scripts\build-sidecars.ts')
+  )
+  $sidecarNeedsBuild = -not (Test-Path -LiteralPath $sidecarPath)
+  if (-not $sidecarNeedsBuild) {
+    $sidecarWriteTime = (Get-Item -LiteralPath $sidecarPath).LastWriteTimeUtc
+    $newerSource = $sidecarSources | Where-Object {
+      (Test-Path -LiteralPath $_) -and (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt $sidecarWriteTime
+    } | Select-Object -First 1
+    $sidecarNeedsBuild = $null -ne $newerSource
+  }
+  if ($sidecarNeedsBuild) {
+    Write-Host 'Building the local desktop sidecar because its source changed...' -ForegroundColor Cyan
     & $bunExe run build:sidecars
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sidecarPath)) {
       throw 'Desktop sidecar build failed. See the output above for details.'
