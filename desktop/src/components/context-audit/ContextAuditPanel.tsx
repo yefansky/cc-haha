@@ -24,6 +24,12 @@ type BodyLoad = {
   file?: string
 }
 
+type ToolCallReference = {
+  id: string
+  name: string
+  input: unknown
+}
+
 type ContextAuditPanelProps = {
   sessionId: string
 }
@@ -432,12 +438,7 @@ function FormattedRequestView({ call, text }: { call: TraceCallRecord; text: str
     return <div className="rounded border border-dashed border-[var(--color-border)] p-2 text-[10px] text-[var(--color-text-tertiary)]">此请求不是可解析的 JSON；请在下方查看原始内容。</div>
   }
 
-  const toolNames = new Map<string, string>()
-  for (const message of request.messages) {
-    for (const block of message.content) {
-      if (block.type === 'tool_use' && block.id) toolNames.set(block.id, block.name)
-    }
-  }
+  const toolCalls = collectToolCalls(request.messages)
 
   return (
     <div className="flex flex-col gap-2">
@@ -450,7 +451,7 @@ function FormattedRequestView({ call, text }: { call: TraceCallRecord; text: str
       <details open className="rounded border border-[var(--color-border)]">
         <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">消息链（{request.messages.length}）</summary>
         <div className="flex flex-col gap-1.5 border-t border-[var(--color-border)] p-2">
-          {request.messages.map((message, index) => <ContextMessageView key={index} message={message} index={index} toolNames={toolNames} />)}
+          {request.messages.map((message, index) => <ContextMessageView key={index} message={message} index={index} toolCalls={toolCalls} />)}
           {request.messages.length === 0 ? <div className="text-[10px] text-[var(--color-text-tertiary)]">无消息</div> : null}
         </div>
       </details>
@@ -482,32 +483,34 @@ const ROLE_LABELS: Record<NormalizedMessage['role'], string> = {
   tool: '工具',
 }
 
-function ContextMessageView({ message, index, toolNames }: { message: NormalizedMessage; index: number; toolNames: Map<string, string> }) {
+function ContextMessageView({ message, index, toolCalls }: { message: NormalizedMessage; index: number; toolCalls: Map<string, ToolCallReference> }) {
   const contentBytes = message.content.reduce((total, block) => total + byteLength(blockText(block)), 0)
-  const summaryLabel = messageSummaryLabel(message, toolNames)
+  const summaryLabel = messageSummaryLabel(message, toolCalls)
   return (
     <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
       <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-primary)]">
         {index + 1}. {summaryLabel} · 协议角色：{ROLE_LABELS[message.role]} · {message.content.length} 个内容块 · {formatBytes(contentBytes)}
       </summary>
       <div className="flex flex-col gap-2 border-t border-[var(--color-border)] p-2">
-        {message.content.map((block, blockIndex) => <ContextBlockView key={blockIndex} block={block} toolNames={toolNames} />)}
+        {message.content.map((block, blockIndex) => <ContextBlockView key={blockIndex} block={block} toolCalls={toolCalls} />)}
       </div>
     </details>
   )
 }
 
-function messageSummaryLabel(message: NormalizedMessage, toolNames: Map<string, string>): string {
-  const toolResult = message.content.find((block): block is Extract<NormalizedBlock, { type: 'tool_result' }> => block.type === 'tool_result')
-  if (toolResult) {
-    return `${toolResult.isError ? '工具执行失败' : '工具执行回包'} · ${toolResult.toolUseId ? toolNames.get(toolResult.toolUseId) ?? toolResult.toolUseId : '未知工具'}`
+function messageSummaryLabel(message: NormalizedMessage, toolCalls: Map<string, ToolCallReference>): string {
+  const toolResults = message.content.filter((block): block is Extract<NormalizedBlock, { type: 'tool_result' }> => block.type === 'tool_result')
+  if (toolResults.length > 0) {
+    const toolLabels = toolResults.map((result) => result.toolUseId ? toolCalls.get(result.toolUseId)?.name ?? result.toolUseId : '未知工具')
+    const status = toolResults.every((result) => result.isError) ? '工具执行失败' : '工具执行回包'
+    return `${status} · ${toolLabels.join('、')}`
   }
-  const toolUse = message.content.find((block): block is Extract<NormalizedBlock, { type: 'tool_use' }> => block.type === 'tool_use')
-  if (toolUse) return `工具调用 · ${toolUse.name || '未命名工具'}`
+  const toolUses = message.content.filter((block): block is Extract<NormalizedBlock, { type: 'tool_use' }> => block.type === 'tool_use')
+  if (toolUses.length > 0) return `工具调用 · ${toolUses.map((toolUse) => toolUse.name || '未命名工具').join('、')}`
   return ROLE_LABELS[message.role]
 }
 
-function ContextBlockView({ block, toolNames }: { block: NormalizedBlock; toolNames: Map<string, string> }) {
+function ContextBlockView({ block, toolCalls }: { block: NormalizedBlock; toolCalls: Map<string, ToolCallReference> }) {
   switch (block.type) {
     case 'text':
       return <ContentBlock label="文本 · Markdown / 表格 / Mermaid / 代码高亮"><ReadableContent value={block.text} /></ContentBlock>
@@ -516,14 +519,31 @@ function ContextBlockView({ block, toolNames }: { block: NormalizedBlock; toolNa
     case 'tool_use':
       return <ContentBlock label={`工具调用 · ${block.name || '未命名工具'}`} meta={block.id}><JsonValueView value={block.input} /></ContentBlock>
     case 'tool_result': {
-      const toolName = block.toolUseId ? toolNames.get(block.toolUseId) : undefined
-      return <ContentBlock label={`${block.isError ? '工具执行失败' : '工具执行回包'} · ${toolName ?? block.toolUseId ?? '未知工具'}`}>
+      const toolCall = block.toolUseId ? toolCalls.get(block.toolUseId) : undefined
+      const toolName = toolCall?.name
+      return <ContentBlock label={`${block.isError ? '工具执行失败' : '工具执行回包'} · ${toolName ?? block.toolUseId ?? '未知工具'}`} meta={block.toolUseId}>
+        {toolCall ? <AssociatedToolCallView toolCall={toolCall} /> : <div className="mb-2 rounded border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/10 px-2 py-1 text-[10px] text-[var(--color-text-secondary)]">未在本次上行中找到与此回包匹配的工具调用参数。</div>}
         <ReadableContent value={block.content} stripReadLineNumbers={toolName?.toLowerCase() === 'read'} />
       </ContentBlock>
     }
     case 'image':
       return <ContentBlock label={`图像内容${block.mediaType ? ` · ${block.mediaType}` : ''}`} />
   }
+}
+
+function AssociatedToolCallView({ toolCall }: { toolCall: ToolCallReference }) {
+  return (
+    <details open className="mb-2 rounded border border-[var(--color-info)]/30 bg-[var(--color-info)]/5 px-2 py-1.5">
+      <summary className="cursor-pointer text-[10px] font-medium text-[var(--color-text-primary)]">
+        关联的工具调用 · {toolCall.name || '未命名工具'}
+        <span className="ml-1 font-mono font-normal text-[var(--color-text-tertiary)]">{toolCall.id}</span>
+      </summary>
+      <div className="mt-1.5 border-t border-[var(--color-info)]/20 pt-1.5">
+        <div className="mb-1 text-[10px] text-[var(--color-text-secondary)]">调用参数</div>
+        <JsonValueView value={toolCall.input} />
+      </div>
+    </details>
+  )
 }
 
 function ContentBlock({ label, meta, children }: { label: string; meta?: string; children?: ReactNode }) {
@@ -721,7 +741,7 @@ function analyzeRequest(call: TraceCallRecord, body: string, previousBody: strin
   const messageFootprints = messages.map((message, index) => ({
     index: index + 1,
     role: message.role,
-    label: messageSummaryLabel(message, collectToolNames(messages)),
+    label: messageSummaryLabel(message, collectToolCalls(messages)),
     bytes: byteLength(JSON.stringify(message.content)),
     blocks: message.content.length,
     distanceFromTail: messages.length - index,
@@ -748,14 +768,16 @@ function analyzeRequest(call: TraceCallRecord, body: string, previousBody: strin
   }
 }
 
-function collectToolNames(messages: NormalizedMessage[]): Map<string, string> {
-  const names = new Map<string, string>()
+function collectToolCalls(messages: NormalizedMessage[]): Map<string, ToolCallReference> {
+  const calls = new Map<string, ToolCallReference>()
   for (const message of messages) {
     for (const block of message.content) {
-      if (block.type === 'tool_use' && block.id) names.set(block.id, block.name)
+      if (block.type === 'tool_use' && block.id) {
+        calls.set(block.id, { id: block.id, name: block.name, input: block.input })
+      }
     }
   }
-  return names
+  return calls
 }
 
 function extractReadMaterials(messages: NormalizedMessage[]): Array<Omit<ReadMaterial, 'distanceFromTail' | 'watched' | 'state'>> {
