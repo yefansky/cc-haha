@@ -4,6 +4,16 @@ export type TraceBodySnapshot = {
   sha256: string
   preview: string
   truncated: boolean
+  fullCapture?: {
+    file: string
+  }
+}
+
+export type TraceRawBody = {
+  content: string
+  bytes: number
+  sha256: string
+  file: string
 }
 
 export type TraceProviderInfo = {
@@ -96,6 +106,7 @@ export type TraceSession = {
 
 export type TraceCaptureSettings = {
   enabled: boolean
+  fullBodies: boolean
   storageDir: string
 }
 

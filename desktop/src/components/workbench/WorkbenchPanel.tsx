@@ -1,4 +1,4 @@
-import { ArrowLeft, FolderOpen, Globe, Maximize2, X } from 'lucide-react'
+import { ArrowLeft, FolderOpen, Globe, Maximize2, ShieldCheck, X } from 'lucide-react'
 import { useTranslation } from '../../i18n'
 import {
   useWorkspacePanelStore,
@@ -8,6 +8,7 @@ import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import { WORKBENCH_TAB_PREFIX, useTabStore } from '../../stores/tabStore'
 import { WorkspacePanel } from '../workspace/WorkspacePanel'
 import { BrowserSurface } from '../browser/BrowserSurface'
+import { ContextAuditPanel } from '../context-audit/ContextAuditPanel'
 
 type WorkbenchPanelProps = {
   sessionId: string
@@ -17,11 +18,13 @@ type WorkbenchPanelProps = {
 
 const MODE_ITEMS: ReadonlyArray<{
   mode: WorkbenchMode
-  labelKey: 'workbench.modeWorkspace' | 'workbench.modeBrowser'
+  labelKey?: 'workbench.modeWorkspace' | 'workbench.modeBrowser'
+  label?: string
   Icon: typeof FolderOpen
 }> = [
   { mode: 'workspace', labelKey: 'workbench.modeWorkspace', Icon: FolderOpen },
   { mode: 'browser', labelKey: 'workbench.modeBrowser', Icon: Globe },
+  { mode: 'context-audit', label: '上下文审计', Icon: ShieldCheck },
 ]
 
 /**
@@ -92,7 +95,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
           aria-label={t('workbench.modeSwitch')}
           className="inline-flex items-center gap-0.5 rounded-[8px] bg-[var(--color-surface-container)] p-0.5"
         >
-          {MODE_ITEMS.map(({ mode: itemMode, labelKey, Icon }) => {
+          {MODE_ITEMS.map(({ mode: itemMode, labelKey, label, Icon }) => {
             const isActive = mode === itemMode
             return (
               <button
@@ -108,7 +111,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
                 }`}
               >
                 <Icon size={15} strokeWidth={2} aria-hidden="true" className="shrink-0" />
-                <span>{t(labelKey)}</span>
+                <span>{labelKey ? t(labelKey) : label}</span>
               </button>
             )
           })}
@@ -140,6 +143,8 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
       <div className="flex min-h-0 flex-1 flex-col">
         {mode === 'browser' ? (
           <BrowserSurface sessionId={sessionId} />
+        ) : mode === 'context-audit' ? (
+          <ContextAuditPanel sessionId={sessionId} />
         ) : (
           <WorkspacePanel sessionId={sessionId} embedded forceVisible={isTabVariant} />
         )}

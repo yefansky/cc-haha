@@ -131,6 +131,9 @@ export async function handleSessionsApi(
           { status: 405 }
         )
       }
+      if (segments[4] === 'calls' && segments[6] === 'raw') {
+        return await getSessionTraceRawBody(sessionId, segments[5], url)
+      }
       return segments[4] === 'calls'
         ? await getSessionTraceCall(sessionId, segments[5])
         : await getSessionTrace(sessionId)
@@ -380,6 +383,25 @@ async function getSessionTraceCall(sessionId: string, callId: string | undefined
     throw ApiError.notFound(`Trace call not found: ${callId}`)
   }
   return Response.json({ call })
+}
+
+async function getSessionTraceRawBody(
+  sessionId: string,
+  callId: string | undefined,
+  url: URL,
+): Promise<Response> {
+  if (!callId || callId.trim().length === 0) {
+    throw ApiError.badRequest('callId is required')
+  }
+  const direction = url.searchParams.get('direction')
+  if (direction !== 'request' && direction !== 'response') {
+    throw ApiError.badRequest('direction must be request or response')
+  }
+  const body = await traceCaptureService.getSessionTraceRawBody(sessionId, callId, direction)
+  if (!body) {
+    throw ApiError.notFound(`Full trace ${direction} body not found for call: ${callId}`)
+  }
+  return Response.json(body)
 }
 
 async function handleSessionWorkspaceRoute(
