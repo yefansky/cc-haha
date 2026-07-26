@@ -1573,6 +1573,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   )
   const branchSession = useSessionStore((s) => s.branchSession)
   const stopGeneration = useChatStore((s) => s.stopGeneration)
+  const sendMessage = useChatStore((s) => s.sendMessage)
   const reloadHistory = useChatStore((s) => s.reloadHistory)
   const queueComposerPrefill = useChatStore((s) => s.queueComposerPrefill)
   const isMemberSession = useTeamStore((s) =>
@@ -1632,6 +1633,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   const [isLoadingTurnChangeCards, setIsLoadingTurnChangeCards] = useState(false)
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null)
   const [rewindingTurnId, setRewindingTurnId] = useState<string | null>(null)
+  const [editingTurn, setEditingTurn] = useState<{ target: RewindTurnTarget; content: string } | null>(null)
   const [turnUndoConfirmTargetId, setTurnUndoConfirmTargetId] = useState<string | null>(null)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [virtualViewport, setVirtualViewport] = useState<VirtualViewport>({
@@ -2000,6 +2002,12 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     () => getCompletedTurnTargets(deferredMessages),
     [deferredMessages],
   )
+  const editableTurnTargets = useMemo(
+    () => branchActionsDisabled
+      ? new Map<string, RewindTurnTarget>()
+      : new Map(completedTurnTargets.map((target) => [target.messageId, target])),
+    [branchActionsDisabled, completedTurnTargets],
+  )
   const latestCompletedTurnId =
     completedTurnTargets.length > 0
       ? completedTurnTargets[completedTurnTargets.length - 1]?.messageId ?? null
@@ -2289,6 +2297,50 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     }
   }, [addToast, branchSession, branchingMessageId, resolvedSessionId, t])
 
+  const beginEditMessage = useCallback((target: RewindTurnTarget) => {
+    if (rewindingTurnId || hasRunningBackgroundTasks) return
+    setEditingTurn({ target, content: target.content })
+  }, [hasRunningBackgroundTasks, rewindingTurnId])
+
+  const cancelEditMessage = useCallback(() => {
+    if (rewindingTurnId) return
+    setEditingTurn(null)
+  }, [rewindingTurnId])
+
+  const submitEditMessage = useCallback(async () => {
+    if (!resolvedSessionId || !editingTurn || rewindingTurnId || hasRunningBackgroundTasks) return
+
+    const content = editingTurn.content.trim()
+    if (!content) return
+    const target = editingTurn.target
+
+    setRewindingTurnId(target.messageId)
+    try {
+      const result = await sessionsApi.rewind(resolvedSessionId, {
+        userMessageIndex: target.userMessageIndex,
+        expectedContent: target.expectedContent,
+        restoreCode: false,
+      })
+      await reloadHistory(resolvedSessionId)
+      sendMessage(resolvedSessionId, content, target.attachments, {
+        displayContent: content,
+        displayAttachments: target.attachments,
+      })
+      setEditingTurn(null)
+      addToast({
+        type: 'success',
+        message: t('chat.editMessageSuccess', { count: result.conversation.messagesRemoved }),
+      })
+    } catch (error) {
+      addToast({
+        type: 'error',
+        message: t('chat.editMessageError', { detail: getApiErrorMessage(error) }),
+      })
+    } finally {
+      setRewindingTurnId(null)
+    }
+  }, [addToast, editingTurn, hasRunningBackgroundTasks, reloadHistory, resolvedSessionId, rewindingTurnId, sendMessage, t])
+
   // Pre-compute per-message branchAction + toolResult lookups so MessageBlock's
   // memo barrier is not broken by inline object literals on every render.
   const branchActionByMessageId = useMemo(() => {
@@ -2306,6 +2358,23 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     }
     return result
   }, [branchableMessageTargets, branchingMessageId, handleBranchMessage, t])
+
+  const editActionByMessageId = useMemo(() => {
+    if (editableTurnTargets.size === 0) {
+      return new Map<string, { label: string; loading: boolean; onEdit: () => void }>()
+    }
+    const result = new Map<string, { label: string; loading: boolean; onEdit: () => void }>()
+    const label = t('chat.editMessage')
+    for (const [messageId, target] of editableTurnTargets) {
+      if (editingTurn && editingTurn.target.messageId !== messageId) continue
+      result.set(messageId, {
+        label,
+        loading: rewindingTurnId === messageId,
+        onEdit: () => beginEditMessage(target),
+      })
+    }
+    return result
+  }, [beginEditMessage, editableTurnTargets, editingTurn, rewindingTurnId, t])
 
   const toolResultByToolUseId = useMemo(() => {
     if (toolResultMap.size === 0) return new Map<string, { content: unknown; isError: boolean }>()
@@ -2592,6 +2661,18 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
                 : null
             }
             branchAction={branchActionByMessageId.get(item.message.id)}
+            editAction={editActionByMessageId.get(item.message.id)}
+            editComposer={editingTurn?.target.messageId === item.message.id ? {
+              value: editingTurn.content,
+              submitLabel: t('common.send'),
+              cancelLabel: t('chat.undoEdit'),
+              submitting: rewindingTurnId === item.message.id,
+              onChange: (content) => setEditingTurn((current) => current
+                ? { ...current, content }
+                : current),
+              onSubmit: () => { void submitEditMessage() },
+              onCancel: cancelEditMessage,
+            } : undefined}
             turnChangedFiles={changedFilesByRenderIndex.get(index)}
           />
         )}
@@ -2746,6 +2827,8 @@ export const MessageBlock = memo(function MessageBlock({
   agentTaskNotifications,
   toolResult,
   branchAction,
+  editAction,
+  editComposer,
   turnChangedFiles,
 }: {
   sessionId?: string | null
@@ -2757,6 +2840,20 @@ export const MessageBlock = memo(function MessageBlock({
     label: string
     loading?: boolean
     onBranch: () => void
+  }
+  editAction?: {
+    label: string
+    loading?: boolean
+    onEdit: () => void
+  }
+  editComposer?: {
+    value: string
+    submitLabel: string
+    cancelLabel: string
+    submitting?: boolean
+    onChange: (value: string) => void
+    onSubmit: () => void
+    onCancel: () => void
   }
   turnChangedFiles?: string[]
 }) {
@@ -2775,6 +2872,8 @@ export const MessageBlock = memo(function MessageBlock({
             content={message.content}
             attachments={message.attachments}
             branchAction={branchAction}
+            editAction={editAction}
+            editComposer={editComposer}
             timestamp={message.timestamp}
           />
         </SelectableChatMessage>

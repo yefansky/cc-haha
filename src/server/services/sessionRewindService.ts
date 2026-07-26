@@ -38,6 +38,8 @@ export type RewindTargetSelector = {
   targetUserMessageId?: string
   userMessageIndex?: number
   expectedContent?: string
+  /** Conversation-only rewind keeps workspace files intact. */
+  restoreCode?: boolean
 }
 
 export type SessionRewindPreview = {
@@ -1101,7 +1103,7 @@ export async function executeSessionRewind(
 
   await conversationService.stopSessionAndWait(sessionId)
 
-  if (preview.available && snapshots) {
+  if (selector.restoreCode !== false && preview.available && snapshots) {
     const targetSnapshot = findTargetSnapshot(snapshots, target.targetUserMessageId)
     if (!targetSnapshot) {
       throw ApiError.badRequest('No file checkpoint is available for the selected message.')

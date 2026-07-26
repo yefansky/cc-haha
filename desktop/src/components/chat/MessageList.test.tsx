@@ -5342,6 +5342,82 @@ describe('MessageList nested tool calls', () => {
     })
   })
 
+  it('edits a completed prompt in place and rewinds only after sending', async () => {
+    vi.spyOn(sessionsApi, 'rewind').mockResolvedValue({
+      target: {
+        targetUserMessageId: 'user-1',
+        userMessageIndex: 0,
+        userMessageCount: 2,
+      },
+      conversation: {
+        messagesRemoved: 4,
+        removedMessageIds: ['user-1', 'assistant-1', 'user-2', 'assistant-2'],
+      },
+      code: {
+        available: true,
+        filesChanged: ['src/App.tsx'],
+        insertions: 1,
+        deletions: 0,
+      },
+    })
+    const reloadHistory = vi.fn().mockResolvedValue(undefined)
+    const queueComposerPrefill = vi.fn()
+    const sendMessage = vi.fn()
+    useChatStore.setState({
+      reloadHistory,
+      queueComposerPrefill,
+      sendMessage,
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            { id: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
+            { id: 'assistant-1', type: 'assistant_text', content: 'first reply', timestamp: 2 },
+            { id: 'user-2', type: 'user_text', content: 'second prompt', timestamp: 3 },
+            { id: 'assistant-2', type: 'assistant_text', content: 'second reply', timestamp: 4 },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+    fireEvent.click(await screen.findAllByRole('button', { name: 'Edit this prompt' }).then((buttons) => buttons[0]!))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit prompt' })
+    expect((editor as HTMLTextAreaElement).value).toBe('first prompt')
+    expect(screen.getByText('second prompt')).toBeTruthy()
+    expect(sessionsApi.rewind).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(sessionsApi.rewind).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Edit prompt' })).toBeNull()
+    expect(screen.getByText('first prompt')).toBeTruthy()
+
+    fireEvent.click(await screen.findAllByRole('button', { name: 'Edit this prompt' }).then((buttons) => buttons[0]!))
+    fireEvent.keyDown(await screen.findByRole('textbox', { name: 'Edit prompt' }), { key: 'Escape' })
+    expect(sessionsApi.rewind).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Edit prompt' })).toBeNull()
+
+    fireEvent.click(await screen.findAllByRole('button', { name: 'Edit this prompt' }).then((buttons) => buttons[0]!))
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Edit prompt' }), {
+      target: { value: 'edited first prompt' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => {
+      expect(sessionsApi.rewind).toHaveBeenCalledWith(ACTIVE_TAB, {
+        userMessageIndex: 0,
+        expectedContent: 'first prompt',
+        restoreCode: false,
+      })
+    })
+    expect(reloadHistory).toHaveBeenCalledWith(ACTIVE_TAB)
+    expect(queueComposerPrefill).not.toHaveBeenCalled()
+    expect(sendMessage).toHaveBeenCalledWith(ACTIVE_TAB, 'edited first prompt', undefined, {
+      displayContent: 'edited first prompt',
+      displayAttachments: undefined,
+    })
+  })
+
   it('does not render cards for turns without file changes', async () => {
     vi.spyOn(sessionsApi, 'getTurnCheckpoints').mockResolvedValue({
       checkpoints: [

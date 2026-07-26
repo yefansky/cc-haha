@@ -3,6 +3,7 @@ import { wsManager } from '../api/websocket'
 import { sessionsApi } from '../api/sessions'
 import { useTeamStore } from './teamStore'
 import { useSessionStore } from './sessionStore'
+import { useSettingsStore } from './settingsStore'
 import { useCLITaskStore } from './cliTaskStore'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
 import { useTabStore } from './tabStore'
@@ -1357,7 +1358,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   setSessionPermissionMode: (sessionId, mode) => {
     const session = get().sessions[sessionId]
-    if (!session || session.chatState !== 'idle') return
+    if (!session) return
+    // The last explicit choice is also the default for subsequently opened sessions.
+    // The WebSocket/server defers application while a turn is still running.
+    void useSettingsStore.getState().setPermissionMode(mode)
     wsManager.send(sessionId, { type: 'set_permission_mode', mode })
   },
 

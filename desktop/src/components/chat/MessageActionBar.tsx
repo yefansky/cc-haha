@@ -1,4 +1,4 @@
-import { Check, Copy, GitFork } from 'lucide-react'
+import { Check, Copy, GitFork, Pencil } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { formatExactMessageTimestamp, formatMessageHoverTime } from '../../lib/formatMessageTimestamp'
 import { CopyButton } from '../shared/CopyButton'
@@ -9,10 +9,27 @@ export type MessageBranchAction = {
   onBranch: () => void
 }
 
+export type MessageEditAction = {
+  label: string
+  loading?: boolean
+  onEdit: () => void
+}
+
+export type MessageEditComposer = {
+  value: string
+  submitLabel: string
+  cancelLabel: string
+  submitting?: boolean
+  onChange: (value: string) => void
+  onSubmit: () => void
+  onCancel: () => void
+}
+
 type Props = {
   copyText?: string
   copyLabel: string
   branchAction?: MessageBranchAction
+  editAction?: MessageEditAction
   align?: 'start' | 'end'
   timestamp?: number
 }
@@ -21,6 +38,7 @@ export function MessageActionBar({
   copyText,
   copyLabel,
   branchAction,
+  editAction,
   align = 'start',
   timestamp,
 }: Props) {
@@ -33,7 +51,7 @@ export function MessageActionBar({
     ? formatExactMessageTimestamp(timestamp, locale)
     : ''
 
-  if (!hasCopy && !branchAction) return null
+  if (!hasCopy && !branchAction && !editAction) return null
 
   return (
     <div
@@ -53,6 +71,19 @@ export function MessageActionBar({
             onPointerUp={(event) => event.currentTarget.blur()}
             className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-brand)]/30 hover:bg-[var(--color-surface-container-low)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/35"
           />
+        ) : null}
+        {editAction ? (
+          <button
+            type="button"
+            onClick={editAction.onEdit}
+            disabled={editAction.loading}
+            aria-label={editAction.label}
+            title={editAction.label}
+            onPointerUp={(event) => event.currentTarget.blur()}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-brand)]/30 hover:bg-[var(--color-surface-container-low)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/35 disabled:cursor-wait disabled:opacity-60"
+          >
+            <Pencil size={13} strokeWidth={2.2} aria-hidden="true" />
+          </button>
         ) : null}
         {branchAction ? (
           <button

@@ -408,8 +408,11 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   const handleRuntimeSelect = (selection: RuntimeSelection) => {
     onRuntimeSelectionChange?.(selection)
     if (runtimeKey) {
-      useSessionRuntimeStore.getState().setSelection(runtimeKey, selection)
+      const runtimeStore = useSessionRuntimeStore.getState()
+      runtimeStore.setSelection(runtimeKey, selection)
       if (runtimeKey !== DRAFT_RUNTIME_SELECTION_KEY) {
+        // A session-specific switch is also the user's preference for the next window.
+        runtimeStore.setSelection(DRAFT_RUNTIME_SELECTION_KEY, selection)
         useChatStore.getState().setSessionRuntime(runtimeKey, selection)
       }
     }

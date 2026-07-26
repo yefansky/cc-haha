@@ -2998,7 +2998,7 @@ describe('chatStore history mapping', () => {
     expect(updateSessionPermissionModeMock).toHaveBeenCalledWith('session-1', 'acceptEdits')
   })
 
-  it('does not send permission mode updates while the session turn is active', () => {
+  it('queues permission mode updates while the session turn is active', () => {
     useChatStore.setState({
       sessions: {
         'session-1': makeSession({ chatState: 'thinking' }),
@@ -3007,7 +3007,7 @@ describe('chatStore history mapping', () => {
 
     useChatStore.getState().setSessionPermissionMode('session-1', 'acceptEdits')
 
-    expect(sendMock).not.toHaveBeenCalledWith('session-1', {
+    expect(sendMock).toHaveBeenCalledWith('session-1', {
       type: 'set_permission_mode',
       mode: 'acceptEdits',
     })

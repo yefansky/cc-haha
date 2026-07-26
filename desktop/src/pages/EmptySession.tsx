@@ -124,6 +124,7 @@ export function EmptySession() {
   const providers = useProviderStore((state) => state.providers)
   const activeProviderId = useProviderStore((state) => state.activeId)
   const [draftPermissionMode, setDraftPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
+  const [dismissedBypassWarning, setDismissedBypassWarning] = useState(false)
   const lastPluginReloadSummary = usePluginStore((state) => state.lastReloadSummary)
   const draftRuntimeSelection = useSessionRuntimeStore((state) => state.selections[DRAFT_RUNTIME_SELECTION_KEY])
   const draftRuntimeSelectionKey = draftRuntimeSelection
@@ -135,6 +136,10 @@ export function EmptySession() {
   useEffect(() => {
     textareaRef.current?.focus()
   }, [])
+
+  useEffect(() => {
+    setDismissedBypassWarning(false)
+  }, [draftPermissionMode])
 
   useEffect(() => {
     if (!plusMenuOpen) return
@@ -342,9 +347,6 @@ export function EmptySession() {
       )
       if (runtimeSelection) {
         runtimeStore.setSelection(sessionId, runtimeSelection)
-        if (explicitDraftSelection) {
-          runtimeStore.clearSelection(DRAFT_RUNTIME_SELECTION_KEY)
-        }
       }
       setActiveView('code')
       useTabStore.getState().openTab(sessionId, 'New Session')
@@ -741,6 +743,14 @@ export function EmptySession() {
                 <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
               )}
 
+              {draftPermissionMode === 'bypassPermissions' && !dismissedBypassWarning && (
+                <div className="mb-2 flex items-start gap-2 rounded-lg border border-[var(--color-error)]/45 bg-[var(--color-error-container)] px-3 py-2 text-xs text-[var(--color-on-error-container)]">
+                  <span className="material-symbols-outlined mt-0.5 text-[16px]" aria-hidden="true">warning</span>
+                  <span className="min-w-0 flex-1">{t('chat.bypassPermissionWarning')}</span>
+                  <button type="button" onClick={() => setDismissedBypassWarning(true)} aria-label={t('chat.dismissWarning')} className="material-symbols-outlined text-[16px]">close</button>
+                </div>
+              )}
+
               <div className="flex items-start gap-3">
                 <textarea
                   ref={textareaRef}
@@ -798,7 +808,10 @@ export function EmptySession() {
                     workDir={workDir}
                     compact={isMobileComposer}
                     value={draftPermissionMode}
-                    onChange={setDraftPermissionMode}
+                    onChange={(mode) => {
+                      setDraftPermissionMode(mode)
+                      void useSettingsStore.getState().setPermissionMode(mode)
+                    }}
                   />
                 </div>
 

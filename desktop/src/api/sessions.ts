@@ -485,6 +485,7 @@ export const sessionsApi = {
     targetUserMessageId?: string
     userMessageIndex?: number
     expectedContent?: string
+    restoreCode?: boolean
     dryRun?: boolean
   }) {
     return api.post<SessionRewindResponse>(`/api/sessions/${sessionId}/rewind`, body, {
