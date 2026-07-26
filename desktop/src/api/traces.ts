@@ -33,11 +33,15 @@ export const tracesApi = {
     return api.get<TraceCaptureSettings>('/api/traces/settings')
   },
 
-  updateSettings(settings: Partial<Pick<TraceCaptureSettings, 'enabled'>>) {
+  updateSettings(settings: Partial<Pick<TraceCaptureSettings, 'enabled' | 'fullBodies'>>) {
     return api.put<TraceCaptureSettings>('/api/traces/settings', settings)
   },
 
   deleteSession(sessionId: string) {
     return api.delete<TraceSessionDeleteResult>(`/api/traces/${encodeURIComponent(sessionId)}`)
+  },
+
+  exportSession(sessionId: string) {
+    return api.get<Record<string, unknown>>(`/api/traces/${encodeURIComponent(sessionId)}/export`)
   },
 }
