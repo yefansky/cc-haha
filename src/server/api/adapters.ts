@@ -7,16 +7,12 @@
 
 import { adapterService } from '../services/adapterService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
+import * as fs from 'node:fs/promises'
 import {
   pollWechatLoginWithQr,
   startWechatLoginWithQr,
   WECHAT_DEFAULT_BASE_URL,
 } from '../../../adapters/wechat/protocol.js'
-import {
-  logoutWhatsAppAuth,
-  pollWhatsAppLoginWithQr,
-  startWhatsAppLoginWithQr,
-} from '../../../adapters/whatsapp/protocol.js'
 import { loadConfig } from '../../../adapters/common/config.js'
 
 const ALLOWED_TOP_KEYS = new Set(['serverUrl', 'defaultProjectDir', 'telegram', 'feishu', 'wechat', 'dingtalk', 'whatsapp', 'pairing'])
@@ -40,6 +36,42 @@ const DINGTALK_REGISTRATION_BASE_URL =
   process.env.DINGTALK_REGISTRATION_BASE_URL?.trim() || 'https://oapi.dingtalk.com'
 const DINGTALK_REGISTRATION_SOURCE =
   process.env.DINGTALK_REGISTRATION_SOURCE?.trim() || 'DING_DWS_CLAW'
+
+type WhatsAppProtocol = {
+  logoutWhatsAppAuth: (authDir: string) => Promise<void>
+  pollWhatsAppLoginWithQr: (sessionKey: string) => Promise<{
+    connected: boolean
+    accountJid?: string
+    authDir?: string
+    qr?: string
+  }>
+  startWhatsAppLoginWithQr: (options: { authDir: string; force?: boolean }) => Promise<{
+    sessionKey: string
+    qr?: string
+  }>
+}
+
+// WhatsApp has a large optional dependency tree. Keep it out of the default
+// desktop server so users who never enable WhatsApp can still start locally.
+function importOptionalAdapterModule(modulePath: string): Promise<unknown> {
+  return import(modulePath)
+}
+
+async function loadWhatsAppProtocol(): Promise<WhatsAppProtocol> {
+  try {
+    return await importOptionalAdapterModule('../../../adapters/whatsapp/protocol.js') as WhatsAppProtocol
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    if (detail.includes('@whiskeysockets/baileys')) {
+      throw new ApiError(
+        503,
+        'WhatsApp adapter is not installed in this desktop build. It is optional and does not affect normal local use.',
+        'OPTIONAL_ADAPTER_UNAVAILABLE',
+      )
+    }
+    throw error
+  }
+}
 
 async function postDingtalkRegistration<T extends Record<string, unknown>>(
   path: string,
@@ -241,6 +273,7 @@ async function handleWechatAdaptersApi(req: Request, tail: string[]): Promise<Re
 
 async function handleWhatsAppAdaptersApi(req: Request, tail: string[]): Promise<Response> {
   if (req.method === 'POST' && tail[0] === 'login' && tail[1] === 'start') {
+    const { startWhatsAppLoginWithQr } = await loadWhatsAppProtocol()
     const config = loadConfig()
     const result = await startWhatsAppLoginWithQr({
       authDir: config.whatsapp.authDir,
@@ -253,6 +286,7 @@ async function handleWhatsAppAdaptersApi(req: Request, tail: string[]): Promise<
   }
 
   if (req.method === 'POST' && tail[0] === 'login' && tail[1] === 'poll') {
+    const { pollWhatsAppLoginWithQr } = await loadWhatsAppProtocol()
     const body = (await req.json()) as { sessionKey?: string }
     if (!body.sessionKey) throw ApiError.badRequest('Missing sessionKey')
     const result = await pollWhatsAppLoginWithQr({ sessionKey: body.sessionKey })
@@ -274,7 +308,7 @@ async function handleWhatsAppAdaptersApi(req: Request, tail: string[]): Promise<
 
   if (req.method === 'POST' && tail[0] === 'unbind') {
     const config = loadConfig()
-    await logoutWhatsAppAuth(config.whatsapp.authDir)
+    await fs.rm(config.whatsapp.authDir, { recursive: true, force: true })
     await adapterService.updateConfig({
       whatsapp: {
         accountJid: undefined,
