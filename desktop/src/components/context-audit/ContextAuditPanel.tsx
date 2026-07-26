@@ -434,10 +434,12 @@ function ReadableContent({ value, stripReadLineNumbers = false }: { value: unkno
  */
 function stripToolReadLineNumbers(text: string): string {
   const lines = text.split(/\r?\n/)
-  const numbered = lines.map((line) => /^(\d+)(?:\s(.*))?$/.exec(line))
-  const numberedCount = numbered.filter(Boolean).length
-  if (numberedCount < 3 || numberedCount / Math.max(lines.length, 1) < 0.7) return text
-  return numbered.map((match, index) => match ? (match[2] ?? '') : lines[index]!).join('\n')
+  // A single tool-result block can contain several files separated by labels,
+  // so a whole-block ratio is unreliable: a short Markdown table after a long
+  // prose preamble would keep its `12 | ...` prefixes and fail to render. This
+  // branch is only reached for the Read tool, whose protocol guarantees this
+  // leading source-line number on every returned source line.
+  return lines.map((line) => /^(\d+)(?:\s(.*))?$/.exec(line)?.[2] ?? line).join('\n')
 }
 
 function JsonValueView({ value, depth = 0 }: { value: unknown; depth?: number }) {

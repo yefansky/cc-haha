@@ -38,6 +38,14 @@ $env:DISABLE_TELEMETRY = '1'
 $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
 $env:NO_PROXY = 'localhost,127.0.0.1,::1'
 $env:no_proxy = $env:NO_PROXY
+# Make new Python-based tool output UTF-8 in both the PowerShell and Git Bash
+# tool paths.  This prevents avoidable Chinese-text corruption before auditing.
+if ([string]::IsNullOrWhiteSpace($env:PYTHONIOENCODING)) {
+  $env:PYTHONIOENCODING = 'utf-8'
+}
+if ([string]::IsNullOrWhiteSpace($env:PYTHONUTF8)) {
+  $env:PYTHONUTF8 = '1'
+}
 
 Write-Host 'Starting Claude Code Haha with API Trace enabled.' -ForegroundColor Cyan
 Write-Host "Isolated data directory: $DataDir" -ForegroundColor DarkCyan
@@ -50,6 +58,7 @@ try {
     (Join-Path $repoRoot 'src\services\api\traceCapture.ts'),
     (Join-Path $repoRoot 'src\server\api\sessions.ts'),
     (Join-Path $repoRoot 'src\server\api\traces.ts'),
+    (Join-Path $repoRoot 'src\utils\shell\bashProvider.ts'),
     (Join-Path $repoRoot 'src\utils\shell\powershellProvider.ts'),
     (Join-Path (Get-Location) 'scripts\build-sidecars.ts')
   )
