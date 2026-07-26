@@ -257,7 +257,6 @@ function ContextAuditCall({
             <span className="text-xs font-semibold text-[var(--color-text-primary)]">第 {callCount - newestIndex} 条上行</span>
             {activeCall.status === 'pending' ? <Status label="发送中" tone="warning" /> : null}
             {activeCall.status === 'error' || activeCall.error ? <Status label="失败" tone="error" /> : null}
-            {currentBody.isFull ? <Status label="完整" tone="success" /> : <Status label="预览" tone="muted" />}
           </span>
           <span className="mt-1 flex gap-2 overflow-hidden text-[10px] text-[var(--color-text-tertiary)]">
             <span>{formatDate(activeCall.startedAt)}</span>
@@ -328,7 +327,7 @@ function ContextAuditCall({
             <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">上行内容（脱敏）</summary>
             <div className="border-t border-[var(--color-border)] p-2.5">
               <div className="mb-2 flex items-center gap-2 text-[10px] text-[var(--color-text-tertiary)]">
-                <span>{currentBody.isFull ? '完整本地副本' : '仅有预览副本'}</span>
+                <span>{currentBody.isFull ? '完整本地原文' : '请求副本（未关联完整原文）'}</span>
                 {currentBody.file ? <span className="truncate font-mono">{currentBody.file}</span> : null}
                 <CopyButton text={currentBody.text} label="复制原文" copiedLabel="已复制" className="ml-auto shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 hover:text-[var(--color-text-primary)]" />
               </div>
@@ -353,12 +352,13 @@ function ContextAuditCall({
                 placeholder="例如：为什么没有执行 process.md 中的留痕要求？"
                 className="w-full resize-y rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-2 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
               />
+              {!currentBody.isFull ? <p className="text-[10px] leading-4 text-[var(--color-warning)]">当前上行没有关联到可复盘的完整原文，因此不能创建诊断会话；上方仍可阅读已保存的请求副本。</p> : null}
               {diagnosticError ? <p role="alert" className="text-[10px] text-[var(--color-error)]">{diagnosticError}</p> : null}
               <button
                 type="button"
                 onClick={() => void createDiagnosticSession()}
                 disabled={creatingDiagnostic || !currentBody.isFull}
-                title={currentBody.isFull ? undefined : '需要先成功保存这条完整的脱敏请求正文'}
+                title={currentBody.isFull ? undefined : '当前上行未关联完整原文；诊断会话需要它作为可复盘证据'}
                 className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2 py-1 text-[11px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {creatingDiagnostic ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />}
