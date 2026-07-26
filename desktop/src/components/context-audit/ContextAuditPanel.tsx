@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ChevronDown, Download, FileText, FolderOpen, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import { sessionsApi } from '../../api/sessions'
 import { tracesApi } from '../../api/traces'
 import { formatBytes } from '../../lib/formatBytes'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { parseTraceRequestBody } from '../../lib/trace/requestParse'
+import type { NormalizedBlock, NormalizedMessage } from '../../lib/trace/types'
 import type { TraceCallRecord, TraceRawBody, TraceSession } from '../../types/trace'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { CopyButton } from '../shared/CopyButton'
@@ -295,46 +296,41 @@ function ContextAuditCall({
 type JsonRecord = Record<string, unknown>
 
 function FormattedRequestView({ call, text }: { call: TraceCallRecord; text: string }) {
-  const request = useMemo(() => parseCapturedRequest(text, call.source), [call.source, text])
+  const request = useMemo(() => parseTraceRequestBody(text, call.source), [call.source, text])
   if (!request) {
     return <div className="rounded border border-dashed border-[var(--color-border)] p-2 text-[10px] text-[var(--color-text-tertiary)]">此请求不是可解析的 JSON；请在下方查看原始内容。</div>
   }
 
-  const system = request.system
-  const messages = Array.isArray(request.messages) ? request.messages : []
-  const tools = Array.isArray(request.tools) ? request.tools : []
-  const parameters = Object.fromEntries(Object.entries(request).filter(([key]) => !new Set(['system', 'messages', 'tools']).has(key)))
+  const toolNames = new Map<string, string>()
+  for (const message of request.messages) {
+    for (const block of message.content) {
+      if (block.type === 'tool_use' && block.id) toolNames.set(block.id, block.name)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-2">
-      {system !== undefined ? (
+      {request.system !== undefined ? (
         <details open className="rounded border border-[var(--color-border)]">
           <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">系统提示</summary>
-          <div className="border-t border-[var(--color-border)] p-2"><ReadableContent value={system} /></div>
+          <div className="border-t border-[var(--color-border)] p-2"><ReadableContent value={request.system} /></div>
         </details>
       ) : null}
       <details open className="rounded border border-[var(--color-border)]">
-        <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">消息链（{messages.length}）</summary>
+        <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">消息链（{request.messages.length}）</summary>
         <div className="flex flex-col gap-1.5 border-t border-[var(--color-border)] p-2">
-          {messages.map((message, index) => (
-            <details key={index} className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
-              <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-primary)]">
-                {index + 1}. {typeof message.role === 'string' ? message.role : 'message'} · {formatBytes(byteLength(contentToText(message.content)))}
-              </summary>
-              <div className="border-t border-[var(--color-border)] p-2"><ReadableContent value={message.content} /></div>
-            </details>
-          ))}
-          {messages.length === 0 ? <div className="text-[10px] text-[var(--color-text-tertiary)]">无消息</div> : null}
+          {request.messages.map((message, index) => <ContextMessageView key={index} message={message} index={index} toolNames={toolNames} />)}
+          {request.messages.length === 0 ? <div className="text-[10px] text-[var(--color-text-tertiary)]">无消息</div> : null}
         </div>
       </details>
-      {tools.length > 0 ? (
+      {request.tools.length > 0 ? (
         <details className="rounded border border-[var(--color-border)]">
-          <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">工具定义（{tools.length}）</summary>
+          <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">工具定义（{request.tools.length}）</summary>
           <div className="border-t border-[var(--color-border)] p-2">
-            {tools.map((tool, index) => (
+            {request.tools.map((tool, index) => (
               <details key={index} className="border-b border-[var(--color-border)]/70 py-1 last:border-b-0">
                 <summary className="cursor-pointer font-mono text-[10px] text-[var(--color-text-secondary)]">{toolName(tool, index)}</summary>
-                <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-surface-container-low)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{JSON.stringify(tool, null, 2)}</pre>
+                <div className="mt-1"><JsonValueView value={tool} /></div>
               </details>
             ))}
           </div>
@@ -342,8 +338,58 @@ function FormattedRequestView({ call, text }: { call: TraceCallRecord; text: str
       ) : null}
       <details className="rounded border border-[var(--color-border)]">
         <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">模型与参数</summary>
-        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words border-t border-[var(--color-border)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{JSON.stringify(parameters, null, 2)}</pre>
+        <div className="max-h-56 overflow-auto border-t border-[var(--color-border)] p-2"><JsonValueView value={request.params} /></div>
       </details>
+    </div>
+  )
+}
+
+const ROLE_LABELS: Record<NormalizedMessage['role'], string> = {
+  system: '系统',
+  user: '用户',
+  assistant: '助手',
+  tool: '工具',
+}
+
+function ContextMessageView({ message, index, toolNames }: { message: NormalizedMessage; index: number; toolNames: Map<string, string> }) {
+  const contentBytes = message.content.reduce((total, block) => total + byteLength(blockText(block)), 0)
+  return (
+    <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
+      <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-primary)]">
+        {index + 1}. {ROLE_LABELS[message.role]} · {message.content.length} 个内容块 · {formatBytes(contentBytes)}
+      </summary>
+      <div className="flex flex-col gap-2 border-t border-[var(--color-border)] p-2">
+        {message.content.map((block, blockIndex) => <ContextBlockView key={blockIndex} block={block} toolNames={toolNames} />)}
+      </div>
+    </details>
+  )
+}
+
+function ContextBlockView({ block, toolNames }: { block: NormalizedBlock; toolNames: Map<string, string> }) {
+  switch (block.type) {
+    case 'text':
+      return <ContentBlock label="文本 · Markdown / 表格 / Mermaid / 代码高亮"><ReadableContent value={block.text} /></ContentBlock>
+    case 'thinking':
+      return <ContentBlock label="推理内容"><ReadableContent value={block.thinking} /></ContentBlock>
+    case 'tool_use':
+      return <ContentBlock label={`工具调用 · ${block.name || '未命名工具'}`} meta={block.id}><JsonValueView value={block.input} /></ContentBlock>
+    case 'tool_result': {
+      const toolName = block.toolUseId ? toolNames.get(block.toolUseId) : undefined
+      return <ContentBlock label={`${block.isError ? '工具执行失败' : '工具执行回包'} · ${toolName ?? block.toolUseId ?? '未知工具'}`}><ReadableContent value={block.content} /></ContentBlock>
+    }
+    case 'image':
+      return <ContentBlock label={`图像内容${block.mediaType ? ` · ${block.mediaType}` : ''}`} />
+  }
+}
+
+function ContentBlock({ label, meta, children }: { label: string; meta?: string; children?: ReactNode }) {
+  return (
+    <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2">
+      <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[10px] font-medium text-[var(--color-text-secondary)]">
+        <span className="truncate">{label}</span>
+        {meta ? <span className="truncate font-mono text-[9px] font-normal text-[var(--color-text-tertiary)]">{meta}</span> : null}
+      </div>
+      {children}
     </div>
   )
 }
@@ -351,19 +397,91 @@ function FormattedRequestView({ call, text }: { call: TraceCallRecord; text: str
 function ReadableContent({ value }: { value: unknown }) {
   const text = contentToText(value)
   if (!text) return <span className="text-[10px] text-[var(--color-text-tertiary)]">（空）</span>
+  const parsedJson = tryParseJsonText(text)
+  if (parsedJson !== null) return <JsonValueView value={parsedJson} />
   if (text.length > 80_000) {
-    return <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-surface-container-low)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{text}</pre>
+    return <>
+      <EncodingNotice text={text} />
+      <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-surface-container-low)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{beautifyDisplayText(text)}</pre>
+    </>
   }
-  return <MarkdownRenderer content={text} variant="compact" cache={false} className="context-audit-markdown break-words text-xs leading-5" />
+  return <>
+    <EncodingNotice text={text} />
+    <MarkdownRenderer content={beautifyDisplayText(text)} variant="compact" cache={false} className="context-audit-markdown break-words text-xs leading-5" />
+  </>
 }
 
-function parseCapturedRequest(text: string, source: TraceCallRecord['source']): JsonRecord | null {
+function JsonValueView({ value, depth = 0 }: { value: unknown; depth?: number }) {
+  if (value === null) return <code className="font-mono text-[10px] text-[var(--color-text-tertiary)]">null</code>
+  if (typeof value === 'string') return <>
+    <EncodingNotice text={value} />
+    <code className="whitespace-pre-wrap break-words font-mono text-[10px] text-[var(--color-text-secondary)]">{beautifyDisplayText(value)}</code>
+  </>
+  if (typeof value === 'number' || typeof value === 'boolean') return <code className="font-mono text-[10px] text-[var(--color-info)]">{String(value)}</code>
+  if (value === undefined) return <code className="font-mono text-[10px] text-[var(--color-text-tertiary)]">undefined</code>
+
+  const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item] as const) : Object.entries(value as JsonRecord)
+  if (byteLength(safeJson(value)) > 96 * 1024) {
+    return <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-surface-container-low)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{safeJson(value)}</pre>
+  }
+  return (
+    <details open={depth < 1} className="rounded border border-[var(--color-border)]/70 bg-[var(--color-surface-container-low)] px-1.5 py-1">
+      <summary className="cursor-pointer font-mono text-[10px] text-[var(--color-text-secondary)]">
+        {Array.isArray(value) ? '数组' : '对象'} · {entries.length} 项
+      </summary>
+      <div className="mt-1.5 space-y-1 border-t border-[var(--color-border)]/60 pt-1.5">
+        {entries.map(([key, child]) => (
+          <div key={key} className="grid grid-cols-[minmax(72px,auto)_1fr] gap-x-2 text-[10px]">
+            <span className="truncate font-mono text-[var(--color-brand)]" title={key}>{key}</span>
+            <div className="min-w-0"><JsonValueView value={child} depth={depth + 1} /></div>
+          </div>
+        ))}
+      </div>
+    </details>
+  )
+}
+
+function EncodingNotice({ text }: { text: string }) {
+  const replacementCount = Array.from(text).filter((char) => char === '\ufffd').length
+  if (replacementCount === 0) return null
+  return (
+    <div className="mb-2 rounded border border-[var(--color-warning)]/50 bg-[var(--color-warning)]/10 px-2 py-1.5 text-[10px] leading-4 text-[var(--color-text-secondary)]">
+      检测到 {replacementCount} 个 “�”。这说明工具回包在进入审计前已经按错误编码解码，原始字节未保留，不能可靠地自动还原为 GBK；请让产生该回包的命令以 UTF-8 输出。原始 JSON 仍可用于确认损坏发生的位置。
+    </div>
+  )
+}
+
+function beautifyDisplayText(text: string): string {
+  // JSON.parse has already turned ordinary \n and \\ into real newlines and path separators.
+  // This only cleans the two escaped forms that sometimes arrive inside nested tool strings.
+  return text.replace(/\\\\/g, '\\').replace(/\\\//g, '/')
+}
+
+function tryParseJsonText(text: string): unknown | null {
+  const trimmed = text.trim()
+  if ((!trimmed.startsWith('{') && !trimmed.startsWith('[')) || trimmed.length > 2_000_000) return null
   try {
-    const parsed = JSON.parse(text) as unknown
-    if (!isJsonRecord(parsed)) return null
-    return source === 'proxy' && isJsonRecord(parsed.anthropic) ? parsed.anthropic : parsed
+    return JSON.parse(trimmed) as unknown
   } catch {
     return null
+  }
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2) ?? 'null'
+  } catch {
+    return String(value)
+  }
+}
+
+function blockText(block: NormalizedBlock): string {
+  switch (block.type) {
+    case 'text': return block.text
+    case 'thinking': return block.thinking
+    case 'tool_use': return safeJson(block.input)
+    case 'tool_result': return contentToText(block.content)
+    case 'image': return block.mediaType ?? '[image]'
   }
 }
 
