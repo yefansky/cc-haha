@@ -5,6 +5,19 @@ import type { LocalIndexStatus, SessionListItem, MessageEntry } from '../types/s
 import type { PermissionMode } from '../types/settings'
 import type { TraceCallRecord, TraceRawBody, TraceSession } from '../types/trace'
 
+export type TraceDiagnosticBundle = {
+  file: string
+  directory: string
+  workDir: string
+  prompt: string
+  source: {
+    sessionId: string
+    callId: string
+    rawRequestFile: string | null
+    comparisonRawRequestFile: string | null
+  }
+}
+
 export type SessionsResponse = {
   sessions: SessionListItem[]
   total: number
@@ -385,6 +398,17 @@ export const sessionsApi = {
   getTraceRawBody(sessionId: string, callId: string, direction: 'request' | 'response') {
     return api.get<TraceRawBody>(
       `/api/sessions/${sessionId}/trace/calls/${callId}/raw?direction=${direction}`,
+    )
+  },
+
+  createTraceDiagnosticBundle(
+    sessionId: string,
+    callId: string,
+    body: { question: string; comparisonCallId?: string },
+  ) {
+    return api.post<TraceDiagnosticBundle>(
+      `/api/sessions/${sessionId}/trace/calls/${callId}/diagnostic-bundle`,
+      body,
     )
   },
 

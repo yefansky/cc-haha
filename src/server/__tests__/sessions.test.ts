@@ -23,6 +23,7 @@ import { clearPluginCache } from '../../utils/plugins/pluginLoader.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import { updateSessionSlashCommands } from '../ws/handler.js'
 import { reduceTranscript } from '../services/localIndex/transcriptReducer.js'
+import { clearTraceCaptureStateForTests, traceCaptureService } from '../services/traceCaptureService.js'
 import { openLocalIndexDatabase } from '../services/localIndex/database.js'
 import { readSessionEntriesByLocator } from '../services/localIndex/sessionEntries.js'
 import {
@@ -3424,6 +3425,46 @@ describe('Sessions API', () => {
       state: expect.any(String),
     })
     expect(body.index?.lastErrorCode === null || typeof body.index?.lastErrorCode === 'string').toBe(true)
+  })
+
+  it('POST /api/sessions/:id/trace/calls/:callId/diagnostic-bundle writes a local evidence bundle', async () => {
+    const sessionId = 'trace-diagnostic-session'
+    const callId = 'trace-diagnostic-call'
+    process.env.CC_HAHA_TRACE_API_CALLS = '1'
+    try {
+      await traceCaptureService.recordCall({
+        id: callId,
+        sessionId,
+        source: 'anthropic',
+        model: 'test-model',
+        request: {
+          body: {
+            model: 'test-model',
+            system: 'system rule',
+            messages: [{ role: 'user', content: 'Please follow process.md' }],
+          },
+        },
+      })
+
+      const res = await fetch(
+        `${baseUrl}/api/sessions/${sessionId}/trace/calls/${callId}/diagnostic-bundle`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: 'Why was process.md ignored?' }),
+        },
+      )
+
+      expect(res.status).toBe(200)
+      const body = await res.json() as { file: string; workDir: string; prompt: string; source: { rawRequestFile: string | null } }
+      expect(body.workDir).toContain('cc-haha')
+      expect(body.source.rawRequestFile).not.toBeNull()
+      expect(body.prompt).toContain(body.file)
+      expect(await fs.readFile(body.file, 'utf-8')).toContain('Why was process.md ignored?')
+    } finally {
+      clearTraceCaptureStateForTests()
+      delete process.env.CC_HAHA_TRACE_API_CALLS
+    }
   })
 
   it('POST /api/sessions should create a session', async () => {

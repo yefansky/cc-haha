@@ -68,6 +68,24 @@ export type TraceRawBody = {
   file: string
 }
 
+/**
+ * A local-only handoff for analysing one captured upstream request in a
+ * separate cc-haha session. The bundle deliberately references the already
+ * redacted raw payload instead of copying it again.
+ */
+export type TraceDiagnosticBundle = {
+  file: string
+  directory: string
+  workDir: string
+  prompt: string
+  source: {
+    sessionId: string
+    callId: string
+    rawRequestFile: string | null
+    comparisonRawRequestFile: string | null
+  }
+}
+
 export type TraceCallStatus = 'pending' | 'ok' | 'error'
 
 export type TraceEventSeverity = 'info' | 'warning' | 'error'
@@ -553,6 +571,78 @@ class TraceCaptureService {
     const snapshot = direction === 'request' ? call.request.body : call.response?.body
     if (!snapshot?.fullCapture) return null
     return readFullTraceBody(snapshot.fullCapture.file)
+  }
+
+  async createDiagnosticBundle(input: {
+    sessionId: string
+    callId: string
+    question: string
+    comparisonCallId?: string
+  }): Promise<TraceDiagnosticBundle | null> {
+    const call = await this.getSessionTraceCall(input.sessionId, input.callId)
+    if (!call) return null
+
+    const comparison = input.comparisonCallId
+      ? await this.getSessionTraceCall(input.sessionId, input.comparisonCallId)
+      : null
+    const context = currentTraceScopeContext()
+    const directory = join(context.storageDir, 'diagnostics', sanitizeTraceFileName(input.sessionId))
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const file = join(directory, `${timestamp}-${sanitizeTraceFileName(input.callId)}.md`)
+    const rawRequestFile = call.request.body.fullCapture
+      ? join(context.storageDir, call.request.body.fullCapture.file)
+      : null
+    const comparisonRawRequestFile = comparison?.request.body.fullCapture
+      ? join(context.storageDir, comparison.request.body.fullCapture.file)
+      : null
+    const question = input.question.trim() || '请判断这次上行为什么可能没有遵照项目规则，并给出有证据的结论。'
+    const bundle = [
+      '# cc-haha 上下文审计诊断包',
+      '',
+      '此文件仅引用本机已脱敏的审计原文；不要把其中内容外发。',
+      '',
+      '## 待诊断问题',
+      question,
+      '',
+      '## 来源',
+      `- 来源会话：${input.sessionId}`,
+      `- 上行调用：${input.callId}`,
+      `- 调用时间：${call.startedAt}`,
+      `- 模型：${call.model ?? 'unknown'}`,
+      `- 原始请求正文（完整、脱敏）：${rawRequestFile ?? '未保存完整正文，不能据此做完整诊断'}`,
+      `- 对比上行：${input.comparisonCallId ?? '未选择'}`,
+      `- 对比请求正文（完整、脱敏）：${comparisonRawRequestFile ?? '未保存或未选择'}`,
+      '',
+      '## 诊断要求',
+      '1. 先读取本诊断包和来源请求 JSON；不要根据聊天摘要臆测。',
+      '2. 区分事实、合理推断和无法判断；引用 JSON 中的 message 序号、role、工具调用或 Read 回包作为证据。',
+      '3. 检查四件套（process.md、design.md、任务范围.md、任务指标.md）是否实际出现在本次上行，是否有更新或相对上一条缺失。',
+      '4. 若需要比较，只读取这里列出的相邻请求，不要修改来源项目文件。',
+      '5. 缓存只能在响应 usage 有 cache_read_input_tokens / cache_creation_input_tokens 时确认；相同前缀只是候选。',
+      '6. 给出可验证的项目大脑编排调整建议，并说明下一次应观察什么审计信号。',
+      '',
+    ].join('\n')
+
+    await fs.mkdir(directory, { recursive: true })
+    await fs.writeFile(file, bundle, 'utf-8')
+    return {
+      file,
+      directory,
+      // Trace storage is the diagnostic session's only workspace, keeping
+      // diagnosis separate from the source project working copy.
+      workDir: context.storageDir,
+      prompt: [
+        '请作为上下文审计诊断 agent 工作。只读分析，不修改来源项目文件，也不要外发审计内容。',
+        `先读取诊断包：${file}`,
+        '按包中的证据要求完成诊断；如需更多证据，只比较包中列出的相邻上行。',
+      ].join('\n'),
+      source: {
+        sessionId: input.sessionId,
+        callId: input.callId,
+        rawRequestFile,
+        comparisonRawRequestFile,
+      },
+    }
   }
 
   async exportSessionTrace(sessionId: string): Promise<Record<string, unknown>> {

@@ -27,6 +27,7 @@ export type {
   TraceCallStatus,
   TraceCallRecord,
   TraceCallUsage,
+  TraceDiagnosticBundle,
   TraceEventRecord,
   TraceEventSeverity,
   TraceProviderInfo,
