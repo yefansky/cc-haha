@@ -12,9 +12,16 @@ export const WORKSPACE_PANEL_MIN_WIDTH = 420
 export const WORKSPACE_PANEL_MAX_WIDTH = 1120
 
 export type WorkspacePanelView = 'changed' | 'all'
-export type WorkbenchMode = 'workspace' | 'browser' | 'context-audit'
+export type WorkbenchMode = 'workspace' | 'browser' | 'context-audit' | 'review'
 export type WorkspacePreviewKind = 'file' | 'diff'
 export type WorkspacePreviewCloseScope = 'current' | 'others' | 'left' | 'right' | 'all'
+export type WorkspaceDiffSource =
+  | { kind: 'workspace' }
+  | {
+      kind: 'turn'
+      targetUserMessageId: string
+      userMessageIndex: number
+    }
 export type WorkspacePanelOrigin = {
   sourceTurnKey: string
   sourceElementId: string
@@ -35,6 +42,7 @@ export type WorkspacePreviewTab = {
   mimeType?: string
   previewType?: 'text' | 'image'
   diff?: string
+  diffSource?: WorkspaceDiffSource
   state?: WorkspacePreviewState
   error?: string
   size?: number
@@ -94,7 +102,13 @@ type WorkspacePanelStore = {
   loadStatus: (sessionId: string) => Promise<void>
   loadTree: (sessionId: string, path?: string) => Promise<void>
   toggleTreeNode: (sessionId: string, path: string) => Promise<void>
-  openPreview: (sessionId: string, path: string, kind: WorkspacePreviewKind, origin?: WorkspacePanelOrigin) => Promise<void>
+  openPreview: (
+    sessionId: string,
+    path: string,
+    kind: WorkspacePreviewKind,
+    origin?: WorkspacePanelOrigin,
+    diffSource?: WorkspaceDiffSource,
+  ) => Promise<void>
   closePreview: (sessionId: string, tabId: string) => void
   closePreviewTabs: (sessionId: string, tabId: string, scope: WorkspacePreviewCloseScope) => void
   clearSession: (sessionId: string) => void
@@ -172,8 +186,13 @@ function makeTreeKey(sessionId: string, path: string) {
   return `${sessionId}::${path}`
 }
 
-export function getWorkspacePreviewTabId(path: string, kind: WorkspacePreviewKind) {
-  return `${kind}:${path}`
+export function getWorkspacePreviewTabId(
+  path: string,
+  kind: WorkspacePreviewKind,
+  diffSource: WorkspaceDiffSource = { kind: 'workspace' },
+) {
+  if (kind !== 'diff' || diffSource.kind === 'workspace') return `${kind}:${path}`
+  return `${kind}:${path}:turn:${diffSource.targetUserMessageId}`
 }
 
 function makePreviewKey(sessionId: string, tabId: string) {
@@ -512,7 +531,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     }
   },
 
-  openPreview: async (sessionId, path, kind, origin) => {
+  openPreview: async (sessionId, path, kind, origin, diffSource = { kind: 'workspace' }) => {
     // Ensure the workspace panel is visible — openPreview is now triggered from places
     // where the panel may be closed (e.g. the chat "打开方式" menu / turn-changes card),
     // not only from inside the already-open file tree. Opening a file always switches the
@@ -527,7 +546,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         },
       }))
     }
-    const tabId = getWorkspacePreviewTabId(path, kind)
+    const tabId = getWorkspacePreviewTabId(path, kind, diffSource)
     const requestKey = makePreviewKey(sessionId, tabId)
     const existing = get().previewTabsBySession[sessionId]?.find((tab) => tab.id === tabId)
 
@@ -564,6 +583,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         path,
         kind,
         title: getPathTitle(path),
+        ...(kind === 'diff' ? { diffSource } : {}),
         state: 'loading',
       }
 
@@ -599,7 +619,14 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
 
     try {
       if (kind === 'diff') {
-        const result = await sessionsApi.getWorkspaceDiff(sessionId, path)
+        const result = diffSource.kind === 'turn'
+          ? await sessionsApi.getTurnCheckpointDiff(
+              sessionId,
+              diffSource.targetUserMessageId,
+              path,
+              diffSource.userMessageIndex,
+            )
+          : await sessionsApi.getWorkspaceDiff(sessionId, path)
         if (!isLatestRequest(previewRequestIds, requestKey, requestId)) return
         if (!get().previewTabsBySession[sessionId]?.some((tab) => tab.id === tabId)) return
 
@@ -615,6 +642,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
                 : upsertPreviewTab(tabs, tabId, (tab) => ({
                     ...tab,
                     diff: result.diff ?? '',
+                    diffSource,
                     content: undefined,
                     language: undefined,
                     size: undefined,

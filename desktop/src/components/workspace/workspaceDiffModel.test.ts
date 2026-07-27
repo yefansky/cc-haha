@@ -62,6 +62,23 @@ describe('parseWorkspaceDiff', () => {
     expect(file.rows[3]).toMatchObject({ newLine: 1, side: 'new', selectable: true })
   })
 
+  it('normalizes SVN revision suffixes in file headers', () => {
+    const file = parseWorkspaceDiff([
+      'Index: src/a.ts',
+      '===================================================================',
+      '--- src/a.ts (revision 12)',
+      '+++ src/a.ts (working copy)',
+      '@@ -1 +1 @@',
+      '-before',
+      '+after',
+    ].join('\n'))[0]!
+
+    expect({ oldPath: file.oldPath, newPath: file.newPath }).toEqual({
+      oldPath: 'src/a.ts',
+      newPath: 'src/a.ts',
+    })
+  })
+
   it('treats hunk content beginning with file-header markers as code', () => {
     const file = parseWorkspaceDiff([
       'diff --git a/docs/a.md b/docs/a.md',
