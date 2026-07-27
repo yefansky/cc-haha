@@ -122,6 +122,14 @@ export type WorkspaceDiffResult = {
   error?: string
 }
 
+export type WorkspaceWriteResult = {
+  state: 'ok' | 'conflict' | 'missing' | 'binary' | 'error'
+  path: string
+  content?: string
+  size?: number
+  error?: string
+}
+
 type StatusEntry = {
   path: string
   oldPath?: string
@@ -152,6 +160,11 @@ type GitRepoInfo =
       kind: 'error'
       message: string
     }
+
+type SvnWorkspaceInfo =
+  | { kind: 'not_svn_workspace' }
+  | { kind: 'ok'; workspaceRoot: string }
+  | { kind: 'error'; message: string }
 
 type WorkspacePathResolution = {
   requestedPath: string
@@ -258,6 +271,7 @@ export class WorkspaceService {
     if (stat.kind === 'missing' || !stat.stat.isDirectory()) {
       throw new Error(`Additional workspace folder is missing or not a directory: ${rootPath}`)
     }
+
     if (stat.kind === 'error') throw new Error(stat.message)
     registerFilesystemAccessRoot(absolutePath)
     return absolutePath
@@ -303,6 +317,25 @@ export class WorkspaceService {
     )
 
     if (repoInfo.kind === 'not_git_repo') {
+      const svnInfo = await this.getSvnWorkspaceInfo(workDir)
+      if (svnInfo.kind === 'ok') {
+        return await this.getSvnStatus(
+          workspaceInfo,
+          svnInfo.workspaceRoot,
+          sessionChanges,
+        )
+      }
+      if (svnInfo.kind === 'error') {
+        return {
+          state: 'error',
+          workDir,
+          repoName: null,
+          branch: null,
+          isGitRepo: false,
+          changedFiles: [],
+          error: svnInfo.message,
+        }
+      }
       sessionChanges.sort((a, b) => a.path.localeCompare(b.path))
       return {
         state: 'ok',
@@ -507,6 +540,162 @@ export class WorkspaceService {
     }
   }
 
+  /**
+   * Applies an explicit user review edit. `expectedContent` is an optimistic
+   * concurrency guard: review actions must not overwrite a file the user or
+   * another agent changed after the diff was rendered.
+   */
+  async writeTextFile(
+    sessionId: string,
+    filePath: string,
+    expectedContent: string | null,
+    content: string | null,
+  ): Promise<WorkspaceWriteResult> {
+    let resolvedPath: WorkspacePathResolution
+    try {
+      resolvedPath = await this.resolveWorkspacePath(sessionId, filePath)
+    } catch (error) {
+      return {
+        state: 'error',
+        path: this.normalizeRequestedPath(filePath),
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+
+    const current = await this.readTextFileForWrite(resolvedPath.absolutePath)
+    if (current.kind === 'error') {
+      return { state: 'error', path: resolvedPath.relativePath, error: current.message }
+    }
+    if (current.kind === 'binary') {
+      return { state: 'binary', path: resolvedPath.relativePath }
+    }
+    if (current.content !== expectedContent) {
+      return {
+        state: 'conflict',
+        path: resolvedPath.relativePath,
+        error: 'The file changed after this review was opened. Refresh the diff and try again.',
+      }
+    }
+
+    try {
+      if (content === null) {
+        if (current.content === null) return { state: 'missing', path: resolvedPath.relativePath }
+        await fs.unlink(resolvedPath.absolutePath)
+        return { state: 'ok', path: resolvedPath.relativePath }
+      }
+
+      if (current.content === null) {
+        return {
+          state: 'missing',
+          path: resolvedPath.relativePath,
+          error: 'The file no longer exists. Refresh the workspace before editing.',
+        }
+      }
+
+      await fs.writeFile(resolvedPath.absolutePath, content, 'utf8')
+      return {
+        state: 'ok',
+        path: resolvedPath.relativePath,
+        content,
+        size: Buffer.byteLength(content),
+      }
+    } catch (error) {
+      return {
+        state: 'error',
+        path: resolvedPath.relativePath,
+        error: this.formatFsError('Failed to write workspace file', resolvedPath.absolutePath, error),
+      }
+    }
+  }
+
+  /** Restores a whole reviewed file to its VCS or session-snapshot baseline. */
+  async revertFile(
+    sessionId: string,
+    filePath: string,
+    expectedContent: string | null,
+  ): Promise<WorkspaceWriteResult> {
+    let resolvedPath: WorkspacePathResolution
+    try {
+      resolvedPath = await this.resolveWorkspacePath(sessionId, filePath)
+    } catch (error) {
+      return {
+        state: 'error',
+        path: this.normalizeRequestedPath(filePath),
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+    const current = await this.readTextFileForWrite(resolvedPath.absolutePath)
+    if (current.kind === 'error') return { state: 'error', path: resolvedPath.relativePath, error: current.message }
+    if (current.kind === 'binary') return { state: 'binary', path: resolvedPath.relativePath }
+    if (current.content !== expectedContent) {
+      return {
+        state: 'conflict',
+        path: resolvedPath.relativePath,
+        error: 'The file changed after this review was opened. Refresh the diff and try again.',
+      }
+    }
+
+    const gitInfo = await this.getGitRepoInfo(resolvedPath.workspaceRoot)
+    if (gitInfo.kind === 'ok') {
+      const repoPath = this.toRepoRelativePath(gitInfo.repoRoot, resolvedPath.canonicalTargetPath)
+      const statusEntries = await this.getStatusEntries(gitInfo.repoRoot)
+      if (statusEntries.kind === 'error') return { state: 'error', path: resolvedPath.relativePath, error: statusEntries.message }
+      const entry = statusEntries.entries.find((candidate) => candidate.path === repoPath || candidate.oldPath === repoPath)
+      if (!entry) return { state: 'missing', path: resolvedPath.relativePath }
+      if (entry.status === 'untracked') {
+        if (current.content !== null) await fs.unlink(resolvedPath.absolutePath)
+        return { state: 'ok', path: resolvedPath.relativePath }
+      }
+      const result = await this.runGit(gitInfo.repoRoot, ['restore', '--source=HEAD', '--staged', '--worktree', '--', repoPath])
+      if (result.code !== 0) {
+        return { state: 'error', path: resolvedPath.relativePath, error: this.formatGitError('Failed to revert reviewed file', ['restore', '--source=HEAD', '--staged', '--worktree', '--', repoPath], gitInfo.repoRoot, result) }
+      }
+      return await this.readWrittenTextResult(resolvedPath)
+    }
+
+    const svnInfo = gitInfo.kind === 'not_git_repo'
+      ? await this.getSvnWorkspaceInfo(resolvedPath.workspaceRoot)
+      : { kind: 'not_svn_workspace' as const }
+    if (svnInfo.kind === 'ok') {
+      const repoPath = this.toRepoRelativePath(svnInfo.workspaceRoot, resolvedPath.canonicalTargetPath)
+      const entries = await this.getSvnStatusEntries(svnInfo.workspaceRoot)
+      if (entries.kind === 'error') return { state: 'error', path: resolvedPath.relativePath, error: entries.message }
+      const entry = entries.entries.find((candidate) => candidate.path === repoPath)
+      if (!entry) return { state: 'missing', path: resolvedPath.relativePath }
+      if (entry.status === 'untracked') {
+        if (current.content !== null) await fs.unlink(resolvedPath.absolutePath)
+        return { state: 'ok', path: resolvedPath.relativePath }
+      }
+      const result = await this.runSvn(svnInfo.workspaceRoot, ['revert', '--', repoPath])
+      if (result.code !== 0) {
+        return { state: 'error', path: resolvedPath.relativePath, error: this.formatSvnError('Failed to revert reviewed file', ['revert', '--', repoPath], svnInfo.workspaceRoot, result) }
+      }
+      return await this.readWrittenTextResult(resolvedPath)
+    }
+
+    const snapshots = await this.resolveSessionFileHistorySnapshots(sessionId).catch(() => [])
+    const trackingPath = [...this.collectFileHistoryTrackedPaths(snapshots)].find((candidate) => (
+      this.resolveFileHistoryRelativePath(candidate, resolvedPath.workspaceRoot) === resolvedPath.relativePath
+    ))
+    if (!trackingPath) return { state: 'missing', path: resolvedPath.relativePath }
+    const baseline = await this.readFileHistoryBackupContent(
+      sessionId,
+      this.getEarliestFileHistoryBackupName(trackingPath, snapshots),
+    )
+    if (baseline === undefined) return { state: 'missing', path: resolvedPath.relativePath }
+    try {
+      if (baseline === null) {
+        if (current.content !== null) await fs.unlink(resolvedPath.absolutePath)
+        return { state: 'ok', path: resolvedPath.relativePath }
+      }
+      await fs.mkdir(path.dirname(resolvedPath.absolutePath), { recursive: true })
+      await fs.writeFile(resolvedPath.absolutePath, baseline, 'utf8')
+      return { state: 'ok', path: resolvedPath.relativePath, content: baseline, size: Buffer.byteLength(baseline) }
+    } catch (error) {
+      return { state: 'error', path: resolvedPath.relativePath, error: this.formatFsError('Failed to revert reviewed file', resolvedPath.absolutePath, error) }
+    }
+  }
+
   async readTree(
     sessionId: string,
     treePath = '',
@@ -594,6 +783,17 @@ export class WorkspaceService {
 
     const repoInfo = await this.getGitRepoInfo(resolvedPath.workspaceRoot)
     if (repoInfo.kind === 'not_git_repo') {
+      const svnInfo = await this.getSvnWorkspaceInfo(resolvedPath.workspaceRoot)
+      if (svnInfo.kind === 'ok') {
+        return await this.getSvnDiff(sessionId, resolvedPath, svnInfo.workspaceRoot)
+      }
+      if (svnInfo.kind === 'error') {
+        return {
+          state: 'error',
+          path: resolvedPath.relativePath,
+          error: svnInfo.message,
+        }
+      }
       const storedDiff = await this.getStoredWorkspaceDiff(
         sessionId,
         resolvedPath.workspaceRoot,
@@ -703,14 +903,17 @@ export class WorkspaceService {
     workspaceRoot: string,
     relativePath: string,
   ): Promise<string | null> {
-    const sessionDiff = await this.getSessionDiff(sessionId, relativePath)
-    if (sessionDiff) return sessionDiff
-
-    return await this.getFileHistoryDiff(
+    // A checkpoint baseline represents the accumulated session result. Prefer it
+    // to concatenated tool patches, which can show stale intermediate edits when
+    // a file was modified more than once without a VCS commit.
+    const fileHistoryDiff = await this.getFileHistoryDiff(
       sessionId,
       workspaceRoot,
       relativePath,
     )
+    if (fileHistoryDiff) return fileHistoryDiff
+
+    return await this.getSessionDiff(sessionId, relativePath)
   }
 
   private async getSessionDiff(
@@ -912,6 +1115,38 @@ export class WorkspaceService {
       return content.toString('utf8')
     } catch {
       return null
+    }
+  }
+
+  private async readTextFileForWrite(filePath: string): Promise<
+    | { kind: 'ok'; content: string | null }
+    | { kind: 'binary' }
+    | { kind: 'error'; message: string }
+  > {
+    try {
+      const content = await fs.readFile(filePath)
+      if (content.includes(0)) return { kind: 'binary' }
+      return { kind: 'ok', content: content.toString('utf8') }
+    } catch (error) {
+      const maybeError = error as NodeJS.ErrnoException
+      if (maybeError.code === 'ENOENT') return { kind: 'ok', content: null }
+      return {
+        kind: 'error',
+        message: this.formatFsError('Failed to read workspace file', filePath, error),
+      }
+    }
+  }
+
+  private async readWrittenTextResult(resolvedPath: WorkspacePathResolution): Promise<WorkspaceWriteResult> {
+    const result = await this.readTextFileForWrite(resolvedPath.absolutePath)
+    if (result.kind === 'error') return { state: 'error', path: resolvedPath.relativePath, error: result.message }
+    if (result.kind === 'binary') return { state: 'binary', path: resolvedPath.relativePath }
+    if (result.content === null) return { state: 'ok', path: resolvedPath.relativePath }
+    return {
+      state: 'ok',
+      path: resolvedPath.relativePath,
+      content: result.content,
+      size: Buffer.byteLength(result.content),
     }
   }
 
@@ -1419,6 +1654,184 @@ export class WorkspaceService {
     }
   }
 
+  private async getSvnWorkspaceInfo(workDir: string): Promise<SvnWorkspaceInfo> {
+    const result = await this.runSvn(workDir, ['info', '--show-item', 'wc-root'])
+    if (result.code !== 0) {
+      const details = `${result.stderr}\n${result.stdout}`.toLowerCase()
+      if (!details || details.includes('not a working copy') || details.includes('is not a working copy')) {
+        return { kind: 'not_svn_workspace' }
+      }
+      return {
+        kind: 'error',
+        message: this.formatSvnError('Failed to inspect SVN workspace', ['info', '--show-item', 'wc-root'], workDir, result),
+      }
+    }
+    const reportedRoot = result.stdout.trim()
+    if (!reportedRoot) return { kind: 'not_svn_workspace' }
+    try {
+      return { kind: 'ok', workspaceRoot: await fs.realpath(path.resolve(reportedRoot)) }
+    } catch (error) {
+      return {
+        kind: 'error',
+        message: this.formatFsError('Failed to canonicalize SVN workspace root', path.resolve(reportedRoot), error),
+      }
+    }
+  }
+
+  private async getSvnStatus(
+    workspaceInfo: { workspaceRoot: string; canonicalWorkspaceRoot: string },
+    svnRoot: string,
+    sessionChanges: SessionFileChange[],
+  ): Promise<WorkspaceStatusResult> {
+    const statusEntries = await this.getSvnStatusEntries(svnRoot)
+    if (statusEntries.kind === 'error') {
+      return {
+        state: 'error',
+        workDir: workspaceInfo.workspaceRoot,
+        repoName: path.basename(svnRoot),
+        branch: null,
+        isGitRepo: false,
+        changedFiles: [],
+        error: statusEntries.message,
+      }
+    }
+    const scopedEntries = this.scopeStatusEntries(
+      statusEntries.entries,
+      svnRoot,
+      workspaceInfo.canonicalWorkspaceRoot,
+    )
+    const changedFiles = await Promise.all(scopedEntries.map(async (entry) => {
+      const stats = entry.status === 'untracked'
+        ? await this.getUntrackedStats(entry.absolutePath)
+        : await this.getSvnDiffStats(svnRoot, entry.repoPath)
+      if (stats.kind === 'error') throw new Error(stats.message)
+      return {
+        path: entry.path,
+        oldPath: entry.oldPath,
+        status: entry.status,
+        additions: stats.additions,
+        deletions: stats.deletions,
+      } satisfies WorkspaceChangedFile
+    })).catch((error) => error as Error)
+
+    if (changedFiles instanceof Error) {
+      return {
+        state: 'error',
+        workDir: workspaceInfo.workspaceRoot,
+        repoName: path.basename(svnRoot),
+        branch: null,
+        isGitRepo: false,
+        changedFiles: [],
+        error: changedFiles.message,
+      }
+    }
+
+    const changedFileByPath = new Map(changedFiles.map((file) => [file.path, file]))
+    for (const change of sessionChanges) {
+      if (!changedFileByPath.has(change.path)) {
+        changedFileByPath.set(change.path, {
+          path: change.path,
+          oldPath: change.oldPath,
+          status: change.status,
+          additions: change.additions,
+          deletions: change.deletions,
+        })
+      }
+    }
+    return {
+      state: 'ok',
+      workDir: workspaceInfo.workspaceRoot,
+      repoName: path.basename(svnRoot),
+      branch: null,
+      isGitRepo: false,
+      changedFiles: [...changedFileByPath.values()].sort((left, right) => left.path.localeCompare(right.path)),
+    }
+  }
+
+  private async getSvnDiff(
+    sessionId: string,
+    resolvedPath: WorkspacePathResolution,
+    svnRoot: string,
+  ): Promise<WorkspaceDiffResult> {
+    const statusEntries = await this.getSvnStatusEntries(svnRoot)
+    if (statusEntries.kind === 'error') {
+      return { state: 'error', path: resolvedPath.relativePath, error: statusEntries.message }
+    }
+    const scopedEntries = this.scopeStatusEntries(
+      statusEntries.entries,
+      svnRoot,
+      resolvedPath.canonicalWorkspaceRoot,
+    )
+    const repoPath = this.toRepoRelativePath(svnRoot, resolvedPath.canonicalTargetPath)
+    const entry = scopedEntries.find((candidate) => candidate.repoPath === repoPath)
+    if (!entry) {
+      const storedDiff = await this.getStoredWorkspaceDiff(sessionId, resolvedPath.workspaceRoot, resolvedPath.relativePath)
+      return storedDiff
+        ? { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+        : { state: 'missing', path: resolvedPath.relativePath }
+    }
+    if (entry.status === 'untracked') {
+      const diff = await this.buildUntrackedDiff(entry.absolutePath, entry.path)
+      return diff.kind === 'ok'
+        ? { state: 'ok', path: resolvedPath.relativePath, diff: diff.diff }
+        : diff.kind === 'missing'
+          ? { state: 'missing', path: resolvedPath.relativePath }
+          : { state: 'error', path: resolvedPath.relativePath, error: diff.message }
+    }
+    const diff = await this.runSvnDiff(svnRoot, entry.repoPath)
+    if (diff.kind === 'error') return { state: 'error', path: resolvedPath.relativePath, error: diff.message }
+    return diff.diff.trim()
+      ? { state: 'ok', path: resolvedPath.relativePath, diff: diff.diff }
+      : { state: 'missing', path: resolvedPath.relativePath }
+  }
+
+  private async getSvnStatusEntries(
+    workspaceRoot: string,
+  ): Promise<{ kind: 'ok'; entries: StatusEntry[] } | { kind: 'error'; message: string }> {
+    const result = await this.runSvn(workspaceRoot, ['status', '--xml', '--no-ignore'])
+    if (result.code !== 0) {
+      return {
+        kind: 'error',
+        message: this.formatSvnError('Failed to read SVN status', ['status', '--xml', '--no-ignore'], workspaceRoot, result),
+      }
+    }
+    const entries: StatusEntry[] = []
+    const entryPattern = /<entry\s+path="([^"]+)">[\s\S]*?<wc-status\s+([^>]+)(?:\/>|>[\s\S]*?<\/wc-status>)[\s\S]*?<\/entry>/g
+    for (const match of result.stdout.matchAll(entryPattern)) {
+      const rawPath = this.decodeXmlAttribute(match[1] ?? '')
+      const attributes = match[2] ?? ''
+      const item = /\bitem="([^"]+)"/.exec(attributes)?.[1] ?? ''
+      const props = /\bprops="([^"]+)"/.exec(attributes)?.[1] ?? ''
+      const status = this.parseSvnStatus(item, props)
+      if (!status) continue
+      entries.push({
+        path: this.normalizeRelativePath(rawPath),
+        code: item,
+        status,
+      })
+    }
+    return { kind: 'ok', entries }
+  }
+
+  private parseSvnStatus(item: string, props: string): WorkspaceFileStatus | null {
+    if (item === 'unversioned') return 'untracked'
+    if (item === 'added') return 'added'
+    if (item === 'deleted' || item === 'missing') return 'deleted'
+    if (item === 'replaced') return 'renamed'
+    if (item === 'modified' || props === 'modified') return 'modified'
+    if (item === 'conflicted') return 'unknown'
+    return null
+  }
+
+  private decodeXmlAttribute(value: string): string {
+    return value
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+  }
+
   private async getStatusEntries(
     workDir: string,
   ): Promise<{ kind: 'ok'; entries: StatusEntry[] } | { kind: 'error'; message: string }> {
@@ -1665,6 +2078,37 @@ export class WorkspaceService {
     return { kind: 'ok', diff: result.stdout }
   }
 
+  private async getSvnDiffStats(workspaceRoot: string, relativePath: string): Promise<DiffStatsResult> {
+    const result = await this.runSvn(workspaceRoot, ['diff', '--', relativePath])
+    if (result.code !== 0) {
+      return {
+        kind: 'error',
+        message: this.formatSvnError('Failed to read SVN diff stats', ['diff', '--', relativePath], workspaceRoot, result),
+      }
+    }
+    let additions = 0
+    let deletions = 0
+    for (const line of result.stdout.split('\n')) {
+      if (line.startsWith('+') && !line.startsWith('+++')) additions += 1
+      if (line.startsWith('-') && !line.startsWith('---')) deletions += 1
+    }
+    return { kind: 'ok', additions, deletions }
+  }
+
+  private async runSvnDiff(
+    workspaceRoot: string,
+    relativePath: string,
+  ): Promise<{ kind: 'ok'; diff: string } | { kind: 'error'; message: string }> {
+    const result = await this.runSvn(workspaceRoot, ['diff', '--', relativePath])
+    if (result.code !== 0) {
+      return {
+        kind: 'error',
+        message: this.formatSvnError('Failed to read SVN diff', ['diff', '--', relativePath], workspaceRoot, result),
+      }
+    }
+    return { kind: 'ok', diff: result.stdout }
+  }
+
   private async runGit(
     workDir: string,
     args: string[],
@@ -1702,6 +2146,32 @@ export class WorkspaceService {
             : Buffer.isBuffer(err.stderr)
               ? err.stderr.toString('utf8')
               : '',
+        code: typeof err.code === 'number' ? err.code : 1,
+      }
+    }
+  }
+
+  private async runSvn(
+    workDir: string,
+    args: string[],
+  ): Promise<GitCommandResult> {
+    try {
+      const result = await execFile('svn', args, {
+        cwd: workDir,
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: MAX_GIT_BUFFER_BYTES,
+        encoding: 'utf8',
+      })
+      return { stdout: result.stdout, stderr: result.stderr, code: 0 }
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException & {
+        stdout?: string | Buffer
+        stderr?: string | Buffer
+        code?: number | string
+      }
+      return {
+        stdout: typeof err.stdout === 'string' ? err.stdout : Buffer.isBuffer(err.stdout) ? err.stdout.toString('utf8') : '',
+        stderr: typeof err.stderr === 'string' ? err.stderr : Buffer.isBuffer(err.stderr) ? err.stderr.toString('utf8') : '',
         code: typeof err.code === 'number' ? err.code : 1,
       }
     }
@@ -1787,5 +2257,15 @@ export class WorkspaceService {
   ): string {
     const stderr = result.stderr.trim() || result.stdout.trim() || 'unknown git failure'
     return `${prefix} (git ${args.join(' ')} in ${workDir}): ${stderr}`
+  }
+
+  private formatSvnError(
+    prefix: string,
+    args: string[],
+    workDir: string,
+    result: GitCommandResult,
+  ): string {
+    const stderr = result.stderr.trim() || result.stdout.trim() || 'unknown SVN failure'
+    return `${prefix} (svn ${args.join(' ')} in ${workDir}): ${stderr}`
   }
 }

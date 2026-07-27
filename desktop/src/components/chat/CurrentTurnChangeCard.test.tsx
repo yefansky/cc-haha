@@ -285,14 +285,26 @@ describe('CurrentTurnChangeCard – row opens the workspace diff', () => {
     const row = screen.getByRole('button', { name: /turnChangesOpenInWorkspaceAria/ })
     fireEvent.click(row)
     // displayPath is the workDir-relative path (matches the workspace file tree)
-    expect(openPreviewSpy).toHaveBeenCalledWith('s1', 'src/main.ts', 'diff', expect.objectContaining({ sourceTurnKey: 'msg-1' }))
+    expect(openPreviewSpy).toHaveBeenCalledWith(
+      's1',
+      'src/main.ts',
+      'diff',
+      expect.objectContaining({ sourceTurnKey: 'msg-1' }),
+      { kind: 'turn', targetUserMessageId: 'msg-1', userMessageIndex: 0 },
+    )
   })
 
   it('passes the workDir-relative displayPath (not the absolute path) to openPreview', () => {
     renderCard(['/w/proj/README.md'])
     const row = screen.getByRole('button', { name: /turnChangesOpenInWorkspaceAria/ })
     fireEvent.click(row)
-    expect(openPreviewSpy).toHaveBeenCalledWith('s1', 'README.md', 'diff', expect.objectContaining({ sourceTurnKey: 'msg-1' }))
+    expect(openPreviewSpy).toHaveBeenCalledWith(
+      's1',
+      'README.md',
+      'diff',
+      expect.objectContaining({ sourceTurnKey: 'msg-1' }),
+      { kind: 'turn', targetUserMessageId: 'msg-1', userMessageIndex: 0 },
+    )
   })
 
   it('clicking an outside-workspace html changed file opens the in-app browser via local-file', () => {
@@ -486,10 +498,16 @@ describe('CurrentTurnChangeCard – conversation continuity', () => {
 
     expect(row.id).toContain('msg-1')
     expect(row).toHaveAttribute('data-source-turn-key', 'msg-1')
-    expect(openPreviewSpy).toHaveBeenCalledWith('s1', 'src/main.ts', 'diff', {
-      sourceTurnKey: 'msg-1',
-      sourceElementId: row.id,
-    })
+    expect(openPreviewSpy).toHaveBeenCalledWith(
+      's1',
+      'src/main.ts',
+      'diff',
+      {
+        sourceTurnKey: 'msg-1',
+        sourceElementId: row.id,
+      },
+      { kind: 'turn', targetUserMessageId: 'msg-1', userMessageIndex: 0 },
+    )
   })
 })
 

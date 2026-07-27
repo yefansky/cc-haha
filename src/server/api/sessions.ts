@@ -233,6 +233,12 @@ export async function handleSessionsApi(
         }
         return await registerSessionWorkspaceRoot(req, sessionId)
       }
+      if (segments[4] === 'file' && req.method === 'PUT') {
+        return await writeSessionWorkspaceFile(req, sessionId)
+      }
+      if (segments[4] === 'file' && segments[5] === 'revert' && req.method === 'POST') {
+        return await revertSessionWorkspaceFile(req, sessionId)
+      }
       if (req.method !== 'GET') {
         return Response.json(
           { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
@@ -499,6 +505,57 @@ async function handleSessionWorkspaceRoute(
     default:
       throw ApiError.notFound(`Unknown workspace resource: ${workspaceResource || 'workspace'}`)
   }
+}
+
+async function writeSessionWorkspaceFile(req: Request, sessionId: string): Promise<Response> {
+  await requireSessionWorkspace(sessionId)
+  let body: { path?: unknown; expectedContent?: unknown; content?: unknown }
+  try {
+    body = await req.json() as { path?: unknown; expectedContent?: unknown; content?: unknown }
+  } catch {
+    throw ApiError.badRequest('Expected a JSON workspace file update')
+  }
+  if (typeof body.path !== 'string' || !body.path.trim()) {
+    throw ApiError.badRequest('path must be a non-empty string')
+  }
+  if (typeof body.expectedContent !== 'string' && body.expectedContent !== null) {
+    throw ApiError.badRequest('expectedContent must be a string or null')
+  }
+  if (typeof body.content !== 'string' && body.content !== null) {
+    throw ApiError.badRequest('content must be a string or null')
+  }
+
+  const result = await workspaceService.writeTextFile(
+    sessionId,
+    body.path,
+    body.expectedContent,
+    body.content,
+  )
+  return Response.json(
+    result.state === 'conflict' ? { ...result, message: result.error } : result,
+    { status: result.state === 'conflict' ? 409 : 200 },
+  )
+}
+
+async function revertSessionWorkspaceFile(req: Request, sessionId: string): Promise<Response> {
+  await requireSessionWorkspace(sessionId)
+  let body: { path?: unknown; expectedContent?: unknown }
+  try {
+    body = await req.json() as { path?: unknown; expectedContent?: unknown }
+  } catch {
+    throw ApiError.badRequest('Expected a JSON workspace file revert')
+  }
+  if (typeof body.path !== 'string' || !body.path.trim()) {
+    throw ApiError.badRequest('path must be a non-empty string')
+  }
+  if (typeof body.expectedContent !== 'string' && body.expectedContent !== null) {
+    throw ApiError.badRequest('expectedContent must be a string or null')
+  }
+  const result = await workspaceService.revertFile(sessionId, body.path, body.expectedContent)
+  return Response.json(
+    result.state === 'conflict' ? { ...result, message: result.error } : result,
+    { status: result.state === 'conflict' ? 409 : 200 },
+  )
 }
 
 async function registerSessionWorkspaceRoot(req: Request, sessionId: string): Promise<Response> {

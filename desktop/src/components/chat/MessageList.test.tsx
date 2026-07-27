@@ -5184,7 +5184,7 @@ describe('MessageList nested tool calls', () => {
     expect(screen.queryByText('third.ts')).toBeNull()
   })
 
-  it('opens the workspace diff (working-tree) when a historical turn change row is clicked', async () => {
+  it('opens the turn snapshot diff when a historical turn change row is clicked', async () => {
     vi.spyOn(sessionsApi, 'getTurnCheckpoints').mockResolvedValue({
       checkpoints: [
         {
@@ -5215,12 +5215,12 @@ describe('MessageList nested tool calls', () => {
         },
       ],
     })
-    const getWorkspaceDiff = vi.spyOn(sessionsApi, 'getWorkspaceDiff').mockResolvedValue({
+    const getWorkspaceDiff = vi.spyOn(sessionsApi, 'getWorkspaceDiff')
+    const getTurnCheckpointDiff = vi.spyOn(sessionsApi, 'getTurnCheckpointDiff').mockResolvedValue({
       state: 'ok',
       path: 'src/first.ts',
       diff: 'diff --session a/src/first.ts b/src/first.ts\n-old\n+new',
     })
-    const getTurnCheckpointDiff = vi.spyOn(sessionsApi, 'getTurnCheckpointDiff')
 
     useChatStore.setState({
       sessions: {
@@ -5263,15 +5263,14 @@ describe('MessageList nested tool calls', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Open src/first.ts in workspace' }))
 
     await waitFor(() => {
-      expect(getWorkspaceDiff).toHaveBeenCalledWith(ACTIVE_TAB, 'src/first.ts')
+      expect(getTurnCheckpointDiff).toHaveBeenCalledWith(ACTIVE_TAB, 'user-1', 'src/first.ts', 0)
     })
-    // The turn-snapshot diff endpoint is no longer used by the card.
-    expect(getTurnCheckpointDiff).not.toHaveBeenCalled()
+    expect(getWorkspaceDiff).not.toHaveBeenCalled()
     // No inline diff surface is mounted inside the transcript anymore.
     expect(screen.queryByTestId('workspace-code')).toBeNull()
   })
 
-  it('opens the workspace diff with the turn-relativized path (working-tree, not the turn snapshot)', async () => {
+  it('opens the turn snapshot diff with the turn-relativized path', async () => {
     vi.spyOn(sessionsApi, 'getWorkspaceStatus').mockResolvedValue({
       state: 'ok',
       workDir: '/tmp/current-project',
@@ -5298,12 +5297,12 @@ describe('MessageList nested tool calls', () => {
         },
       ],
     })
-    const getWorkspaceDiff = vi.spyOn(sessionsApi, 'getWorkspaceDiff').mockResolvedValue({
+    const getWorkspaceDiff = vi.spyOn(sessionsApi, 'getWorkspaceDiff')
+    const getTurnCheckpointDiff = vi.spyOn(sessionsApi, 'getTurnCheckpointDiff').mockResolvedValue({
       state: 'ok',
       path: 'src/first.ts',
       diff: 'diff --git a/src/first.ts b/src/first.ts\n-old\n+new',
     })
-    const getTurnCheckpointDiff = vi.spyOn(sessionsApi, 'getTurnCheckpointDiff')
 
     useChatStore.setState({
       sessions: {
@@ -5336,9 +5335,9 @@ describe('MessageList nested tool calls', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Open src/first.ts in workspace' }))
 
     await waitFor(() => {
-      expect(getWorkspaceDiff).toHaveBeenCalledWith(ACTIVE_TAB, 'src/first.ts')
+      expect(getTurnCheckpointDiff).toHaveBeenCalledWith(ACTIVE_TAB, 'user-1', 'src/first.ts', 0)
     })
-    expect(getTurnCheckpointDiff).not.toHaveBeenCalled()
+    expect(getWorkspaceDiff).not.toHaveBeenCalled()
   })
 
   it('relativizes Windows checkpoint paths against the turn workdir', () => {
@@ -5366,7 +5365,8 @@ describe('MessageList nested tool calls', () => {
         },
       ],
     })
-    const getWorkspaceDiff = vi.spyOn(sessionsApi, 'getWorkspaceDiff').mockResolvedValue({
+    const getWorkspaceDiff = vi.spyOn(sessionsApi, 'getWorkspaceDiff')
+    const getTurnCheckpointDiff = vi.spyOn(sessionsApi, 'getTurnCheckpointDiff').mockResolvedValue({
       state: 'ok',
       path: 'src/live.ts',
       diff: 'diff --session a/src/live.ts b/src/live.ts\n+live',
@@ -5401,8 +5401,14 @@ describe('MessageList nested tool calls', () => {
     // Clicking the row jumps to the right-side workspace diff for the relativized path.
     fireEvent.click(screen.getByRole('button', { name: 'Open src/live.ts in workspace' }))
     await waitFor(() => {
-      expect(getWorkspaceDiff).toHaveBeenCalledWith(ACTIVE_TAB, 'src/live.ts')
+      expect(getTurnCheckpointDiff).toHaveBeenCalledWith(
+        ACTIVE_TAB,
+        'transcript-user-1',
+        'src/live.ts',
+        0,
+      )
     })
+    expect(getWorkspaceDiff).not.toHaveBeenCalled()
   })
 
   it('reloads live turn checkpoints when the completed transcript mutation is committed', async () => {

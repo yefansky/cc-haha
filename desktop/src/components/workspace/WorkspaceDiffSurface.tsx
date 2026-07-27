@@ -8,6 +8,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
+  type ReactNode,
 } from 'react'
 import { CornerDownLeft, FileCode2, MessageSquare, Plus } from 'lucide-react'
 import { Highlight, type PrismTheme } from 'prism-react-renderer'
@@ -187,6 +188,7 @@ export interface WorkspaceDiffSurfaceProps {
   lineLimit?: number
   hideSingleFileHeader?: boolean
   onAddComment?: (selection: WorkspaceDiffCommentSelection, note: string) => void
+  renderHunkAction?: (hunkId: string) => ReactNode
 }
 
 interface ReviewState {
@@ -250,6 +252,7 @@ export function WorkspaceDiffSurface({
   lineLimit = WORKSPACE_PREVIEW_LINE_LIMIT,
   hideSingleFileHeader = false,
   onAddComment,
+  renderHunkAction,
 }: WorkspaceDiffSurfaceProps) {
   const t = useTranslation()
   const files = useMemo(() => parseWorkspaceDiff(value), [value])
@@ -717,10 +720,10 @@ export function WorkspaceDiffSurface({
                         <span
                           data-row-text={row.text}
                           data-selected={selected ? 'true' : undefined}
-                          className="whitespace-pre self-center pr-6"
+                          className={`${row.kind === 'hunk' ? 'flex items-center gap-3' : 'whitespace-pre'} self-center pr-3`}
                         >
-                          <span className={`inline-block w-[2ch] select-none text-center ${prefixTone(row)}`}>{row.prefix || ' '}</span>
-                          <span className={codeTone(row)}>
+                          <span className={`inline-block w-[2ch] shrink-0 select-none text-center ${prefixTone(row)}`}>{row.prefix || ' '}</span>
+                          <span className={`${row.kind === 'hunk' ? 'min-w-0 flex-1 whitespace-pre' : ''} ${codeTone(row)}`}>
                             {row.selectable && row.text && highlightResult.tokensByRowId[row.id]
                               ? (
                                   <HighlightedDiffLine
@@ -731,6 +734,7 @@ export function WorkspaceDiffSurface({
                                 )
                               : row.text || ' '}
                           </span>
+                          {row.kind === 'hunk' && row.hunkId ? renderHunkAction?.(row.hunkId) : null}
                         </span>
                       </div>
                       {review.selection?.endId === row.id ? renderEditor() : null}

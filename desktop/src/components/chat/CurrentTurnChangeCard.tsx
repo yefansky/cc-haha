@@ -85,10 +85,15 @@ export function CurrentTurnChangeCard({
       return
     }
     // Jump to the right-side workspace and open a diff tab. We pass the workDir-relative
-    // path (same format the workspace file tree passes to openPreview), so the diff tab
-    // is keyed/fetched identically to the tree-driven one.
-    void useWorkspacePanelStore.getState().openPreview(sessionId, fileEntry.displayPath, 'diff', origin)
-  }, [checkpoint.target.targetUserMessageId, sessionId, files])
+    // path (same format the workspace file tree passes to openPreview). The source
+    // is this turn's checkpoint rather than the live VCS state, so sequential,
+    // uncommitted edits remain reviewable in SVN and non-repository workspaces.
+    void useWorkspacePanelStore.getState().openPreview(sessionId, fileEntry.displayPath, 'diff', origin, undefined, {
+      kind: 'turn',
+      targetUserMessageId: checkpoint.target.targetUserMessageId,
+      userMessageIndex: checkpoint.target.userMessageIndex,
+    })
+  }, [checkpoint.target.targetUserMessageId, checkpoint.target.userMessageIndex, sessionId, files])
 
   const handleOpenWith = useCallback((event: ReactMouseEvent<HTMLButtonElement>, fileEntry: ChangedFileEntry) => {
     event.stopPropagation()

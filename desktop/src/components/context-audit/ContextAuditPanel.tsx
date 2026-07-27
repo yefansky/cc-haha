@@ -11,7 +11,7 @@ import { useTabStore } from '../../stores/tabStore'
 import type { NormalizedBlock, NormalizedMessage } from '../../lib/trace/types'
 import type { TraceCallRecord, TraceRawBody, TraceSession } from '../../types/trace'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
-import { CopyButton } from '../shared/CopyButton'
+import { CopyButton } from '@/components/ui/CopyButton'
 
 const POLL_INTERVAL_MS = 1_500
 const LARGE_BODY_BYTES = 100 * 1024

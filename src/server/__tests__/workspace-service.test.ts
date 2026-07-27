@@ -28,6 +28,31 @@ function git(cwd: string, ...args: string[]): string {
   })
 }
 
+function svn(cwd: string, ...args: string[]): string {
+  return execFileSync('svn', args, {
+    cwd,
+    encoding: 'utf8',
+  })
+}
+
+function svnFileUrl(filePath: string): string {
+  return `file:///${filePath.replace(/\\/g, '/')}`
+}
+
+async function createSvnWorkspace(): Promise<string> {
+  const repositoryDir = await makeTempDir('workspace-service-svn-repo-')
+  const workspaceDir = await makeTempDir('workspace-service-svn-wc-')
+  execFileSync('svnadmin', ['create', repositoryDir])
+  svn(workspaceDir, 'checkout', svnFileUrl(repositoryDir), workspaceDir)
+  await fs.writeFile(path.join(workspaceDir, 'tracked.txt'), 'before\n')
+  svn(workspaceDir, 'add', 'tracked.txt')
+  svn(workspaceDir, 'commit', '-m', 'initial')
+  await fs.writeFile(path.join(workspaceDir, 'tracked.txt'), 'before\nafter\n')
+  await fs.writeFile(path.join(workspaceDir, 'new.txt'), 'new file\n')
+  svn(workspaceDir, 'add', 'new.txt')
+  return workspaceDir
+}
+
 async function createGitWorkspace(): Promise<string> {
   const repoDir = await makeTempDir('workspace-service-git-')
 
@@ -144,6 +169,52 @@ describe('WorkspaceService outside-workspace preview', () => {
 })
 
 describe('WorkspaceService', () => {
+  it('uses SVN status and diff when the workspace is not a git repository', async () => {
+    const workspaceDir = await createSvnWorkspace()
+    const service = new WorkspaceService(async () => workspaceDir)
+
+    await expect(service.getStatus('session-1')).resolves.toMatchObject({
+      state: 'ok',
+      isGitRepo: false,
+      changedFiles: expect.arrayContaining([
+        expect.objectContaining({ path: 'tracked.txt', status: 'modified', additions: 1, deletions: 0 }),
+        expect.objectContaining({ path: 'new.txt', status: 'added', additions: 1, deletions: 0 }),
+      ]),
+    })
+    await expect(service.getDiff('session-1', 'tracked.txt')).resolves.toMatchObject({
+      state: 'ok',
+      path: 'tracked.txt',
+      diff: expect.stringContaining('+after'),
+    })
+  })
+
+  it('writes review edits only when the displayed file content is still current', async () => {
+    const workspaceDir = await makeTempDir('workspace-service-review-write-')
+    const target = path.join(workspaceDir, 'note.txt')
+    await fs.writeFile(target, 'before\n')
+    const service = new WorkspaceService(async () => workspaceDir)
+
+    await expect(service.writeTextFile('session-1', 'note.txt', 'before\n', 'after\n')).resolves.toMatchObject({
+      state: 'ok',
+      content: 'after\n',
+    })
+    await expect(fs.readFile(target, 'utf8')).resolves.toBe('after\n')
+    await expect(service.writeTextFile('session-1', 'note.txt', 'before\n', 'lost\n')).resolves.toMatchObject({
+      state: 'conflict',
+    })
+  })
+
+  it('reverts a reviewed file through its Git baseline without touching other files', async () => {
+    const workspaceDir = await createGitWorkspace()
+    const service = new WorkspaceService(async () => workspaceDir)
+
+    await expect(service.revertFile('session-1', 'tracked.txt', 'before\nafter\n')).resolves.toMatchObject({
+      state: 'ok',
+    })
+    expect((await fs.readFile(path.join(workspaceDir, 'tracked.txt'), 'utf8')).replace(/\r\n/g, '\n')).toBe('before\n')
+    await expect(fs.readFile(path.join(workspaceDir, 'untracked.txt'), 'utf8')).resolves.toBe('still untracked\n')
+  })
+
   it('returns git status for modified, added, deleted, and untracked files', async () => {
     const repoDir = await createGitWorkspace()
     const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? repoDir : null)
@@ -566,6 +637,25 @@ describe('WorkspaceService', () => {
         { name: 'note.txt', path: 'a-dir/note.txt', isDirectory: false },
       ],
     })
+  })
+
+  it('prefers the accumulated file-history diff over intermediate transcript patches', async () => {
+    const workDir = await makeTempDir('workspace-service-history-priority-')
+    const service = new WorkspaceService(async () => workDir) as WorkspaceService & {
+      getFileHistoryDiff: (sessionId: string, workspaceRoot: string, relativePath: string) => Promise<string | null>
+      getSessionDiff: (sessionId: string, relativePath: string) => Promise<string | null>
+      getStoredWorkspaceDiff: (sessionId: string, workspaceRoot: string, relativePath: string) => Promise<string | null>
+    }
+    const historyDiff = 'diff --session a/src/app.ts b/src/app.ts\n-old\n+final\n'
+    let sessionDiffRead = false
+    service.getFileHistoryDiff = async () => historyDiff
+    service.getSessionDiff = async () => {
+      sessionDiffRead = true
+      return 'diff --session a/src/app.ts b/src/app.ts\n-old\n+intermediate\n'
+    }
+
+    await expect(service.getStoredWorkspaceDiff('session-1', workDir, 'src/app.ts')).resolves.toBe(historyDiff)
+    expect(sessionDiffRead).toBe(false)
   })
 
   it('expands a directory symlink and explicit additional root as read-only viewer trees', async () => {
