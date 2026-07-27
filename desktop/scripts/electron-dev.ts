@@ -74,9 +74,6 @@ async function main() {
   const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const childEnv = createElectronDevEnv()
   const rendererUrl = childEnv.ELECTRON_RENDERER_URL
-  // Using the running Bun executable avoids Windows PATH resolution failures
-  // when Bun was installed through an npm PowerShell shim.
-  const bunExecutable = process.execPath
   process.env.NO_PROXY = childEnv.NO_PROXY
   process.env.no_proxy = childEnv.no_proxy
 
