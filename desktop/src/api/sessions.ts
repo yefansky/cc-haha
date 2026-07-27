@@ -307,6 +307,14 @@ export type WorkspaceDiffResult = {
   error?: string
 }
 
+export type WorkspaceWriteResult = {
+  state: 'ok' | 'conflict' | 'missing' | 'binary' | 'error'
+  path: string
+  content?: string
+  size?: number
+  error?: string
+}
+
 export type SessionTurnCheckpoint = {
   target: SessionRewindResponse['target']
   conversation?: SessionRewindResponse['conversation']
@@ -454,6 +462,17 @@ export const sessionsApi = {
 
   getWorkspaceFile(sessionId: string, workspacePath: string) {
     return api.get<WorkspaceReadFileResult>(buildWorkspacePath(sessionId, 'file', workspacePath))
+  },
+
+  writeWorkspaceFile(
+    sessionId: string,
+    body: { path: string; expectedContent: string | null; content: string | null },
+  ) {
+    return api.put<WorkspaceWriteResult>(`/api/sessions/${sessionId}/workspace/file`, body)
+  },
+
+  revertWorkspaceFile(sessionId: string, body: { path: string; expectedContent: string | null }) {
+    return api.post<WorkspaceWriteResult>(`/api/sessions/${sessionId}/workspace/file/revert`, body)
   },
 
   getWorkspaceDiff(sessionId: string, workspacePath: string) {

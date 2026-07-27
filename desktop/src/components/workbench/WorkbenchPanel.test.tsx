@@ -22,6 +22,12 @@ vi.mock('../browser/BrowserSurface', () => ({
   ),
 }))
 
+vi.mock('../change-review/ChangeReviewPanel', () => ({
+  ChangeReviewPanel: ({ sessionId }: { sessionId: string }) => (
+    <div data-testid="change-review-panel">review:{sessionId}</div>
+  ),
+}))
+
 import { WorkbenchPanel } from './WorkbenchPanel'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -60,6 +66,14 @@ describe('WorkbenchPanel', () => {
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
 
     expect(screen.getByTestId('browser-surface')).toHaveTextContent(`browser:${SESSION_ID}`)
+    expect(screen.queryByTestId('workspace-panel')).not.toBeInTheDocument()
+  })
+
+  it('renders the dedicated review surface in review mode', () => {
+    useWorkspacePanelStore.getState().setMode(SESSION_ID, 'review')
+    render(<WorkbenchPanel sessionId={SESSION_ID} />)
+
+    expect(screen.getByTestId('change-review-panel')).toHaveTextContent(`review:${SESSION_ID}`)
     expect(screen.queryByTestId('workspace-panel')).not.toBeInTheDocument()
   })
 

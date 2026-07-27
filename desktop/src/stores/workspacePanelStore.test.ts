@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   getWorkspaceTreeMock: vi.fn(),
   getWorkspaceFileMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
+  getTurnCheckpointDiffMock: vi.fn(),
 }))
 
 vi.mock('../api/sessions', () => ({
@@ -21,6 +22,7 @@ vi.mock('../api/sessions', () => ({
     getWorkspaceTree: mocks.getWorkspaceTreeMock,
     getWorkspaceFile: mocks.getWorkspaceFileMock,
     getWorkspaceDiff: mocks.getWorkspaceDiffMock,
+    getTurnCheckpointDiff: mocks.getTurnCheckpointDiffMock,
   },
 }))
 
@@ -61,6 +63,7 @@ describe('workspacePanelStore', () => {
     expect(sessionsApi.getWorkspaceTree).toBe(mocks.getWorkspaceTreeMock)
     expect(sessionsApi.getWorkspaceFile).toBe(mocks.getWorkspaceFileMock)
     expect(sessionsApi.getWorkspaceDiff).toBe(mocks.getWorkspaceDiffMock)
+    expect(sessionsApi.getTurnCheckpointDiff).toBe(mocks.getTurnCheckpointDiffMock)
   })
 
   it('keeps panel open state and active view isolated per session', () => {
@@ -429,6 +432,36 @@ describe('workspacePanelStore', () => {
     } else {
       expect(storage).toBeNull()
     }
+  })
+
+  it('opens a turn-bound diff without falling back to the live workspace diff', async () => {
+    mocks.getTurnCheckpointDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: 'src/a.ts',
+      diff: '@@ -1 +1 @@\n-before\n+after',
+    })
+
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-turn-diff',
+      'src/a.ts',
+      'diff',
+      undefined,
+      { kind: 'turn', targetUserMessageId: 'message-1', userMessageIndex: 2 },
+    )
+
+    expect(mocks.getTurnCheckpointDiffMock).toHaveBeenCalledWith(
+      'session-turn-diff',
+      'message-1',
+      'src/a.ts',
+      2,
+    )
+    expect(mocks.getWorkspaceDiffMock).not.toHaveBeenCalled()
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-turn-diff']).toMatchObject([{
+      id: 'diff:src/a.ts:turn:message-1',
+      kind: 'diff',
+      diffSource: { kind: 'turn', targetUserMessageId: 'message-1', userMessageIndex: 2 },
+      diff: '@@ -1 +1 @@\n-before\n+after',
+    }])
   })
 
   it('refreshes an existing preview tab when the same path is opened again', async () => {

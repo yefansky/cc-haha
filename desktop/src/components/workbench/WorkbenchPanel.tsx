@@ -1,4 +1,4 @@
-import { ArrowLeft, FolderOpen, Globe, Maximize2, ShieldCheck, X } from 'lucide-react'
+import { ArrowLeft, ClipboardCheck, FolderOpen, Globe, Maximize2, ShieldCheck, X } from 'lucide-react'
 import { useTranslation } from '../../i18n'
 import {
   useWorkspacePanelStore,
@@ -9,6 +9,7 @@ import { WORKBENCH_TAB_PREFIX, useTabStore } from '../../stores/tabStore'
 import { WorkspacePanel } from '../workspace/WorkspacePanel'
 import { BrowserSurface } from '../browser/BrowserSurface'
 import { ContextAuditPanel } from '../context-audit/ContextAuditPanel'
+import { ChangeReviewPanel } from '../change-review/ChangeReviewPanel'
 
 type WorkbenchPanelProps = {
   sessionId: string
@@ -24,6 +25,7 @@ const MODE_ITEMS: ReadonlyArray<{
 }> = [
   { mode: 'workspace', labelKey: 'workbench.modeWorkspace', Icon: FolderOpen },
   { mode: 'browser', labelKey: 'workbench.modeBrowser', Icon: Globe },
+  { mode: 'review', label: '审阅', Icon: ClipboardCheck },
   { mode: 'context-audit', label: '上下文审计', Icon: ShieldCheck },
 ]
 
@@ -145,6 +147,8 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
           <BrowserSurface sessionId={sessionId} />
         ) : mode === 'context-audit' ? (
           <ContextAuditPanel sessionId={sessionId} />
+        ) : mode === 'review' ? (
+          <ChangeReviewPanel sessionId={sessionId} />
         ) : (
           <WorkspacePanel sessionId={sessionId} embedded forceVisible={isTabVariant} />
         )}

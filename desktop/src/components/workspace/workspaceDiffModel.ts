@@ -35,7 +35,9 @@ export interface WorkspaceDiffSelection {
 const hunkHeaderPattern = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 
 function pathFromHeader(line: string, prefix: '--- ' | '+++ '): string | null {
-  const path = line.slice(prefix.length).split('\t', 1)[0] ?? ''
+  const path = (line.slice(prefix.length).split('\t', 1)[0] ?? '')
+    .replace(/ \(revision \d+\)$/, '')
+    .replace(/ \(working copy\)$/, '')
   if (path === '/dev/null') return null
   if (path.startsWith('a/') || path.startsWith('b/')) return path.slice(2)
   return path
