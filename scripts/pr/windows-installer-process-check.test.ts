@@ -68,7 +68,7 @@ describe('Windows installer process matching', () => {
     expect(installerSmoke).toContain("$bundledHelperProbe = Join-Path $siblingDir 'OpenConsole.exe'")
     expect(installerSmoke).toContain('No-CLR external bundled-helper process reinstall')
     expect(installerSmoke).toMatch(
-      /No-CLR external bundled-helper process reinstall' -ExpectedExitCode 22/,
+      /No-CLR external bundled-helper process reinstall' -ExpectedExitCodes @\(22\)/,
     )
     expect(installerSmoke).toContain('No-CLR exact-image fallback terminated an external bundled-helper')
   })

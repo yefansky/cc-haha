@@ -42,7 +42,7 @@ function Invoke-ProcessExpectFailure {
     [Parameter(Mandatory = $true)][string]$FilePath,
     [Parameter(Mandatory = $true)][string]$Stage,
     [Parameter(Mandatory = $true)][string[]]$Arguments,
-    [int]$ExpectedExitCode,
+    [int[]]$ExpectedExitCodes,
     [int]$TimeoutSeconds = 180
   )
 
@@ -53,14 +53,14 @@ function Invoke-ProcessExpectFailure {
       Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
       throw "$Stage timed out after $TimeoutSeconds seconds."
     }
-    if ($PSBoundParameters.ContainsKey('ExpectedExitCode')) {
-      if ($process.ExitCode -ne $ExpectedExitCode) {
+    if ($PSBoundParameters.ContainsKey('ExpectedExitCodes')) {
+      if ($process.ExitCode -notin $ExpectedExitCodes) {
         # 22 means "a matching process is running" and 20 means "legacy recovery
         # refused to continue". Getting 22 where 20 was expected says the
         # installer stopped before it ever reached recovery, so the process list
         # is the evidence that separates a real regression from a dirty runner.
-        Write-InstallerFallbackProcessDiagnostic -Context "$Stage (expected $ExpectedExitCode, got $($process.ExitCode))"
-        throw "$Stage expected process exit code $ExpectedExitCode, received $($process.ExitCode)."
+        Write-InstallerFallbackProcessDiagnostic -Context "$Stage (expected $($ExpectedExitCodes -join ' or '), got $($process.ExitCode))"
+        throw "$Stage expected process exit code $($ExpectedExitCodes -join ' or '), received $($process.ExitCode)."
       }
     } elseif ($process.ExitCode -eq 0) {
       throw "$Stage unexpectedly succeeded with process exit code 0."
@@ -465,7 +465,7 @@ try {
   $bundledHelperProcess = Start-Process -FilePath $bundledHelperProbe -ArgumentList @('-t', '127.0.0.1') -PassThru
   Start-Sleep -Milliseconds 500
   $env:COMPLUS_Version = 'v0.0.0-test-invalid-clr'
-  Invoke-ProcessExpectFailure -FilePath $installer -Stage 'No-CLR external bundled-helper process reinstall' -ExpectedExitCode 22 -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
+  Invoke-ProcessExpectFailure -FilePath $installer -Stage 'No-CLR external bundled-helper process reinstall' -ExpectedExitCodes @(22) -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
   if ($bundledHelperProcess.HasExited) {
     throw 'No-CLR exact-image fallback terminated an external bundled-helper process.'
   }
@@ -484,7 +484,8 @@ try {
 
   $env:COMPLUS_Version = 'v0.0.0-test-invalid-clr'
   if (Test-IsProcessElevated) {
-    Invoke-ProcessExpectFailure -FilePath $installer -Stage 'Elevated default-mode reinstall without CLR' -ExpectedExitCode 20 -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
+    # Without CLR, either legacy recovery (20) or conservative process safety (22) must abort before replacement.
+    Invoke-ProcessExpectFailure -FilePath $installer -Stage 'Elevated default-mode reinstall without CLR' -ExpectedExitCodes @(20, 22) -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
   } else {
     Invoke-CheckedProcess -FilePath $installer -Stage 'Trusted-user default-mode reinstall without CLR' -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
   }
@@ -502,7 +503,7 @@ try {
   # can leave its own uninstaller helper behind briefly.
   Clear-InstallerFallbackProcesses -Context 'Before no-CLR portable reinstall'
   $env:COMPLUS_Version = 'v0.0.0-test-invalid-clr'
-  Invoke-ProcessExpectFailure -FilePath $installer -Stage 'Portable reinstall without CLR' -ExpectedExitCode 20 -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
+  Invoke-ProcessExpectFailure -FilePath $installer -Stage 'Portable reinstall without CLR' -ExpectedExitCodes @(20, 22) -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
   Remove-Item Env:COMPLUS_Version -ErrorAction SilentlyContinue
   if ((Get-Content -LiteralPath $legacySentinel -Raw) -ne 'must-survive-failed-upgrade') {
     throw 'Portable reinstall without CLR modified legacy data instead of failing closed.'

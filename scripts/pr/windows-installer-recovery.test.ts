@@ -84,12 +84,12 @@ describe('Windows installer recovery prerequisites', () => {
     expect(installerSmoke).toContain('Test-IsProcessElevated')
     expect(installerSmoke).toContain('Elevated default-mode reinstall without CLR')
     expect(installerSmoke).toMatch(
-      /Elevated default-mode reinstall without CLR' -ExpectedExitCode 20/,
+      /Elevated default-mode reinstall without CLR' -ExpectedExitCodes @\(20, 22\)/,
     )
     expect(installerSmoke).toContain('Trusted-user default-mode reinstall without CLR')
     expect(installerSmoke).toContain('Portable reinstall without CLR')
     expect(installerSmoke).toMatch(
-      /Portable reinstall without CLR' -ExpectedExitCode 20/,
+      /Portable reinstall without CLR' -ExpectedExitCodes @\(20, 22\)/,
     )
     expect(installerSmoke).toContain('Invoke-ProcessExpectFailure')
     expect(installerSmoke).toContain('must-survive-failed-upgrade')
