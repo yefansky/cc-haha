@@ -124,6 +124,7 @@ describe('docs deployment workflow', () => {
     const workflow = readFileSync('.github/workflows/deploy-docs.yml', 'utf8')
 
     expect(workflow).toContain("      - 'site/**'")
+    expect(workflow).toContain("if: vars.ENABLE_GITHUB_PAGES == 'true'")
     expect(workflow).toContain('cache-dependency-path: site/package-lock.json')
     expect(workflow).toContain('run: npm --prefix site ci')
     expect(workflow).toContain('run: npm --prefix site run build')

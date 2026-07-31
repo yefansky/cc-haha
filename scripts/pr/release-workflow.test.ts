@@ -34,6 +34,8 @@ describe('release desktop workflow', () => {
     expect(workflow).toContain('Create continuous release version')
     expect(workflow).toContain('VERSION="${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1)).${GITHUB_RUN_NUMBER}"')
     expect(workflow).toContain('Stamp packaged app version')
+    expect(workflow).toContain("JSON.stringify(pkg, null, 2) + '\\n'")
+    expect(workflow).not.toContain('`${JSON.stringify(pkg, null, 2)}')
     expect(workflow).toContain('--win nsis --x64 --publish never')
     expect(workflow).toContain('windows-installer-smoke.ps1')
     expect(workflow).toContain('latest.yml')
