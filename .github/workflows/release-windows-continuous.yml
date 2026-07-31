@@ -1,0 +1,139 @@
+name: Release Windows (Continuous)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Create continuous release version
+        id: version
+        shell: bash
+        run: |
+          BASE_VERSION=$(node -p "require('./desktop/package.json').version")
+          if [[ ! "$BASE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::desktop/package.json version must be MAJOR.MINOR.PATCH, got: $BASE_VERSION"
+            exit 1
+          fi
+          VERSION="${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1)).${GITHUB_RUN_NUMBER}"
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp packaged app version
+        shell: bash
+        env:
+          CC_HAHA_RELEASE_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          node -e "const fs = require('node:fs'); const path = 'desktop/package.json'; const pkg = JSON.parse(fs.readFileSync(path, 'utf8')); pkg.version = process.env.CC_HAHA_RELEASE_VERSION; fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)"
+
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Install adapter dependencies
+        working-directory: adapters
+        run: bun install --frozen-lockfile
+
+      - name: Verify Windows legacy data recovery
+        working-directory: desktop
+        run: bun run test:windows-storage-recovery
+
+      - name: Prepare bundled ripgrep
+        working-directory: desktop
+        env:
+          SIDECAR_TARGET_TRIPLE: x86_64-pc-windows-msvc
+        run: bun run prepare:ripgrep
+
+      - name: Build sidecars
+        working-directory: desktop
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
+          SIDECAR_TARGET_TRIPLE: x86_64-pc-windows-msvc
+        run: bun run build:sidecars
+
+      - name: Verify compiled Windows sidecar startup
+        working-directory: desktop
+        env:
+          CC_HAHA_COMPILED_SIDECAR_SMOKE_STARTS: '20'
+        run: bun run test:compiled-sidecar-smoke
+
+      - name: Build renderer and Electron bundles
+        working-directory: desktop
+        run: |
+          bun run build
+          bun run build:electron
+
+      - name: Build Windows NSIS installer
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: node ./node_modules/electron-builder/out/cli/cli.js --win nsis --x64 --publish never
+
+      - name: Verify Windows installer execution
+        timeout-minutes: 10
+        working-directory: desktop
+        run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-installer-smoke.ps1 -ArtifactsDir ./build-artifacts/electron -Arch x64
+
+      - name: Verify packaged app structure
+        run: bun run test:package-smoke --platform windows --arch x64 --package-kind release --artifacts-dir desktop/build-artifacts/electron
+
+      - name: Validate Windows release assets
+        shell: bash
+        env:
+          APP_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          expected=(
+            "Claude-Code-Haha-${APP_VERSION}-win-x64.exe"
+            "Claude-Code-Haha-${APP_VERSION}-win-x64.exe.blockmap"
+            "latest.yml"
+          )
+          missing=()
+          for file in "${expected[@]}"; do
+            [ -f "desktop/build-artifacts/electron/$file" ] || missing+=("$file")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::Missing Windows release assets: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - name: Publish Windows GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Claude Code Haha ${{ steps.version.outputs.tag }} (Windows)
+          body: |
+            Windows continuous build for commit ${{ github.sha }}.
+
+            Download the `.exe` installer below. Installed copies check this release feed for later updates.
+          draft: false
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            desktop/build-artifacts/electron/Claude-Code-Haha-${{ steps.version.outputs.value }}-win-x64.exe
+            desktop/build-artifacts/electron/Claude-Code-Haha-${{ steps.version.outputs.value }}-win-x64.exe.blockmap
+            desktop/build-artifacts/electron/latest.yml
