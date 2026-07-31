@@ -2,6 +2,17 @@
 
 本页是维护者发版 runbook。桌面端版本来源是 `desktop/package.json`，正式发布必须让版本号、Git tag 和 `release-notes/vX.Y.Z.md` 严格一致。
 
+## Windows 持续发布
+
+`.github/workflows/release-windows-continuous.yml` 会在 `main` 每次推送到 GitHub 后自动构建 Windows x64 NSIS 安装包，并创建公开 GitHub Release。
+
+- Release 附带 `.exe` 安装器、`.exe.blockmap` 与 `latest.yml`。
+- 版本号由源码版本的下一个 minor 版本和 GitHub Actions 的运行编号组成，例如源码 `0.4.11` 的第 12 次持续发布会生成 `0.5.12`。
+- `latest.yml` 指向 `yefansky/cc-haha` Release；已通过该安装器安装的用户可在应用内检查、下载并安装后续持续发布版本。
+- GitHub Actions 只能感知已推送的 commit，开发机本地未推送的提交不会触发构建。
+
+正式的 macOS/Linux 全平台版本仍使用 `release-desktop.yml` 和 `vX.Y.Z` tag，不受持续发布影响。
+
 ## 更新链路
 
 应用内更新由 `electron-updater` 驱动，发布产物托管在 GitHub Releases：

@@ -71,7 +71,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "NanmiCoder",
+        "owner": "yefansky",
         "repo": "cc-haha"
       }
     ]

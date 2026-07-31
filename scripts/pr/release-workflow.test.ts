@@ -20,6 +20,36 @@ describe('release desktop workflow', () => {
 
   const electronBuilderCli = 'node ./node_modules/electron-builder/out/cli/cli.js ${{ matrix.builder_args }} --publish never'
 
+  test('Windows continuous release publishes an installable, updater-compatible build for every main push', () => {
+    const workflow = readFileSync('.github/workflows/release-windows-continuous.yml', 'utf8')
+    const desktopPackage = JSON.parse(readFileSync('desktop/package.json', 'utf8')) as {
+      build: {
+        publish?: Array<{ provider?: string, owner?: string, repo?: string }>
+      }
+    }
+
+    expect(workflow).toContain('name: Release Windows (Continuous)')
+    expect(workflow).toContain('branches: [main]')
+    expect(workflow).toContain('runs-on: windows-latest')
+    expect(workflow).toContain('Create continuous release version')
+    expect(workflow).toContain('VERSION="${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1)).${GITHUB_RUN_NUMBER}"')
+    expect(workflow).toContain('Stamp packaged app version')
+    expect(workflow).toContain('--win nsis --x64 --publish never')
+    expect(workflow).toContain('windows-installer-smoke.ps1')
+    expect(workflow).toContain('latest.yml')
+    expect(workflow).toContain('softprops/action-gh-release@v2')
+    expect(workflow).toContain('make_latest: true')
+    expect(workflow).toContain('fail_on_unmatched_files: true')
+    expect(workflow).toContain('Claude-Code-Haha-${{ steps.version.outputs.value }}-win-x64.exe')
+    expect(desktopPackage.build.publish).toEqual([
+      {
+        provider: 'github',
+        owner: 'yefansky',
+        repo: 'cc-haha',
+      },
+    ])
+  })
+
   test('release packaging does not run the PR-quality gate', () => {
     const workflow = readReleaseWorkflow()
 
@@ -484,7 +514,7 @@ describe('release desktop workflow', () => {
     expect(desktopPackage.build.publish).toEqual([
       {
         provider: 'github',
-        owner: 'NanmiCoder',
+        owner: 'yefansky',
         repo: 'cc-haha',
       },
     ])
