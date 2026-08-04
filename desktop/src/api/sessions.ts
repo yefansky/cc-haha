@@ -284,6 +284,8 @@ export type WorkspaceChangedFile = {
   status: WorkspaceFileStatus
   additions: number
   deletions: number
+  isDirectory?: boolean
+  isSymlink?: boolean
 }
 
 export type WorkspaceStatusResult = {

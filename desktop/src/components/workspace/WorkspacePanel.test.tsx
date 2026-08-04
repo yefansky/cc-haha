@@ -647,17 +647,133 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel(sessionId)
 
-    expect(view.getByText('desktop/src')).toBeTruthy()
+    expect(view.getByText('desktop')).toBeTruthy()
+    expect(view.getByText('src')).toBeTruthy()
     expect(view.getByText('docs')).toBeTruthy()
     expect(view.getByText('App.tsx')).toBeTruthy()
     expect(view.getByText('theme.css')).toBeTruthy()
 
     fireEvent.change(view.getByPlaceholderText('Filter changed files...'), { target: { value: 'theme' } })
 
-    expect(view.getByText('desktop/src')).toBeTruthy()
+    expect(view.getByText('desktop')).toBeTruthy()
+    expect(view.getByText('src')).toBeTruthy()
     expect(view.queryByText('docs')).toBeNull()
     expect(view.getByText('theme.css')).toBeTruthy()
     expect(view.queryByText('App.tsx')).toBeNull()
+  })
+
+  it('expands a linked SVN directory in the changed-files view and opens its logical diff path', async () => {
+    const sessionId = 'session-linked-svn-changes'
+    getMocks().getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: 'project-brain/note.md',
+      diff: '@@ -1 +1 @@\n-old\n+new',
+    })
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: {
+        ...state.panelBySession,
+        [sessionId]: { isOpen: true, activeView: 'changed', hasUserSelectedView: true },
+      },
+      statusBySession: {
+        ...state.statusBySession,
+        [sessionId]: {
+          state: 'ok',
+          workDir: '/repo',
+          repoName: 'repo',
+          branch: null,
+          isGitRepo: false,
+          changedFiles: [
+            {
+              path: 'project-brain',
+              status: 'untracked',
+              additions: 0,
+              deletions: 0,
+              isDirectory: true,
+              isSymlink: true,
+            },
+            {
+              path: 'project-brain/note.md',
+              status: 'modified',
+              additions: 3,
+              deletions: 1,
+            },
+            {
+              path: 'project-brain/new.lua',
+              status: 'untracked',
+              additions: 1,
+              deletions: 0,
+            },
+            {
+              path: 'project-brain/artifact.pdb',
+              status: 'untracked',
+              additions: 0,
+              deletions: 0,
+            },
+            {
+              path: 'project-brain/deep/changed.md',
+              status: 'modified',
+              additions: 2,
+              deletions: 0,
+            },
+          ],
+        },
+      },
+      treeBySessionPath: {
+        ...state.treeBySessionPath,
+        [sessionId]: {
+          'project-brain': {
+            state: 'ok',
+            path: 'project-brain',
+            entries: [
+              { name: 'note.md', path: 'project-brain/note.md', isDirectory: false },
+              { name: 'clean.md', path: 'project-brain/clean.md', isDirectory: false },
+            ],
+          },
+        },
+      },
+    }))
+
+    const view = await renderPanel(sessionId)
+    const linkedDirectory = view.getByText('project-brain').closest('button')!
+
+    expect(linkedDirectory.getAttribute('aria-expanded')).toBe('false')
+    expect(view.getByLabelText('软链接目录')).toBeTruthy()
+    expect(view.queryByText('note.md')).toBeNull()
+
+    await clickElement(linkedDirectory)
+
+    expect(linkedDirectory.getAttribute('aria-expanded')).toBe('true')
+    const changedFile = view.getByText('note.md').closest('button')!
+    expect(changedFile.textContent).toContain('+3')
+    expect(changedFile.textContent).toContain('-1')
+    expect(view.getByText('new.lua')).toBeTruthy()
+    expect(view.getByText('deep')).toBeTruthy()
+    expect(view.queryByText('changed.md')).toBeNull()
+    expect(view.queryByText('artifact.pdb')).toBeNull()
+    expect(view.queryByText('clean.md')).toBeNull()
+
+    await clickElement(view.getByText('deep').closest('button')!)
+    expect(view.getByText('changed.md')).toBeTruthy()
+
+    await clickElement(view.getByRole('button', { name: 'Text only' }))
+    expect(view.getByText('artifact.pdb')).toBeTruthy()
+
+    await clickElement(view.getByRole('button', { name: 'Versioned' }))
+    expect(view.getByText('project-brain').closest('button')?.textContent).not.toContain('U')
+    expect(view.getByText('note.md')).toBeTruthy()
+    expect(view.queryByText('new.lua')).toBeNull()
+    expect(view.queryByText('artifact.pdb')).toBeNull()
+
+    await clickElement(view.getByRole('button', { name: 'Untracked' }))
+    expect(view.queryByText('note.md')).toBeNull()
+    expect(view.getByText('new.lua')).toBeTruthy()
+    expect(view.getByText('artifact.pdb')).toBeTruthy()
+
+    await clickElement(view.getByRole('button', { name: 'Versioned' }))
+
+    await clickElement(view.getByText('note.md').closest('button')!)
+    expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith(sessionId, 'project-brain/note.md')
   })
 
   it('gives renamed files enough height to show the old path without overlapping the next row', async () => {

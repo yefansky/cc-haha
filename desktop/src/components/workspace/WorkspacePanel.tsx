@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type RefObject } from 'react'
-import { CircleAlert, Code2, File as FileIcon, FileText, FolderOpen, FolderPlus, Image as ImageIcon, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, Settings2, X, type LucideIcon } from 'lucide-react'
+import { CircleAlert, FileText, FolderOpen, FolderPlus, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X, type LucideIcon } from 'lucide-react'
 import { Highlight } from 'prism-react-renderer'
 import {
   sessionsApi,
@@ -39,7 +39,7 @@ import {
   type WorkspaceDiffCommentSelection,
 } from './WorkspaceCodeSurface'
 import { WorkspaceFileOpenWith } from './WorkspaceFileOpenWith'
-import { getFileIdentity, getWorkspaceStatusLabel, type WorkspaceFileIdentity } from './fileIdentity'
+import { getWorkspaceStatusLabel } from './fileIdentity'
 import type { WorkspaceDiffHighlightToken } from './workspaceDiffHighlighter'
 
 type WorkspacePanelProps = {
@@ -65,11 +65,13 @@ type TreeNodeProps = {
   treeByPath: Record<string, WorkspaceTreeResult | undefined>
   treeLoadingByPath: Record<string, boolean | undefined>
   treeErrorsByPath: Record<string, string | null | undefined>
+  changedFilesByPath: Map<string, WorkspaceChangedFile>
   filterQuery: string
   onToggle: (path: string) => void
   onOpenFile: (path: string) => void
   onFileContextMenu: (event: MouseEvent, path: string, isDirectory: boolean) => void
   activePath: string | null
+  variant?: 'tree' | 'changed'
 }
 
 type FileContextMenuState = {
@@ -114,14 +116,6 @@ const FILE_STATUS_META: Record<WorkspaceFileStatus, { label: string; className: 
   },
 }
 
-const FILE_IDENTITY_ICONS: Record<WorkspaceFileIdentity['icon'], LucideIcon> = {
-  code: Code2,
-  config: Settings2,
-  document: FileText,
-  image: ImageIcon,
-  file: FileIcon,
-}
-
 const EMPTY_TREE_BY_PATH: Record<string, WorkspaceTreeResult | undefined> = {}
 const EMPTY_PREVIEW_TABS: WorkspacePreviewTab[] = []
 const EMPTY_EXPANDED_PATHS: string[] = []
@@ -129,6 +123,15 @@ const SELECTION_MENU_OFFSET = 10
 const SELECTION_MENU_WIDTH = 158
 const SELECTION_MENU_HEIGHT = 44
 const WORKSPACE_SEARCH_DEBOUNCE_MS = 250
+const PLAINTEXT_FILE_EXTENSIONS = new Set([
+  'asm', 'bat', 'c', 'cc', 'cfg', 'cmake', 'conf', 'cpp', 'cs', 'css', 'csv',
+  'def', 'go', 'h', 'hh', 'hpp', 'html', 'i', 'ini', 'inl', 'java', 'js', 'json',
+  'jsx', 'lh', 'li', 'log', 'lua', 'm', 'md', 'mjs', 'mm', 'ps1', 'py', 'rc',
+  'rs', 'sh', 'sln', 'sql', 'svg', 'tab', 'targets', 'toml', 'ts', 'tsx', 'tsv',
+  'txt', 'vcxproj', 'xml', 'yaml', 'yml',
+])
+const PLAINTEXT_FILE_NAMES = new Set(['cmakelists.txt', 'dockerfile', 'makefile', 'readme', 'license'])
+type ChangedVersionFilter = 'all' | 'versioned' | 'untracked'
 const FILE_BADGE_META: Record<string, { label: string; className: string }> = {
   ts: { label: 'TS', className: 'bg-[var(--color-info-container)] text-[var(--color-on-info-container)]' },
   tsx: { label: 'TSX', className: 'bg-[var(--color-info-container)] text-[var(--color-on-info-container)]' },
@@ -234,6 +237,10 @@ function normalizeFilterQuery(query: string) {
   return query.trim().toLowerCase()
 }
 
+function normalizeWorkspacePathKey(filePath: string) {
+  return filePath.replace(/\\/g, '/')
+}
+
 function changedFileMatchesFilter(file: WorkspaceChangedFile, query: string) {
   if (!query) return true
   return (
@@ -243,18 +250,66 @@ function changedFileMatchesFilter(file: WorkspaceChangedFile, query: string) {
   )
 }
 
-function groupChangedFiles(files: WorkspaceChangedFile[]) {
-  const groups = new Map<string, WorkspaceChangedFile[]>()
+function changedFileMatchesVersionFilter(
+  file: WorkspaceChangedFile,
+  versionFilter: ChangedVersionFilter,
+) {
+  if (versionFilter === 'all') return true
+  return versionFilter === 'untracked'
+    ? file.status === 'untracked'
+    : file.status !== 'untracked'
+}
+
+function isLikelyPlaintextChangedFile(file: WorkspaceChangedFile) {
+  if (file.isDirectory) return false
+  const normalizedPath = normalizeWorkspacePathKey(file.path)
+  const fileName = normalizedPath.split('/').pop()?.toLowerCase() ?? ''
+  const extensionIndex = fileName.lastIndexOf('.')
+  const extension = extensionIndex >= 0 ? fileName.slice(extensionIndex + 1) : ''
+  return PLAINTEXT_FILE_NAMES.has(fileName) || PLAINTEXT_FILE_EXTENSIONS.has(extension)
+}
+
+function buildChangedTree(files: WorkspaceChangedFile[]) {
+  const changedFileByPath = new Map(
+    files.map((file) => [normalizeWorkspacePathKey(file.path), file]),
+  )
+  const entriesByParent = new Map<string, Map<string, WorkspaceTreeEntry>>()
+
   for (const file of files) {
-    const normalizedPath = file.path.replace(/\\/g, '/')
-    const lastSlash = normalizedPath.lastIndexOf('/')
-    const directory = lastSlash >= 0 ? normalizedPath.slice(0, lastSlash) : ''
-    const group = groups.get(directory)
-    if (group) group.push(file)
-    else groups.set(directory, [file])
+    const normalizedPath = normalizeWorkspacePathKey(file.path)
+    const segments = normalizedPath.split('/').filter(Boolean)
+    for (let index = 0; index < segments.length; index += 1) {
+      const entryPath = segments.slice(0, index + 1).join('/')
+      const parentPath = segments.slice(0, index).join('/')
+      const exactChange = changedFileByPath.get(entryPath)
+      const isFinalSegment = index === segments.length - 1
+      const entry: WorkspaceTreeEntry = {
+        name: segments[index]!,
+        path: entryPath,
+        isDirectory: isFinalSegment ? Boolean(file.isDirectory) : true,
+        ...(exactChange?.isSymlink ? { isSymlink: true } : {}),
+      }
+      const siblings = entriesByParent.get(parentPath) ?? new Map<string, WorkspaceTreeEntry>()
+      const existing = siblings.get(entryPath)
+      if (!existing || entry.isSymlink || (!isFinalSegment && !existing.isDirectory)) {
+        siblings.set(entryPath, entry)
+      }
+      entriesByParent.set(parentPath, siblings)
+    }
   }
-  return Array.from(groups, ([directory, groupedFiles]) => ({ directory, files: groupedFiles }))
-    .sort((a, b) => a.directory.localeCompare(b.directory))
+
+  const treeByPath: Record<string, WorkspaceTreeResult | undefined> = {}
+  for (const [parentPath, entries] of entriesByParent) {
+    treeByPath[parentPath] = {
+      state: 'ok',
+      path: parentPath,
+      entries: [...entries.values()].sort((left, right) => {
+        if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1
+        return left.name.localeCompare(right.name)
+      }),
+    }
+  }
+  return treeByPath
 }
 
 function treeEntryMatchesFilter(
@@ -492,6 +547,64 @@ function WorkspaceFilterInput({
           {summary}
         </div>
       )}
+    </div>
+  )
+}
+
+function ChangedFilesFilterBar({
+  plainTextOnly,
+  versionFilter,
+  onPlainTextOnlyChange,
+  onVersionFilterChange,
+}: {
+  plainTextOnly: boolean
+  versionFilter: ChangedVersionFilter
+  onPlainTextOnlyChange: (value: boolean) => void
+  onVersionFilterChange: (value: ChangedVersionFilter) => void
+}) {
+  const t = useTranslation()
+  const versionOptions: Array<{ value: ChangedVersionFilter; label: string }> = [
+    { value: 'all', label: t('workspace.filterVersionAll') },
+    { value: 'versioned', label: t('workspace.filterVersioned') },
+    { value: 'untracked', label: t('workspace.filterUntracked') },
+  ]
+
+  return (
+    <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--color-text-primary)]/10 px-3 py-2">
+      <button
+        type="button"
+        aria-pressed={plainTextOnly}
+        onClick={() => onPlainTextOnlyChange(!plainTextOnly)}
+        className={`inline-flex h-7 shrink-0 items-center gap-1 rounded-[7px] border px-2 text-[11px] font-medium transition-colors ${
+          plainTextOnly
+            ? 'border-[var(--color-info)]/35 bg-[var(--color-info-container)] text-[var(--color-info)]'
+            : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
+        }`}
+      >
+        <FileText size={12} aria-hidden="true" />
+        {t('workspace.filterPlaintext')}
+      </button>
+      <div
+        role="group"
+        aria-label={t('workspace.filterVersionStatus')}
+        className="ml-auto inline-flex min-w-0 overflow-hidden rounded-[7px] border border-[var(--color-border)]"
+      >
+        {versionOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={versionFilter === option.value}
+            onClick={() => onVersionFilterChange(option.value)}
+            className={`h-[26px] min-w-0 border-l border-[var(--color-border)] px-2 text-[10px] font-medium first:border-l-0 ${
+              versionFilter === option.value
+                ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
+                : 'text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)]'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -988,67 +1101,6 @@ function ImagePreview({ tab }: { tab: WorkspacePreviewTab }) {
   )
 }
 
-function ChangedFileRow({
-  file,
-  active,
-  onClick,
-  onContextMenu,
-}: {
-  file: WorkspaceChangedFile
-  active: boolean
-  onClick: () => void
-  onContextMenu: (event: MouseEvent, path: string) => void
-}) {
-  const identity = getFileIdentity(file.path)
-  const IdentityIcon = FILE_IDENTITY_ICONS[identity.icon]
-  const fileName = file.path.replace(/\\/g, '/').split('/').pop() || file.path
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      onContextMenu={(event) => onContextMenu(event, file.path)}
-      aria-current={active ? 'true' : undefined}
-      data-workspace-file-row=""
-      data-workspace-file-path={file.path}
-      title={file.path}
-      className={`group mx-2 flex w-[calc(100%-16px)] items-center gap-1.5 rounded-[var(--radius-sm)] px-2 text-left transition-[background-color,transform] duration-150 ease-out active:scale-[0.99] ${
-        file.oldPath ? 'min-h-11 py-1' : 'h-[30px]'
-      } ${
-        active
-          ? 'bg-[var(--color-info-container)] shadow-[inset_3px_0_0_var(--color-info)]'
-          : 'hover:bg-[var(--color-surface-hover)]'
-      }`}
-    >
-      <span
-        className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center text-[var(--color-text-tertiary)] transition-colors group-hover:text-[var(--color-text-secondary)]"
-        title={identity.languageLabel}
-      >
-        <IdentityIcon aria-hidden="true" size={14} strokeWidth={1.8} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-baseline">
-          <span className="truncate text-[12px] font-medium text-[var(--color-text-primary)]">{fileName}</span>
-          <span className="sr-only">
-            {identity.shortLabel}
-            <span> {identity.languageLabel}</span>
-          </span>
-        </div>
-        {file.oldPath && (
-          <div className="mt-0.5 truncate text-[10px] text-[var(--color-text-tertiary)]">
-            {file.oldPath}
-          </div>
-        )}
-      </div>
-      <div className="shrink-0 text-right font-mono text-[10px] leading-4">
-        <span className="text-[var(--color-success)]">+{file.additions}</span>
-        <span className="ml-1 text-[var(--color-error)]">-{file.deletions}</span>
-      </div>
-      <FileStatusBadge status={file.status} />
-    </button>
-  )
-}
-
 function moveWorkspaceSearchResultFocus(
   event: ReactKeyboardEvent<HTMLButtonElement>,
   direction: 'next' | 'previous' | 'first' | 'last',
@@ -1144,11 +1196,13 @@ function TreeNode({
   treeByPath,
   treeLoadingByPath,
   treeErrorsByPath,
+  changedFilesByPath,
   filterQuery,
   onToggle,
   onOpenFile,
   onFileContextMenu,
   activePath,
+  variant = 'tree',
 }: TreeNodeProps) {
   const t = useTranslation()
   const childTree = treeByPath[entry.path]
@@ -1157,6 +1211,7 @@ function TreeNode({
   const isExpanded = expandedPaths.has(entry.path)
   const isVisuallyExpanded = isExpanded || filterQuery.length > 0
   const indent = 14 + depth * 20
+  const changedFile = changedFilesByPath.get(normalizeWorkspacePathKey(entry.path))
 
   if (!entry.isDirectory) {
     const isActive = entry.path === activePath
@@ -1166,16 +1221,39 @@ function TreeNode({
         onClick={() => onOpenFile(entry.path)}
         onContextMenu={(event) => onFileContextMenu(event, entry.path, false)}
         aria-current={isActive ? 'true' : undefined}
-        className={`group mx-2 flex h-8 w-[calc(100%-16px)] items-center gap-2 rounded-[var(--radius-md)] pr-2 text-left transition-colors ${
+        data-workspace-file-row=""
+        data-workspace-file-path={entry.path}
+        title={entry.path}
+        className={`group mx-2 flex w-[calc(100%-16px)] items-center gap-2 rounded-[var(--radius-md)] pr-2 text-left transition-colors ${
+          changedFile?.oldPath ? 'min-h-11 py-1' : 'h-8'
+        } ${
           isActive
-            ? 'bg-[var(--color-surface-selected)] shadow-[inset_0_0_0_1.5px_var(--color-border-focus)]'
+            ? variant === 'changed'
+              ? 'bg-[var(--color-info-container)] shadow-[inset_3px_0_0_var(--color-info)]'
+              : 'bg-[var(--color-surface-selected)] shadow-[inset_0_0_0_1.5px_var(--color-border-focus)]'
             : 'hover:bg-[var(--color-surface-hover)]'
         }`}
         style={{ paddingLeft: indent }}
       >
         <FileTypeBadge name={entry.name} subtle={!isActive} />
-        <span className="min-w-0 truncate text-[14px] font-medium text-[var(--color-text-primary)]">{entry.name}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[14px] font-medium text-[var(--color-text-primary)]">{entry.name}</span>
+          {changedFile?.oldPath && (
+            <span className="mt-0.5 block truncate text-[10px] text-[var(--color-text-tertiary)]">
+              {changedFile.oldPath}
+            </span>
+          )}
+        </span>
         {entry.isSymlink ? <Link2 size={12} aria-label="软链接" className="shrink-0 text-[var(--color-text-tertiary)]" /> : null}
+        {changedFile ? (
+          <>
+            <span className="shrink-0 font-[var(--font-mono)] text-[10px]">
+              <span className="text-[var(--color-success)]">+{changedFile.additions}</span>
+              <span className="ml-1 text-[var(--color-error)]">-{changedFile.deletions}</span>
+            </span>
+            <FileStatusBadge status={changedFile.status} />
+          </>
+        ) : null}
       </button>
     )
   }
@@ -1195,6 +1273,7 @@ function TreeNode({
         </span>
         <span className="min-w-0 truncate text-[15px] font-medium text-[var(--color-text-primary)]">{entry.name}</span>
         {entry.isSymlink ? <Link2 size={12} aria-label="软链接目录" className="shrink-0 text-[var(--color-text-tertiary)]" /> : null}
+        {changedFile ? <FileStatusBadge status={changedFile.status} /> : null}
       </button>
 
       {isVisuallyExpanded && (
@@ -1247,11 +1326,13 @@ function TreeNode({
                 treeByPath={treeByPath}
                 treeLoadingByPath={treeLoadingByPath}
                 treeErrorsByPath={treeErrorsByPath}
+                changedFilesByPath={changedFilesByPath}
                 filterQuery={filterQuery}
                 onToggle={onToggle}
                 onOpenFile={onOpenFile}
                 onFileContextMenu={onFileContextMenu}
                 activePath={activePath}
+                variant={variant}
               />
             ))}
         </div>
@@ -1264,6 +1345,9 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const t = useTranslation()
   const addToast = useUIStore((state) => state.addToast)
   const [filterQuery, setFilterQuery] = useState('')
+  const [plainTextOnly, setPlainTextOnly] = useState(true)
+  const [changedVersionFilter, setChangedVersionFilter] = useState<ChangedVersionFilter>('all')
+  const [changedDirectoryOverrides, setChangedDirectoryOverrides] = useState<Set<string>>(() => new Set())
   const [workspaceSearch, setWorkspaceSearch] = useState<WorkspaceSearchResult | null>(null)
   const [workspaceSearchLoading, setWorkspaceSearchLoading] = useState(false)
   const [workspaceSearchError, setWorkspaceSearchError] = useState<string | null>(null)
@@ -1330,26 +1414,77 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     : null
   const displayedWorkspaceSearch = activeWorkspaceSearch ?? workspaceSearch
   const expandedPathSet = new Set(expandedPaths)
-  const activeTreePath = activePreviewTab?.kind === 'file' ? activePreviewTab.path : null
+  const activeTreePath = activePreviewTab?.path ?? null
   const activeChangedFile = activePreviewTab
     ? status?.changedFiles.find((file) => file.path === activePreviewTab.path) ?? null
     : null
-  const filteredChangedFiles = useMemo(
-    () => (status?.changedFiles ?? []).filter((file) => changedFileMatchesFilter(file, normalizedFilterQuery)),
-    [normalizedFilterQuery, status?.changedFiles],
+  const filteredChangedFiles = useMemo(() => {
+    const allChangedFiles = status?.changedFiles ?? []
+    const matchingFiles = allChangedFiles.filter((file) => (
+      !file.isDirectory
+      && changedFileMatchesFilter(file, normalizedFilterQuery)
+      && changedFileMatchesVersionFilter(file, changedVersionFilter)
+      && (!plainTextOnly || isLikelyPlaintextChangedFile(file))
+    ))
+    const matchingDirectories = allChangedFiles.filter((file) => {
+      if (!file.isDirectory) return false
+      const prefix = `${normalizeWorkspacePathKey(file.path)}/`
+      const hasMatchingDescendant = matchingFiles.some((candidate) => (
+        normalizeWorkspacePathKey(candidate.path).startsWith(prefix)
+      ))
+      if (hasMatchingDescendant) return true
+      return !plainTextOnly
+        && changedFileMatchesFilter(file, normalizedFilterQuery)
+        && changedFileMatchesVersionFilter(file, changedVersionFilter)
+    })
+    return [...matchingDirectories, ...matchingFiles]
+      .sort((left, right) => left.path.localeCompare(right.path))
+  }, [changedVersionFilter, normalizedFilterQuery, plainTextOnly, status?.changedFiles])
+  const changedFilesByPath = useMemo(
+    () => new Map((status?.changedFiles ?? []).map((file) => [normalizeWorkspacePathKey(file.path), file])),
+    [status?.changedFiles],
   )
-  const changedFileGroups = useMemo(
-    () => groupChangedFiles(filteredChangedFiles),
+  const visibleChangedFilesByPath = useMemo(
+    () => new Map(filteredChangedFiles
+      .filter((file) => (
+        changedFileMatchesFilter(file, normalizedFilterQuery)
+        && changedFileMatchesVersionFilter(file, changedVersionFilter)
+      ))
+      .map((file) => [normalizeWorkspacePathKey(file.path), file])),
+    [changedVersionFilter, filteredChangedFiles, normalizedFilterQuery],
+  )
+  const changedTreeByPath = useMemo(
+    () => buildChangedTree(filteredChangedFiles),
     [filteredChangedFiles],
   )
+  const changedLinkedRootPaths = useMemo(
+    () => (status?.changedFiles ?? [])
+      .filter((file) => file.isDirectory && file.isSymlink)
+      .map((file) => normalizeWorkspacePathKey(file.path)),
+    [status?.changedFiles],
+  )
+  const changedExpandedPathSet = useMemo(() => {
+    const expanded = new Set<string>()
+    for (const [parentPath, tree] of Object.entries(changedTreeByPath)) {
+      if (!parentPath || tree?.state !== 'ok' || tree.entries.length === 0) continue
+      const normalizedParentPath = normalizeWorkspacePathKey(parentPath)
+      const isInsideLinkedRoot = changedLinkedRootPaths.some((rootPath) => (
+        normalizedParentPath === rootPath || normalizedParentPath.startsWith(`${rootPath}/`)
+      ))
+      const defaultExpanded = !isInsideLinkedRoot
+      const overridden = changedDirectoryOverrides.has(parentPath)
+      if (defaultExpanded !== overridden) expanded.add(parentPath)
+    }
+    return expanded
+  }, [changedDirectoryOverrides, changedLinkedRootPaths, changedTreeByPath])
   const filteredRootEntries = useMemo(
     () => rootTree?.state === 'ok'
       ? rootTree.entries.filter((entry) => treeEntryMatchesFilter(entry, normalizedFilterQuery, treeByPath))
       : [],
     [normalizedFilterQuery, rootTree, treeByPath],
   )
-  const visibleEntryCount = filteredChangedFiles.length
-  const totalEntryCount = status?.changedFiles.length ?? 0
+  const visibleEntryCount = filteredChangedFiles.filter((file) => !file.isDirectory).length
+  const totalEntryCount = status?.changedFiles.filter((file) => !file.isDirectory).length ?? 0
   const filterSummary = navigatorView === 'changed'
     ? normalizedFilterQuery
       ? t('workspace.filteredFilesCount', { visible: visibleEntryCount, total: totalEntryCount })
@@ -1503,7 +1638,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       addMountedRoot(root.path)
       await loadTree(sessionId, root.path)
     } catch (error) {
-      addToast({ type: 'error', message: error instanceof Error ? error.message : '无法加入文件夹。' })
+      addToast({ type: 'error', message: error instanceof Error ? error.message : t('workspace.addFolderFailed') })
     }
   }
 
@@ -1670,26 +1805,35 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       return <PanelMessage icon="search_off" message={t('workspace.noMatchingFiles')} />
     }
 
+    const rootEntries = changedTreeByPath['']?.state === 'ok'
+      ? changedTreeByPath[''].entries
+      : []
+
     return (
       <div className="space-y-1">
-        {changedFileGroups.map((group) => (
-          <section key={group.directory || '__root__'}>
-            {group.directory && (
-              <div className="flex h-8 items-center gap-1.5 px-3.5 font-mono text-[11px] font-medium text-[var(--color-text-tertiary)]">
-                <FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" className="shrink-0" />
-                <span className="min-w-0 truncate">{group.directory}</span>
-              </div>
-            )}
-            {group.files.map((file) => (
-              <ChangedFileRow
-                key={`${file.path}:${file.status}:${file.oldPath ?? ''}`}
-                file={file}
-                active={activePreviewTabId === `file:${file.path}` || activePreviewTabId === `diff:${file.path}`}
-                onClick={() => handleOpenDiff(file.path)}
-                onContextMenu={handleFileContextMenu}
-              />
-            ))}
-          </section>
+        {rootEntries.map((entry) => (
+          <TreeNode
+            key={entry.path}
+            sessionId={sessionId}
+            entry={entry}
+            depth={0}
+            expandedPaths={changedExpandedPathSet}
+            treeByPath={changedTreeByPath}
+            treeLoadingByPath={{}}
+            treeErrorsByPath={{}}
+            changedFilesByPath={visibleChangedFilesByPath}
+            filterQuery=""
+            onToggle={(path) => setChangedDirectoryOverrides((current) => {
+              const next = new Set(current)
+              if (next.has(path)) next.delete(path)
+              else next.add(path)
+              return next
+            })}
+            onOpenFile={handleOpenDiff}
+            onFileContextMenu={handleFileContextMenu}
+            activePath={activeTreePath}
+            variant="changed"
+          />
         ))}
       </div>
     )
@@ -1801,6 +1945,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             treeByPath={treeByPath}
             treeLoadingByPath={treeLoadingByPath}
             treeErrorsByPath={treeErrorsByPath}
+            changedFilesByPath={changedFilesByPath}
             filterQuery={normalizedFilterQuery}
             onToggle={(path) => void toggleTreeNode(sessionId, path)}
             onOpenFile={handleOpenFile}
@@ -1822,7 +1967,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                 <span className="min-w-0 flex-1 truncate">{root.label}</span>
                 <button
                   type="button"
-                  aria-label={`移除已加入文件夹 ${root.label}`}
+                  aria-label={t('workspace.removeMountedFolder', { label: root.label })}
                   onClick={() => removeMountedRoot(root.path)}
                   className="hidden rounded p-0.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] group-hover:inline-flex"
                 >
@@ -1843,6 +1988,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                   treeByPath={treeByPath}
                   treeLoadingByPath={treeLoadingByPath}
                   treeErrorsByPath={treeErrorsByPath}
+                  changedFilesByPath={changedFilesByPath}
                   filterQuery={normalizedFilterQuery}
                   onToggle={(path) => void toggleTreeNode(sessionId, path)}
                   onOpenFile={handleOpenFile}
@@ -2205,7 +2351,14 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               )}
               </div>
               {activeView === 'all' && (
-                <ToolbarIconButton Icon={FolderPlus} label="加入文件夹" onClick={() => void handleAddWorkspaceFolder()} />
+                <IconButton
+                  icon={<FolderPlus size={16} strokeWidth={1.9} aria-hidden="true" />}
+                  label={t('workspace.addFolder')}
+                  onClick={() => void handleAddWorkspaceFolder()}
+                  size="md"
+                  tone="muted"
+                  showTooltip={false}
+                />
               )}
               {!hasPreviewTabs && (
                 <div className="ml-auto flex shrink-0 items-center gap-0.5">
@@ -2240,6 +2393,14 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               inputRef={filterInputRef}
               onFocusFirstResult={hasWorkspaceSearch ? focusFirstSearchResult : undefined}
             />
+            {navigatorView === 'changed' && (
+              <ChangedFilesFilterBar
+                plainTextOnly={plainTextOnly}
+                versionFilter={changedVersionFilter}
+                onPlainTextOnlyChange={setPlainTextOnly}
+                onVersionFilterChange={setChangedVersionFilter}
+              />
+            )}
 
             <div className="min-h-0 flex-1 overflow-auto py-1.5">
               {navigatorView === 'changed' ? renderChangedView() : renderAllFilesView()}
