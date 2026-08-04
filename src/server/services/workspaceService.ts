@@ -17,6 +17,10 @@ const MAX_PREVIEW_BYTES = 1024 * 1024
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
+// `svn status --xml --no-ignore` emits one XML element for every changed or
+// unversioned path. Large legacy workspaces can legitimately exceed the Git
+// command buffer even though SVN completed successfully.
+const MAX_SVN_STATUS_BUFFER_BYTES = 16 * 1024 * 1024
 const VCS_METADATA_DIRECTORY_NAMES = new Set(['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'])
 const PLAINTEXT_FILE_EXTENSIONS = new Set([
   'asm', 'bat', 'c', 'cc', 'cfg', 'cmake', 'conf', 'cpp', 'cs', 'css', 'csv',
@@ -1990,7 +1994,11 @@ export class WorkspaceService {
   private async getSvnStatusEntries(
     workspaceRoot: string,
   ): Promise<{ kind: 'ok'; entries: StatusEntry[] } | { kind: 'error'; message: string }> {
-    const result = await this.runSvn(workspaceRoot, ['status', '--xml', '--no-ignore'])
+    const result = await this.runSvn(
+      workspaceRoot,
+      ['status', '--xml', '--no-ignore'],
+      MAX_SVN_STATUS_BUFFER_BYTES,
+    )
     if (result.code !== 0) {
       return {
         kind: 'error',
@@ -2466,12 +2474,13 @@ export class WorkspaceService {
   private async runSvn(
     workDir: string,
     args: string[],
+    maxBuffer = MAX_GIT_BUFFER_BYTES,
   ): Promise<GitCommandResult> {
     try {
       const result = await execFile('svn', args, {
         cwd: workDir,
         timeout: GIT_TIMEOUT_MS,
-        maxBuffer: MAX_GIT_BUFFER_BYTES,
+        maxBuffer,
         encoding: 'utf8',
       })
       return { stdout: result.stdout, stderr: result.stderr, code: 0 }
@@ -2577,7 +2586,13 @@ export class WorkspaceService {
     workDir: string,
     result: GitCommandResult,
   ): string {
-    const stderr = result.stderr.trim() || result.stdout.trim() || 'unknown SVN failure'
-    return `${prefix} (svn ${args.join(' ')} in ${workDir}): ${stderr}`
+    const stderr = result.stderr.trim()
+    // When Node stops a verbose `svn --xml` command for a process-level
+    // reason, stdout can be a multi-megabyte partial XML document. It is not
+    // an SVN diagnostic and must not replace the file tree with raw markup.
+    const details = stderr || (result.stdout.trimStart().startsWith('<?xml')
+      ? 'SVN returned XML status output but the command did not complete.'
+      : result.stdout.trim() || 'unknown SVN failure')
+    return `${prefix} (svn ${args.join(' ')} in ${workDir}): ${details}`
   }
 }
