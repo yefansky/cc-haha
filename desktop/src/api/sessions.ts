@@ -309,8 +309,11 @@ export type WorkspaceReadFileResult = {
   size: number
   truncated?: boolean
   readBytes?: number
+  encoding?: WorkspaceTextEncoding
   error?: string
 }
+
+export type WorkspaceTextEncoding = 'auto' | 'utf8' | 'gbk'
 
 export type WorkspaceTreeEntry = {
   name: string
@@ -338,6 +341,7 @@ export type WorkspaceDiffResult = {
   path: string
   diff?: string
   error?: string
+  encoding?: WorkspaceTextEncoding
 }
 
 export type WorkspaceWriteResult = {
@@ -370,11 +374,13 @@ function buildWorkspacePath(
   sessionId: string,
   resource: 'status' | 'tree' | 'file' | 'diff',
   workspacePath?: string,
+  encoding?: WorkspaceTextEncoding,
 ) {
   const query = new URLSearchParams()
   if (typeof workspacePath === 'string' && workspacePath.length > 0) {
     query.set('path', workspacePath)
   }
+  if (encoding && encoding !== 'auto') query.set('encoding', encoding)
 
   const qs = query.toString()
   return `/api/sessions/${sessionId}/workspace/${resource}${qs ? `?${qs}` : ''}`
@@ -499,8 +505,8 @@ export const sessionsApi = {
     return api.get<WorkspaceSearchResult>(`/api/sessions/${sessionId}/workspace/search?${params}`)
   },
 
-  getWorkspaceFile(sessionId: string, workspacePath: string) {
-    return api.get<WorkspaceReadFileResult>(buildWorkspacePath(sessionId, 'file', workspacePath))
+  getWorkspaceFile(sessionId: string, workspacePath: string, encoding: WorkspaceTextEncoding = 'auto') {
+    return api.get<WorkspaceReadFileResult>(buildWorkspacePath(sessionId, 'file', workspacePath, encoding))
   },
 
   writeWorkspaceFile(
@@ -514,8 +520,8 @@ export const sessionsApi = {
     return api.post<WorkspaceWriteResult>(`/api/sessions/${sessionId}/workspace/file/revert`, body)
   },
 
-  getWorkspaceDiff(sessionId: string, workspacePath: string) {
-    return api.get<WorkspaceDiffResult>(buildWorkspacePath(sessionId, 'diff', workspacePath))
+  getWorkspaceDiff(sessionId: string, workspacePath: string, encoding: WorkspaceTextEncoding = 'auto') {
+    return api.get<WorkspaceDiffResult>(buildWorkspacePath(sessionId, 'diff', workspacePath, encoding))
   },
 
   getTurnCheckpoints(sessionId: string) {

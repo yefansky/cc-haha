@@ -436,16 +436,16 @@ describe('WorkspacePanel', () => {
     expect(previewHeader.textContent).toContain('+4')
     expect(previewHeader.textContent).toContain('-1')
     expect(view.queryByTestId('workspace-review-toolbar')).toBeNull()
-    expect(view.getByTestId('workspace-review-layout').className).toContain('grid-cols-[minmax(0,1fr)_280px]')
+    expect(view.getByTestId('workspace-review-layout').className).toContain('flex-col')
     expect(view.getByTestId('workspace-review-layout').className).toContain('overflow-hidden')
     expect(view.getByTestId('workspace-preview-column').className).toContain('min-h-0')
     expect(view.getByTestId('workspace-preview-column').className).toContain('overflow-hidden')
     expect(previewHeader.textContent).not.toContain('DIFF')
-    expect(view.getByTestId('workspace-file-navigator')).toBeTruthy()
-    expect(view.getByTestId('workspace-file-navigator').className).not.toContain('absolute')
+    expect(view.getByRole('tab', { name: 'File tree' }).getAttribute('aria-selected')).toBe('false')
+    expect(view.getByRole('tab', { name: /View files/ }).getAttribute('aria-selected')).toBe('true')
+    expect(view.getByTestId('workspace-file-navigator').className).toContain('hidden')
     expect(view.getByTestId('workspace-file-navigator-header')).toBeTruthy()
     expect(view.queryByText('1 file')).toBeNull()
-    expect(view.getByTestId('workspace-review-layout').className).toContain('grid-cols-[minmax(0,1fr)_280px]')
     const expandedPanel = view.getByTestId('workspace-panel')
     expect(expandedPanel.style.width).toBe('860px')
     expect(expandedPanel.style.maxWidth).toBe('min(62%, calc(100% - 328px))')
@@ -570,7 +570,7 @@ describe('WorkspacePanel', () => {
     expect(view.container.querySelector('[data-workspace-file-path="docs/review.md"]')).toBeNull()
   })
 
-  it('keeps the full workbench tab in a stable diff and 280px navigator split', async () => {
+  it('separates the full workbench tab into file-tree and file-viewer tabs', async () => {
     const sessionId = 'session-full-review-workbench'
     await setWorkspaceState((state) => ({
       ...state,
@@ -608,12 +608,14 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel(sessionId, { embedded: true, forceVisible: true })
 
-    expect(view.getByTestId('workspace-review-layout').className).toContain('grid-cols-[minmax(0,1fr)_280px]')
+    expect(view.getByTestId('workspace-review-layout').className).toContain('flex-col')
     expect(view.getByTestId('workspace-review-layout').className).toContain('overflow-hidden')
     expect(view.getByTestId('workspace-preview-column').className).toContain('min-h-0')
     expect(view.getByTestId('workspace-preview-column').className).toContain('overflow-hidden')
-    expect(view.getByTestId('workspace-file-navigator').className).not.toContain('absolute')
-    expect(view.getByRole('button', { name: 'Hide file navigator' })).toBeTruthy()
+    expect(view.getByRole('tab', { name: 'File tree' }).getAttribute('aria-selected')).toBe('true')
+    await clickElement(view.getByRole('tab', { name: /View files/ }))
+    expect(view.getByRole('tab', { name: /View files/ }).getAttribute('aria-selected')).toBe('true')
+    expect(view.getByTestId('workspace-file-navigator').className).toContain('hidden')
   })
 
   it('groups changed files by directory without weakening file filtering', async () => {

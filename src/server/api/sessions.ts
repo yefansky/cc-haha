@@ -496,15 +496,23 @@ async function handleSessionWorkspaceRoute(
       return await runWorkspaceRequest(() => workspaceService.readFile(
         sessionId,
         requireWorkspacePath(url, 'file'),
+        readWorkspaceTextEncoding(url),
       ))
     case 'diff':
       return await runWorkspaceDiffRequest(() => workspaceService.getDiff(
         sessionId,
         requireWorkspacePath(url, 'diff'),
+        readWorkspaceTextEncoding(url),
       ))
     default:
       throw ApiError.notFound(`Unknown workspace resource: ${workspaceResource || 'workspace'}`)
   }
+}
+
+function readWorkspaceTextEncoding(url: URL): 'auto' | 'utf8' | 'gbk' {
+  const encoding = url.searchParams.get('encoding') ?? 'auto'
+  if (encoding === 'auto' || encoding === 'utf8' || encoding === 'gbk') return encoding
+  throw ApiError.badRequest('encoding must be auto, utf8, or gbk')
 }
 
 async function writeSessionWorkspaceFile(req: Request, sessionId: string): Promise<Response> {
