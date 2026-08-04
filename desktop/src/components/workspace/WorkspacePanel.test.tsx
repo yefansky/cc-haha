@@ -429,24 +429,22 @@ describe('WorkspacePanel', () => {
     await waitFor(() => {
       expect(view.getByTestId('workspace-code').textContent).toContain('console.log("new")')
     })
-    expect(view.queryByRole('tablist', { name: 'Preview tabs' })).toBeNull()
+    expect(view.getByRole('tablist', { name: 'Preview tabs' })).toBeTruthy()
     const previewHeader = view.getByTestId('workspace-preview-header')
     expect(previewHeader.textContent).toContain('src/app.ts')
     expect(previewHeader.textContent).toContain('+4')
     expect(previewHeader.textContent).toContain('-1')
     expect(view.queryByTestId('workspace-review-toolbar')).toBeNull()
-    expect(view.getByTestId('workspace-review-layout').className).toContain('grid-cols-1')
+    expect(view.getByTestId('workspace-review-layout').className).toContain('grid-cols-[minmax(0,1fr)_280px]')
     expect(view.getByTestId('workspace-review-layout').className).toContain('overflow-hidden')
     expect(view.getByTestId('workspace-preview-column').className).toContain('min-h-0')
     expect(view.getByTestId('workspace-preview-column').className).toContain('overflow-hidden')
     expect(previewHeader.textContent).not.toContain('DIFF')
-    expect(view.queryByTestId('workspace-file-navigator')).toBeNull()
-    await clickElement(view.getByRole('button', { name: 'Show file navigator' }))
-    expect(view.getByTestId('workspace-file-navigator').className).toContain('absolute')
+    expect(view.getByTestId('workspace-file-navigator')).toBeTruthy()
+    expect(view.getByTestId('workspace-file-navigator').className).not.toContain('absolute')
     expect(view.getByTestId('workspace-file-navigator-header')).toBeTruthy()
     expect(view.queryByText('1 file')).toBeNull()
-    expect(view.getByTestId('workspace-file-navigator').className).toContain('w-[min(280px,100%)]')
-    expect(view.getByTestId('workspace-review-layout').className).toContain('grid-cols-1')
+    expect(view.getByTestId('workspace-review-layout').className).toContain('grid-cols-[minmax(0,1fr)_280px]')
     const expandedPanel = view.getByTestId('workspace-panel')
     expect(expandedPanel.style.width).toBe('860px')
     expect(expandedPanel.style.maxWidth).toBe('min(62%, calc(100% - 328px))')
@@ -519,8 +517,6 @@ describe('WorkspacePanel', () => {
     }))
 
     const view = await renderPanel(sessionId)
-    await clickElement(view.getByRole('button', { name: 'Show file navigator' }))
-
     const row = view.container.querySelector('[data-workspace-file-path="src/app.ts"]')
     if (!row) throw new Error('Changed file row was not rendered')
     expect(row.getAttribute('aria-current')).toBe('true')
@@ -1101,13 +1097,10 @@ describe('WorkspacePanel', () => {
       expect(document.activeElement).toBe(view.getByTestId('workspace-preview-header'))
     })
 
-    await clickElement(view.getByRole('button', { name: 'Show file navigator' }))
     const searchInput = view.getByPlaceholderText('Search all files...') as HTMLInputElement
     expect(searchInput.value).toBe('MentalHealthTrendController')
-    expect(view.getByText('MentalHealthTrendController.java')).toBeTruthy()
-    await waitFor(() => {
-      expect(document.activeElement).toBe(searchInput)
-    })
+    expect(view.getAllByText('MentalHealthTrendController.java').length).toBeGreaterThan(0)
+    expect(document.activeElement).toBe(view.getByTestId('workspace-preview-header'))
 
     const staleSearch = deferred<{
       state: 'ok'
@@ -1472,7 +1465,7 @@ describe('WorkspacePanel', () => {
     expect(view.queryByTestId('workspace-preview-column')).toBeNull()
   })
 
-  it('keeps the file navigator hidden while previewing until explicitly opened', async () => {
+  it('keeps the file navigator visible while previewing', async () => {
     await setWorkspaceState((state) => ({
       ...state,
       panelBySession: {
@@ -1521,11 +1514,6 @@ describe('WorkspacePanel', () => {
     const view = await renderPanel('session-preview-focused')
 
     expect(view.getByTestId('workspace-code').textContent).toContain('+new')
-    expect(view.queryByRole('button', { name: 'Changed files' })).toBeNull()
-    expect(view.queryByPlaceholderText('Filter changed files...')).toBeNull()
-
-    await clickElement(view.getByRole('button', { name: 'Show file navigator' }))
-
     expect(view.getByRole('button', { name: 'Changed files' })).toBeTruthy()
     expect(view.getByPlaceholderText('Filter changed files...')).toBeTruthy()
     expect(view.container.querySelector('[data-workspace-file-path="src/app.ts"]')).toBeTruthy()
@@ -1587,9 +1575,6 @@ describe('WorkspacePanel', () => {
     const view = await renderPanel('session-preview-hidden-tree')
     await flushReactWork()
 
-    expect(getMocks().getWorkspaceTreeMock).not.toHaveBeenCalled()
-
-    await clickElement(view.getByRole('button', { name: 'Show file navigator' }))
     await waitFor(() => {
       expect(getMocks().getWorkspaceTreeMock).toHaveBeenCalledWith('session-preview-hidden-tree', '')
     })
@@ -1649,7 +1634,7 @@ describe('WorkspacePanel', () => {
 
     expect(panel.className).toContain('bg-[var(--color-surface)]')
     expect(panel.className).not.toContain('bg-white')
-    expect(view.queryByRole('tablist', { name: 'Preview tabs' })).toBeNull()
+    expect(view.getByRole('tablist', { name: 'Preview tabs' })).toBeTruthy()
     expect(previewHeader.className).toContain('bg-[var(--color-surface)]')
     expect(previewHeader.className).not.toContain('bg-white')
     const addToChatLabel = Array.from(previewHeader.querySelectorAll('span'))

@@ -163,6 +163,29 @@ describe('workspacePanelStore', () => {
     expect(useWorkspacePanelStore.getState().errors.statusBySession['session-1']).toBeNull()
   })
 
+  it('reuses a recent status scan when another session shares the work directory', async () => {
+    const result = {
+      state: 'ok' as const,
+      workDir: 'G:\\repo',
+      repoName: 'repo',
+      branch: null,
+      isGitRepo: false,
+      changedFiles: [{ path: 'src/a.ts', status: 'modified' as const, additions: 1, deletions: 0 }],
+    }
+    mocks.getWorkspaceStatusMock.mockResolvedValue(result)
+
+    useWorkspacePanelStore.getState().registerSessionWorkDir('session-a', result.workDir)
+    useWorkspacePanelStore.getState().registerSessionWorkDir('session-b', result.workDir)
+    await useWorkspacePanelStore.getState().loadStatus('session-a')
+    await useWorkspacePanelStore.getState().loadStatus('session-b')
+
+    expect(mocks.getWorkspaceStatusMock).toHaveBeenCalledTimes(1)
+    expect(useWorkspacePanelStore.getState().statusBySession['session-b']).toEqual(result)
+
+    await useWorkspacePanelStore.getState().loadStatus('session-b', { force: true })
+    expect(mocks.getWorkspaceStatusMock).toHaveBeenCalledTimes(2)
+  })
+
   it('defaults an empty changed-files status to the all-files view', async () => {
     mocks.getWorkspaceStatusMock.mockResolvedValue({
       state: 'ok',

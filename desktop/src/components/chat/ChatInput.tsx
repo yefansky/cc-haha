@@ -45,6 +45,7 @@ import { useComposerFileDrop } from './useComposerFileDrop'
 import { shouldSubmitOnEnter } from './sendShortcut'
 import type { PermissionMode } from '../../types/settings'
 import { getSessionWorkspaceState } from '../../lib/sessionWorkspace'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 
 type GitInfo = SessionGitInfo
 
@@ -228,6 +229,10 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     [attachments, workspaceReferences],
   )
   const slashCommandCount = slashCommands.length
+
+  useEffect(() => {
+    if (activeTabId) useWorkspacePanelStore.getState().registerSessionWorkDir(activeTabId, resolvedWorkDir)
+  }, [activeTabId, resolvedWorkDir])
 
   useEffect(() => {
     inputRef.current = input
@@ -595,6 +600,9 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       return
     }
     const cursorPos = event.target.selectionStart ?? value.length
+    // SVN scans can take seconds. Begin one while the user is composing so
+    // opening the file tree later can use the shared workspace cache.
+    if (activeTabId) useWorkspacePanelStore.getState().preloadStatus(activeTabId)
     setComposerInput(value)
     detectSlashTrigger(value, cursorPos)
     detectAtTrigger(value, cursorPos)

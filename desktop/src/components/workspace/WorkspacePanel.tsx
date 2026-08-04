@@ -1296,7 +1296,9 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const [workspaceSearchError, setWorkspaceSearchError] = useState<string | null>(null)
   const [workspaceSearchRevision, setWorkspaceSearchRevision] = useState(0)
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false)
-  const [isNavigatorOpen, setIsNavigatorOpen] = useState(forceVisible)
+  // Opening a diff must not replace the file tree: the tree is how users open
+  // and switch between multiple diff tabs.
+  const [isNavigatorOpen, setIsNavigatorOpen] = useState(true)
   const [previewTabContextMenu, setPreviewTabContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null)
   const width = useWorkspacePanelStore((state) => state.width)
@@ -1546,7 +1548,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const panelMinWidth = hasPreviewTabs ? 'min(420px, 54%)' : 'min(340px, 40%)'
 
   const handleRefresh = () => {
-    void loadStatus(sessionId)
+    void loadStatus(sessionId, { force: true })
     if (activePreviewTab) {
       void openPreview(sessionId, activePreviewTab.path, activePreviewTab.kind)
     }
@@ -1584,13 +1586,13 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   }
 
   const handleOpenDiff = (path: string) => {
-    setIsNavigatorOpen(forceVisible)
+    setIsNavigatorOpen(true)
     void openPreview(sessionId, path, 'diff')
     focusPreviewAfterOpen()
   }
 
   const handleOpenFile = (path: string) => {
-    setIsNavigatorOpen(forceVisible)
+    setIsNavigatorOpen(true)
     void openPreview(sessionId, path, 'file')
     focusPreviewAfterOpen()
   }
@@ -1991,13 +1993,6 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                 return nextOpen
               })}
             />
-            {previewTabs.length === 1 && (
-              <ToolbarIconButton
-                Icon={X}
-                label={`${t('workspace.closeTab')} ${activePreviewTab.title} ${getPreviewKindLabel(t, activePreviewTab.kind)}`}
-                onClick={() => closePreview(sessionId, activePreviewTab.id)}
-              />
-            )}
             {!embedded && (
               <ToolbarIconButton Icon={X} label={t('workspace.closePanel')} onClick={() => closePanel(sessionId)} />
             )}
@@ -2192,11 +2187,11 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     >
       <div
         data-testid="workspace-review-layout"
-        className={`relative grid min-h-0 flex-1 overflow-hidden ${hasPreviewTabs && isNavigatorVisible && forceVisible ? 'grid-cols-[minmax(0,1fr)_280px]' : 'grid-cols-1'}`}
+        className={`relative grid min-h-0 flex-1 overflow-hidden ${hasPreviewTabs && isNavigatorVisible ? 'grid-cols-[minmax(0,1fr)_280px]' : 'grid-cols-1'}`}
       >
         {hasPreviewTabs && (
           <div data-testid="workspace-preview-column" className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--color-surface)]">
-            {previewTabs.length > 1 ? renderPreviewTabs() : null}
+            {renderPreviewTabs()}
             {renderPreviewContent()}
           </div>
         )}
@@ -2204,7 +2199,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
         {isNavigatorVisible && (
           <div
             data-testid="workspace-file-navigator"
-            className={`${hasPreviewTabs ? 'border-l border-[var(--color-text-primary)]/10' : ''} ${hasPreviewTabs && !forceVisible ? 'absolute inset-y-0 right-0 z-20 w-[min(280px,100%)] shadow-[-12px_0_28px_rgba(15,23,42,0.08)]' : ''} flex min-h-0 flex-col bg-[var(--color-surface)]`}
+            className={`${hasPreviewTabs ? 'border-l border-[var(--color-text-primary)]/10' : ''} flex min-h-0 flex-col bg-[var(--color-surface)]`}
           >
             <header
               data-testid="workspace-file-navigator-header"
