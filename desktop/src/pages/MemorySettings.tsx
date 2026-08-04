@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { BookOpenText, ChevronDown, ChevronRight, Database, FileText, Folder, FolderGit2, PencilLine, RefreshCw, RotateCcw, Save, Search, X } from 'lucide-react'
+import { BookOpenText, ChevronDown, ChevronRight, Database, FileText, Folder, FolderGit2, PencilLine, RefreshCw, RotateCcw, Save, Search, Trash2, X } from 'lucide-react'
 import { Button } from '../components/shared/Button'
 import { MarkdownRenderer } from '../components/markdown/MarkdownRenderer'
 import { useTranslation } from '../i18n'
 import { formatBytes } from '../lib/formatBytes'
 import { useMemoryStore } from '../stores/memoryStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useUIStore } from '../stores/uiStore'
 import type { MemoryFile, MemoryProject } from '../types/memory'
@@ -32,7 +33,10 @@ export function MemorySettings() {
     openFile,
     updateDraft,
     saveFile,
+    deleteFile,
   } = useMemoryStore()
+  const autoMemoryEnabled = useSettingsStore((state) => state.autoMemoryEnabled)
+  const setAutoMemoryEnabled = useSettingsStore((state) => state.setAutoMemoryEnabled)
   const sessions = useSessionStore((s) => s.sessions)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const pendingMemoryPath = useUIStore((s) => s.pendingMemoryPath)
@@ -164,6 +168,13 @@ export function MemorySettings() {
     }
   }
 
+  const handleDelete = async () => {
+    if (!selectedFile) return
+    if (!window.confirm(t('settings.memory.deleteConfirm', { name: selectedFile.path }))) return
+    const deleted = await deleteFile()
+    if (deleted) setIsEditing(false)
+  }
+
   useEffect(() => {
     if (!isEditing || !selectedFile) return
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -234,6 +245,17 @@ export function MemorySettings() {
             fallbackFile={t('settings.memory.noFileSelected')}
           />
           <div className="flex shrink-0 flex-wrap gap-2">
+            <Button
+              type="button"
+              variant={autoMemoryEnabled ? 'primary' : 'secondary'}
+              size="sm"
+              aria-pressed={autoMemoryEnabled}
+              onClick={() => void setAutoMemoryEnabled(!autoMemoryEnabled)}
+            >
+              {autoMemoryEnabled
+                ? t('settings.general.autoMemoryDisable')
+                : t('settings.general.autoMemoryEnable')}
+            </Button>
             <Button
               type="button"
               variant="secondary"
@@ -368,6 +390,16 @@ export function MemorySettings() {
                     >
                       {t('common.save')}
                     </Button>
+                    <Button
+                      type="button"
+                      variant="danger"
+                      size="sm"
+                      disabled={isSaving}
+                      onClick={() => void handleDelete()}
+                      icon={<Trash2 size={14} aria-hidden="true" />}
+                    >
+                      {t('common.delete')}
+                    </Button>
                   </div>
                 </div>
                 <textarea
@@ -393,6 +425,15 @@ export function MemorySettings() {
                     title={t('settings.memory.edit')}
                     onClick={() => setIsEditing(true)}
                     icon={<PencilLine size={14} aria-hidden="true" />}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    aria-label={t('common.delete')}
+                    title={t('common.delete')}
+                    onClick={() => void handleDelete()}
+                    icon={<Trash2 size={14} aria-hidden="true" />}
                   />
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-6">

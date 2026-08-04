@@ -25,6 +25,7 @@ type MemoryStore = {
   openFile: (projectId: string, path: string) => Promise<void>
   updateDraft: (content: string) => void
   saveFile: () => Promise<boolean>
+  deleteFile: () => Promise<boolean>
   createFile: (projectId: string, path: string, content: string) => Promise<void>
 }
 
@@ -135,6 +136,26 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         },
         isSaving: false,
         lastSavedAt: file.updatedAt,
+      })
+      await get().fetchFiles(selectedProjectId)
+      return true
+    } catch (err) {
+      set({ error: (err as Error).message, isSaving: false })
+      return false
+    }
+  },
+
+  deleteFile: async () => {
+    const { selectedProjectId, selectedFile } = get()
+    if (!selectedProjectId || !selectedFile) return false
+    set({ isSaving: true, error: null })
+    try {
+      await memoryApi.deleteFile(selectedProjectId, selectedFile.path)
+      set({
+        selectedFile: null,
+        draftContent: '',
+        isSaving: false,
+        lastSavedAt: null,
       })
       await get().fetchFiles(selectedProjectId)
       return true

@@ -89,7 +89,7 @@ describe('ModelSelector', () => {
     useSettingsStore.setState({
       locale: 'en',
       availableModels: MODELS,
-      currentModel: MODELS[0],
+      currentModel: { id: 'provider-main', name: 'provider-main', description: '', context: '' },
       activeProviderName: 'Provider A',
     })
     useProviderStore.setState({
@@ -113,7 +113,7 @@ describe('ModelSelector', () => {
     useSettingsStore.setState({
       locale: 'en',
       availableModels: MODELS,
-      currentModel: MODELS[0],
+      currentModel: { id: 'provider-main', name: 'provider-main', description: '', context: '' },
       activeProviderName: 'Provider A',
     })
     useProviderStore.setState({
@@ -203,11 +203,13 @@ describe('ModelSelector', () => {
 
   it('selects provider-scoped runtime models and mirrors session selections', async () => {
     const setSessionRuntime = vi.fn()
+    const setModel = vi.fn(async () => {})
     useSettingsStore.setState({
       locale: 'en',
       availableModels: MODELS,
-      currentModel: MODELS[0],
+      currentModel: { id: 'provider-main', name: 'provider-main', description: '', context: '' },
       activeProviderName: 'Provider A',
+      setModel,
     })
     useProviderStore.setState({
       providers: [{
@@ -255,13 +257,14 @@ describe('ModelSelector', () => {
       modelId: 'provider-fast',
       effortLevel: 'max',
     })
+    expect(setModel).toHaveBeenCalledWith('provider-fast')
   })
 
   it('renders discovered provider models with their declared effort levels', async () => {
     useSettingsStore.setState({
       locale: 'en',
       availableModels: MODELS,
-      currentModel: MODELS[0],
+      currentModel: { id: 'dynamic-a', name: 'dynamic-a', description: '', context: '' },
       activeProviderName: 'Dynamic Provider',
       effortLevel: 'high',
     })
@@ -316,7 +319,7 @@ describe('ModelSelector', () => {
     })
   })
 
-  it('defaults blank provider-scoped runtime selections to the active provider main model', async () => {
+  it('defaults blank provider-scoped runtime selections to the saved active-provider model', async () => {
     useSettingsStore.setState({
       locale: 'en',
       availableModels: [
@@ -348,17 +351,17 @@ describe('ModelSelector', () => {
 
     render(<ModelSelector runtimeKey="blank-session" />)
 
-    const trigger = screen.getByRole('button', { name: /deepseek-v4-flash/i })
+    const trigger = screen.getByRole('button', { name: /deepseek-v4-pro/i })
     await act(async () => {
       fireEvent.click(trigger)
       await Promise.resolve()
     })
 
-    const flashOption = screen
-      .getAllByRole('button', { name: /deepseek-v4-flash/i })
-      .find((button) => button.textContent?.includes('Main Model'))
-    expect(flashOption).toBeDefined()
-    expect(flashOption?.className).toContain('border-[var(--color-model-option-selected-border)]')
+    const proOption = screen
+      .getAllByRole('button', { name: /deepseek-v4-pro/i })
+      .find((button) => button.textContent?.includes('Sonnet Model'))
+    expect(proOption).toBeDefined()
+    expect(proOption?.className).toContain('border-[var(--color-model-option-selected-border)]')
   })
 
   it('keeps runtime effort scoped to the selected session', async () => {
@@ -366,7 +369,7 @@ describe('ModelSelector', () => {
     useSettingsStore.setState({
       locale: 'en',
       availableModels: MODELS,
-      currentModel: MODELS[0],
+      currentModel: { id: 'provider-main', name: 'provider-main', description: '', context: '' },
       activeProviderName: 'Provider A',
       effortLevel: 'max',
     })
@@ -648,7 +651,7 @@ describe('ModelSelector', () => {
     useSettingsStore.setState({
       locale: 'en',
       availableModels: MODELS,
-      currentModel: MODELS[0],
+      currentModel: { id: 'provider-main', name: 'provider-main', description: '', context: '' },
       activeProviderName: 'Provider A',
     })
     useProviderStore.setState({

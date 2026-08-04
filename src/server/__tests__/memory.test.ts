@@ -161,6 +161,22 @@ describe('memory API', () => {
     })
   })
 
+  it('deletes only the requested markdown file inside the memory directory', async () => {
+    const projectId = sanitizePath(path.join(tmpDir, 'workspace', 'app'))
+    const memoryDir = path.join(tmpDir, 'projects', projectId, 'memory')
+    const filePath = path.join(memoryDir, 'notes', 'obsolete.md')
+    await fs.mkdir(path.dirname(filePath), { recursive: true })
+    await fs.writeFile(filePath, '# Obsolete memory\n')
+
+    const response = await request(
+      'DELETE',
+      `/api/memory/file?projectId=${encodeURIComponent(projectId)}&path=notes%2Fobsolete.md`,
+    )
+
+    expect(response.status).toBe(200)
+    await expect(fs.access(filePath)).rejects.toThrow()
+  })
+
   it('rejects traversal and symlink escapes', async () => {
     const projectId = sanitizePath(path.join(tmpDir, 'workspace', 'app'))
     const memoryDir = path.join(tmpDir, 'projects', projectId, 'memory')

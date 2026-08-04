@@ -28,7 +28,10 @@ export function resolveActiveProviderRuntimeSelection(
 
   return {
     providerId: inferredProviderId,
-    modelId: providerMainModelId || currentModelId || (
+    // A model explicitly saved for the active provider must win over its
+    // configured main-model fallback. Otherwise every fresh window resets a
+    // KSCC session to glm-5 even after the user picked another model.
+    modelId: currentModelId || providerMainModelId || (
       inferredProviderId === OPENAI_OFFICIAL_PROVIDER_ID
         ? OPENAI_OFFICIAL_DEFAULT_MODEL_ID
         : inferredProviderId === GROK_OFFICIAL_PROVIDER_ID

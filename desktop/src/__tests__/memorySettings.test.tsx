@@ -14,6 +14,7 @@ const { memoryApiMock } = vi.hoisted(() => ({
     listFiles: vi.fn(),
     readFile: vi.fn(),
     saveFile: vi.fn(),
+    deleteFile: vi.fn(),
   },
 }))
 
@@ -49,7 +50,11 @@ vi.mock('../components/markdown/MarkdownRenderer', () => ({
 describe('MemorySettings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    useSettingsStore.setState({ locale: 'en' })
+    useSettingsStore.setState({
+      locale: 'en',
+      autoMemoryEnabled: false,
+      setAutoMemoryEnabled: vi.fn(),
+    })
     useSessionStore.setState({
       sessions: [
         {
@@ -122,6 +127,7 @@ describe('MemorySettings', () => {
         bytes: 28,
       },
     })
+    memoryApiMock.deleteFile.mockResolvedValue({ ok: true })
   })
 
   it('opens memory files in preview mode, edits on demand, and returns to preview after save', async () => {
@@ -161,6 +167,22 @@ describe('MemorySettings', () => {
     })
     expect(screen.queryByLabelText('Editor')).not.toBeInTheDocument()
     expect(await screen.findByTestId('markdown-preview')).toHaveTextContent('Prefer small diffs')
+  })
+
+  it('places the memory toggle on the memory settings page and deletes a confirmed entry', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<MemorySettings />)
+
+    const toggle = await screen.findByRole('button', { name: 'Turn on' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(useSettingsStore.getState().setAutoMemoryEnabled).toHaveBeenCalledWith(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => {
+      expect(memoryApiMock.deleteFile).toHaveBeenCalledWith('-workspace-demo', 'MEMORY.md')
+    })
+    confirmSpy.mockRestore()
   })
 
   it('does not select a missing current project with no memory files', async () => {

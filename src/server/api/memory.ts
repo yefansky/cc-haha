@@ -5,6 +5,7 @@
  * GET  /api/memory/files?projectId=...    — list markdown memory files
  * GET  /api/memory/file?projectId=...&path=...
  * PUT  /api/memory/file                   — update/create a markdown memory file
+ * DELETE /api/memory/file?projectId=...&path=... — delete a markdown memory file
  */
 
 import * as fs from 'node:fs/promises'
@@ -263,6 +264,18 @@ async function handleMemoryFile(req: Request, url: URL): Promise<Response> {
         bytes: stat.size,
       },
     })
+  }
+
+  if (req.method === 'DELETE') {
+    const projectId = requireProjectId(url)
+    const relativePath = requireMemoryPath(url.searchParams.get('path'))
+    const fullPath = await resolveMemoryFilePath(projectId, relativePath, {
+      mustExist: true,
+    })
+    const memoryDir = await ensureMemoryDirBoundary(projectId, { mustExist: true })
+    await assertWithinDirectory(fullPath, memoryDir, true)
+    await fs.unlink(fullPath)
+    return Response.json({ ok: true })
   }
 
   throw methodNotAllowed(req.method)
