@@ -537,6 +537,7 @@ describe('WorkspaceService', () => {
     const service = new WorkspaceService(async () => workDir)
 
     await fs.writeFile(path.join(workDir, 'note.ts'), 'export const answer = 42\n')
+    await fs.writeFile(path.join(workDir, 'legacy.txt'), Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0xb2, 0xe2, 0xca, 0xd4]))
     await fs.writeFile(path.join(workDir, 'binary.bin'), Buffer.from([0, 1, 2, 3]))
     await fs.writeFile(path.join(workDir, 'image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]))
     await fs.writeFile(
@@ -551,6 +552,16 @@ describe('WorkspaceService', () => {
       language: 'typescript',
       size: 25,
       content: 'export const answer = 42\n',
+      encoding: 'utf8',
+    })
+    await expect(service.readFile('session-1', 'legacy.txt')).resolves.toMatchObject({
+      state: 'ok',
+      content: '中文测试',
+      encoding: 'gbk',
+    })
+    await expect(service.readFile('session-1', 'legacy.txt', 'utf8')).resolves.toMatchObject({
+      state: 'ok',
+      encoding: 'utf8',
     })
     await expect(service.readFile('session-1', 'binary.bin')).resolves.toMatchObject({
       state: 'binary',

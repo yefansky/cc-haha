@@ -3,6 +3,7 @@ import {
   sessionsApi,
   type WorkspaceDiffResult,
   type WorkspaceReadFileResult,
+  type WorkspaceTextEncoding,
   type WorkspaceStatusResult,
   type WorkspaceTreeResult,
 } from '../api/sessions'
@@ -46,6 +47,7 @@ export type WorkspacePreviewTab = {
   state?: WorkspacePreviewState
   error?: string
   size?: number
+  textEncoding?: WorkspaceTextEncoding
 }
 
 export type WorkspaceMountedRoot = {
@@ -117,6 +119,7 @@ type WorkspacePanelStore = {
     kind: WorkspacePreviewKind,
     origin?: WorkspacePanelOrigin,
     diffSource?: WorkspaceDiffSource,
+    textEncoding?: WorkspaceTextEncoding,
   ) => Promise<void>
   closePreview: (sessionId: string, tabId: string) => void
   closePreviewTabs: (sessionId: string, tabId: string, scope: WorkspacePreviewCloseScope) => void
@@ -590,7 +593,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     }
   },
 
-  openPreview: async (sessionId, path, kind, origin, diffSource = { kind: 'workspace' }) => {
+  openPreview: async (sessionId, path, kind, origin, diffSource = { kind: 'workspace' }, textEncoding = 'auto') => {
     // Ensure the workspace panel is visible — openPreview is now triggered from places
     // where the panel may be closed (e.g. the chat "打开方式" menu / turn-changes card),
     // not only from inside the already-open file tree. Opening a file always switches the
@@ -642,6 +645,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         path,
         kind,
         title: getPathTitle(path),
+        textEncoding,
         ...(kind === 'diff' ? { diffSource } : {}),
         state: 'loading',
       }
@@ -685,7 +689,9 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
               path,
               diffSource.userMessageIndex,
             )
-          : await sessionsApi.getWorkspaceDiff(sessionId, path)
+          : textEncoding === 'auto'
+            ? await sessionsApi.getWorkspaceDiff(sessionId, path)
+            : await sessionsApi.getWorkspaceDiff(sessionId, path, textEncoding)
         if (!isLatestRequest(previewRequestIds, requestKey, requestId)) return
         if (!get().previewTabsBySession[sessionId]?.some((tab) => tab.id === tabId)) return
 
@@ -707,6 +713,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
                     size: undefined,
                     state: result.state,
                     error: result.error,
+                    textEncoding,
                   })),
             },
             loading: {
@@ -732,7 +739,9 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         return
       }
 
-      const result = await sessionsApi.getWorkspaceFile(sessionId, path)
+      const result = textEncoding === 'auto'
+        ? await sessionsApi.getWorkspaceFile(sessionId, path)
+        : await sessionsApi.getWorkspaceFile(sessionId, path, textEncoding)
       if (!isLatestRequest(previewRequestIds, requestKey, requestId)) return
       if (!get().previewTabsBySession[sessionId]?.some((tab) => tab.id === tabId)) return
 
@@ -756,6 +765,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
                   size: result.size,
                   state: result.state,
                   error: result.error,
+                  textEncoding,
                 })),
           },
           loading: {

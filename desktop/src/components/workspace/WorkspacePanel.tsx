@@ -1296,8 +1296,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const [workspaceSearchError, setWorkspaceSearchError] = useState<string | null>(null)
   const [workspaceSearchRevision, setWorkspaceSearchRevision] = useState(0)
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false)
-  // Opening a diff must not replace the file tree: the tree is how users open
-  // and switch between multiple diff tabs.
+  // The navigator and preview are separate views so narrow workbench tabs do
+  // not squeeze either the tree or the code surface.
   const [isNavigatorOpen, setIsNavigatorOpen] = useState(true)
   const [previewTabContextMenu, setPreviewTabContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null)
@@ -1348,7 +1348,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const activePreviewTab =
     previewTabs.find((tab) => tab.id === activePreviewTabId) ?? previewTabs[previewTabs.length - 1] ?? null
   const hasPreviewTabs = previewTabs.length > 0
-  const isNavigatorVisible = !hasPreviewTabs || isNavigatorOpen
+  const isNavigatorVisible = isNavigatorOpen
   const navigatorView = activeView
   const hasWorkspaceSearch = navigatorView === 'all' && normalizedFilterQuery.length > 0
   const activeWorkspaceSearch = workspaceSearch
@@ -1530,12 +1530,6 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   }, [fileContextMenu, previewTabContextMenu])
 
   useEffect(() => {
-    if (!hasPreviewTabs && isNavigatorOpen) {
-      setIsNavigatorOpen(false)
-    }
-  }, [hasPreviewTabs, isNavigatorOpen])
-
-  useEffect(() => {
     if (!isNavigatorVisible) {
       setIsViewMenuOpen(false)
     }
@@ -1550,7 +1544,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const handleRefresh = () => {
     void loadStatus(sessionId, { force: true })
     if (activePreviewTab) {
-      void openPreview(sessionId, activePreviewTab.path, activePreviewTab.kind)
+      void openPreview(sessionId, activePreviewTab.path, activePreviewTab.kind, undefined, activePreviewTab.diffSource, activePreviewTab.textEncoding)
     }
     if (hasWorkspaceSearch) {
       setWorkspaceSearchRevision((revision) => revision + 1)
@@ -1586,13 +1580,13 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   }
 
   const handleOpenDiff = (path: string) => {
-    setIsNavigatorOpen(true)
+    setIsNavigatorOpen(false)
     void openPreview(sessionId, path, 'diff')
     focusPreviewAfterOpen()
   }
 
   const handleOpenFile = (path: string) => {
-    setIsNavigatorOpen(true)
+    setIsNavigatorOpen(false)
     void openPreview(sessionId, path, 'file')
     focusPreviewAfterOpen()
   }
@@ -1974,6 +1968,30 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             </span>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {activePreviewTab.previewType !== 'image' && (
+              <label className="hidden items-center gap-1 text-[10px] text-[var(--color-text-secondary)] min-[720px]:inline-flex">
+                <span>编码</span>
+                <select
+                  aria-label="文本编码"
+                  value={activePreviewTab.textEncoding ?? 'auto'}
+                  onChange={(event) => {
+                    void openPreview(
+                      sessionId,
+                      activePreviewTab.path,
+                      activePreviewTab.kind,
+                      undefined,
+                      activePreviewTab.diffSource,
+                      event.target.value as 'auto' | 'utf8' | 'gbk',
+                    )
+                  }}
+                  className="h-7 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 text-[10px] text-[var(--color-text-primary)]"
+                >
+                  <option value="auto">自动（前 100 字符）</option>
+                  <option value="utf8">UTF-8</option>
+                  <option value="gbk">GBK</option>
+                </select>
+              </label>
+            )}
             <button
               type="button"
               aria-label={t('workspace.addToChat')}
@@ -2016,7 +2034,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             <button
               type="button"
               onClick={() => {
-                void openPreview(sessionId, activePreviewTab.path, activePreviewTab.kind)
+                void openPreview(sessionId, activePreviewTab.path, activePreviewTab.kind, undefined, activePreviewTab.diffSource, activePreviewTab.textEncoding)
               }}
               className="shrink-0 rounded-[6px] border border-[var(--color-error)]/30 px-2 py-1 font-medium hover:bg-[var(--color-error)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-error)]/25"
             >
@@ -2094,7 +2112,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                     role="tab"
                     aria-selected={isActive}
                     onClick={() => {
-                      void openPreview(sessionId, tab.path, tab.kind)
+                      void openPreview(sessionId, tab.path, tab.kind, undefined, tab.diffSource, tab.textEncoding)
                     }}
                     className="min-w-0 flex flex-1 items-center gap-2 text-left"
                   >
@@ -2187,19 +2205,33 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     >
       <div
         data-testid="workspace-review-layout"
-        className={`relative grid min-h-0 flex-1 overflow-hidden ${hasPreviewTabs && isNavigatorVisible ? 'grid-cols-[minmax(0,1fr)_280px]' : 'grid-cols-1'}`}
+        className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
       >
-        {hasPreviewTabs && (
-          <div data-testid="workspace-preview-column" className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--color-surface)]">
+        <div role="tablist" aria-label="工作区视图" className="flex h-10 shrink-0 items-end gap-4 border-b border-[var(--color-text-primary)]/10 px-3">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isNavigatorVisible}
+            onClick={() => setIsNavigatorOpen(true)}
+            className={`relative h-10 px-1 text-[12px] font-medium ${isNavigatorVisible ? 'text-[var(--color-text-primary)] after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--color-info)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
+          >文件树</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!isNavigatorVisible}
+            onClick={() => setIsNavigatorOpen(false)}
+            className={`relative h-10 px-1 text-[12px] font-medium ${!isNavigatorVisible ? 'text-[var(--color-text-primary)] after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--color-info)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
+          >查看文件{hasPreviewTabs ? `（${previewTabs.length}）` : ''}</button>
+        </div>
+
+        {hasPreviewTabs && <div data-testid="workspace-preview-column" className={`${isNavigatorVisible ? 'hidden' : 'flex'} min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-surface)]`}>
             {renderPreviewTabs()}
             {renderPreviewContent()}
-          </div>
-        )}
+        </div>}
 
-        {isNavigatorVisible && (
-          <div
+        <div
             data-testid="workspace-file-navigator"
-            className={`${hasPreviewTabs ? 'border-l border-[var(--color-text-primary)]/10' : ''} flex min-h-0 flex-col bg-[var(--color-surface)]`}
+            className={`${isNavigatorVisible ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col bg-[var(--color-surface)]`}
           >
             <header
               data-testid="workspace-file-navigator-header"
@@ -2282,8 +2314,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             <div className="min-h-0 flex-1 overflow-auto py-1.5">
               {navigatorView === 'changed' ? renderChangedView() : renderAllFilesView()}
             </div>
-          </div>
-        )}
+        </div>
       </div>
 
       {fileContextMenu && (

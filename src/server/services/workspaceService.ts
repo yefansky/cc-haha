@@ -17,6 +17,7 @@ const MAX_PREVIEW_BYTES = 1024 * 1024
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
+const AUTO_ENCODING_SAMPLE_BYTES = 300
 // `svn status --xml --no-ignore` emits one XML element for every changed or
 // unversioned path. Large legacy workspaces can legitimately exceed the Git
 // command buffer even though SVN completed successfully.
@@ -33,6 +34,26 @@ const PLAINTEXT_FILE_NAMES = new Set([
   'cmakelists.txt', 'dockerfile', 'makefile', 'readme', 'license',
 ])
 const execFile = promisify(execFileCallback)
+
+function decodeWorkspaceText(buffer: Buffer, requestedEncoding: WorkspaceTextEncoding): { content: string; encoding: WorkspaceTextEncoding } {
+  const encoding = requestedEncoding === 'auto' ? detectWorkspaceTextEncoding(buffer) : requestedEncoding
+  return {
+    content: new TextDecoder(encoding === 'gbk' ? 'gbk' : 'utf-8').decode(buffer),
+    encoding,
+  }
+}
+
+function detectWorkspaceTextEncoding(buffer: Buffer): WorkspaceTextEncoding {
+  // A small sample is enough to reject malformed UTF-8 while keeping auto-detect
+  // instantaneous. 300 bytes covers roughly the first 100 Chinese characters.
+  const sample = buffer.subarray(0, AUTO_ENCODING_SAMPLE_BYTES)
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(sample)
+    return 'utf8'
+  } catch {
+    return 'gbk'
+  }
+}
 
 function isVcsMetadataDirectoryName(name: string): boolean {
   return VCS_METADATA_DIRECTORY_NAMES.has(name.toLowerCase())
@@ -113,6 +134,7 @@ export type WorkspaceReadFileResult = {
   size: number
   truncated?: boolean
   readBytes?: number
+  encoding?: WorkspaceTextEncoding
   error?: string
 }
 
@@ -154,6 +176,8 @@ type StatusEntry = {
   isDirectory?: boolean
   isSymlink?: boolean
 }
+
+export type WorkspaceTextEncoding = 'auto' | 'utf8' | 'gbk'
 
 type ScopedStatusEntry = {
   repoPath: string
@@ -498,6 +522,7 @@ export class WorkspaceService {
   async readFile(
     sessionId: string,
     filePath: string,
+    requestedEncoding: WorkspaceTextEncoding = 'auto',
   ): Promise<WorkspaceReadFileResult> {
     const resolvedPath = await this.resolveWorkspacePath(sessionId, filePath)
 
@@ -575,7 +600,7 @@ export class WorkspaceService {
       state: 'ok',
       path: resolvedPath.relativePath,
       previewType: 'text',
-      content: content.toString('utf8'),
+      ...decodeWorkspaceText(content, requestedEncoding),
       language,
       size: stat.stat.size,
       truncated: content.length < stat.stat.size,
@@ -810,6 +835,7 @@ export class WorkspaceService {
   async getDiff(
     sessionId: string,
     filePath: string,
+    requestedEncoding: WorkspaceTextEncoding = 'auto',
   ): Promise<WorkspaceDiffResult> {
     let resolvedPath: WorkspacePathResolution
     try {
@@ -910,6 +936,7 @@ export class WorkspaceService {
       const diff = await this.buildUntrackedDiff(
         resolvedPath.canonicalTargetPath,
         resolvedPath.relativePath,
+        requestedEncoding,
       )
       if (diff.kind === 'missing') {
         return { state: 'missing', path: resolvedPath.relativePath }
@@ -925,7 +952,7 @@ export class WorkspaceService {
     }
 
     const targetPath = statusEntry.repoPath
-    const diff = await this.runGitDiff(repoInfo.repoRoot, targetPath)
+    const diff = await this.runGitDiff(repoInfo.repoRoot, targetPath, requestedEncoding)
     if (diff.kind === 'error') {
       return {
         state: 'error',
@@ -2352,8 +2379,9 @@ export class WorkspaceService {
   private async runGitDiff(
     workDir: string,
     relativePath: string,
+    requestedEncoding: WorkspaceTextEncoding,
   ): Promise<{ kind: 'ok'; diff: string } | { kind: 'error'; message: string }> {
-    const result = await this.runGit(workDir, [
+    const args = [
       'diff',
       '--no-ext-diff',
       '--binary',
@@ -2362,30 +2390,44 @@ export class WorkspaceService {
       'HEAD',
       '--',
       relativePath,
-    ])
+    ]
+    const result = await this.runGitBuffer(workDir, args)
 
     if (result.code !== 0) {
       return {
         kind: 'error',
         message: this.formatGitError(
           'Failed to read git diff',
-          [
-            'diff',
-            '--no-ext-diff',
-            '--binary',
-            '--find-renames',
-            '--find-copies',
-            'HEAD',
-            '--',
-            relativePath,
-          ],
+          args,
           workDir,
           result,
         ),
       }
     }
 
-    return { kind: 'ok', diff: result.stdout }
+    return { kind: 'ok', diff: decodeWorkspaceText(result.stdout, requestedEncoding).content }
+  }
+
+  private async runGitBuffer(
+    workDir: string,
+    args: string[],
+  ): Promise<{ stdout: Buffer; stderr: string; code: number }> {
+    try {
+      const result = await execFile('git', args, {
+        cwd: workDir,
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: MAX_GIT_BUFFER_BYTES,
+        encoding: 'buffer',
+      })
+      return { stdout: result.stdout, stderr: result.stderr.toString('utf8'), code: 0 }
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException & { stdout?: string | Buffer; stderr?: string | Buffer; code?: number | string }
+      return {
+        stdout: Buffer.isBuffer(err.stdout) ? err.stdout : Buffer.from(err.stdout ?? ''),
+        stderr: Buffer.isBuffer(err.stderr) ? err.stderr.toString('utf8') : err.stderr ?? '',
+        code: typeof err.code === 'number' ? err.code : 1,
+      }
+    }
   }
 
   private async getSvnDiffStats(workspaceRoot: string, relativePath: string): Promise<DiffStatsResult> {
@@ -2501,6 +2543,7 @@ export class WorkspaceService {
   private async buildUntrackedDiff(
     absolutePath: string,
     relativePath: string,
+    requestedEncoding: WorkspaceTextEncoding,
   ): Promise<UntrackedDiffResult> {
     const stat = await this.safeStat(absolutePath)
     if (stat.kind === 'error') {
@@ -2535,7 +2578,7 @@ export class WorkspaceService {
       }
     }
 
-    const content = buffer.toString('utf8')
+    const content = decodeWorkspaceText(buffer, requestedEncoding).content
     const lines = content.split(/\r\n|\r|\n/)
     if (lines[lines.length - 1] === '') {
       lines.pop()
