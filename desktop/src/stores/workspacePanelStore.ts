@@ -69,6 +69,11 @@ export type WorkspacePanelSessionState = {
   hasUserSelectedView?: boolean
 }
 
+type WorkspaceStatusCacheEntry = {
+  result: WorkspaceStatusResult
+  loadedAt: number
+}
+
 type WorkspacePanelLoadingState = {
   statusBySession: Record<string, boolean | undefined>
   treeBySessionPath: Record<string, boolean | undefined>
@@ -87,6 +92,8 @@ type WorkspacePanelStore = {
   modeBySession: Record<string, WorkbenchMode | undefined>
   width: number
   statusBySession: Record<string, WorkspaceStatusResult | undefined>
+  statusCacheByWorkDir: Record<string, WorkspaceStatusCacheEntry | undefined>
+  workDirKeyBySession: Record<string, string | undefined>
   expandedPathsBySession: Record<string, string[] | undefined>
   treeBySessionPath: Record<string, Record<string, WorkspaceTreeResult | undefined> | undefined>
   previewTabsBySession: Record<string, WorkspacePreviewTab[] | undefined>
@@ -109,7 +116,9 @@ type WorkspacePanelStore = {
   setActiveView: (sessionId: string, view: WorkspacePanelView) => void
   addMountedRoot: (path: string) => void
   removeMountedRoot: (path: string) => void
-  loadStatus: (sessionId: string) => Promise<void>
+  registerSessionWorkDir: (sessionId: string, workDir?: string) => void
+  loadStatus: (sessionId: string, options?: { force?: boolean }) => Promise<void>
+  preloadStatus: (sessionId: string) => void
   loadTree: (sessionId: string, path?: string) => Promise<void>
   toggleTreeNode: (sessionId: string, path: string) => Promise<void>
   openPreview: (
@@ -165,6 +174,11 @@ function persistMountedRoots(roots: WorkspaceMountedRoot[]): void {
 const statusRequestIds = new Map<string, number>()
 const treeRequestIds = new Map<string, number>()
 const previewRequestIds = new Map<string, number>()
+const WORKSPACE_STATUS_CACHE_TTL_MS = 15_000
+
+function getWorkDirCacheKey(workDir: string) {
+  return workDir.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
 
 function nextRequestId(store: Map<string, number>, key: string) {
   const requestId = (store.get(key) ?? 0) + 1
@@ -273,6 +287,8 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
   modeBySession: {},
   width: WORKSPACE_PANEL_DEFAULT_WIDTH,
   statusBySession: {},
+  statusCacheByWorkDir: {},
+  workDirKeyBySession: {},
   expandedPathsBySession: {},
   treeBySessionPath: {},
   previewTabsBySession: {},
@@ -371,8 +387,38 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     return { mountedRoots }
   }),
 
-  loadStatus: async (sessionId) => {
+  registerSessionWorkDir: (sessionId, workDir) => {
+    if (!workDir?.trim()) return
+    const workDirKey = getWorkDirCacheKey(workDir)
+    set((state) => ({
+      workDirKeyBySession: {
+        ...state.workDirKeyBySession,
+        [sessionId]: workDirKey,
+      },
+    }))
+  },
+
+  loadStatus: async (sessionId, options) => {
     const requestId = nextRequestId(statusRequestIds, sessionId)
+    const knownWorkDirKey = get().workDirKeyBySession[sessionId]
+    const cached = knownWorkDirKey ? get().statusCacheByWorkDir[knownWorkDirKey] : undefined
+
+    // A session's normal reload remains a real refresh. The cache is for a
+    // different session that happens to point at the same checkout.
+    if (!options?.force && !get().statusBySession[sessionId] && cached && Date.now() - cached.loadedAt < WORKSPACE_STATUS_CACHE_TTL_MS) {
+      set((state) => ({
+        statusBySession: { ...state.statusBySession, [sessionId]: cached.result },
+        loading: {
+          ...state.loading,
+          statusBySession: { ...state.loading.statusBySession, [sessionId]: false },
+        },
+        errors: {
+          ...state.errors,
+          statusBySession: { ...state.errors.statusBySession, [sessionId]: cached.result.error ?? null },
+        },
+      }))
+      return
+    }
 
     set((state) => ({
       loading: {
@@ -402,6 +448,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
             ? result.changedFiles.length > 0 ? 'changed' : 'all'
             : panel.activeView
 
+        const workDirKey = getWorkDirCacheKey(result.workDir)
         return {
           panelBySession: {
             ...state.panelBySession,
@@ -413,6 +460,14 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
           statusBySession: {
             ...state.statusBySession,
             [sessionId]: result,
+          },
+          statusCacheByWorkDir: {
+            ...state.statusCacheByWorkDir,
+            [workDirKey]: { result, loadedAt: Date.now() },
+          },
+          workDirKeyBySession: {
+            ...state.workDirKeyBySession,
+            [sessionId]: workDirKey,
           },
           loading: {
             ...state.loading,
@@ -450,6 +505,10 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         },
       }))
     }
+  },
+
+  preloadStatus: (sessionId) => {
+    void get().loadStatus(sessionId)
   },
 
   loadTree: async (sessionId, path = '') => {
@@ -897,6 +956,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
       panelBySession: removeRecordKey(state.panelBySession, sessionId),
       modeBySession: removeRecordKey(state.modeBySession, sessionId),
       statusBySession: removeRecordKey(state.statusBySession, sessionId),
+      workDirKeyBySession: removeRecordKey(state.workDirKeyBySession, sessionId),
       expandedPathsBySession: removeRecordKey(state.expandedPathsBySession, sessionId),
       treeBySessionPath: removeRecordKey(state.treeBySessionPath, sessionId),
       previewTabsBySession: removeRecordKey(state.previewTabsBySession, sessionId),
