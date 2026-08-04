@@ -25,4 +25,9 @@ export const memoryApi = {
     expectedBytes?: number
   }) =>
     api.put<{ ok: true; file: Omit<MemoryFileDetail, 'content'> }>('/api/memory/file', input),
+
+  deleteFile: (projectId: string, path: string) => {
+    const query = new URLSearchParams({ projectId, path })
+    return api.delete<{ ok: true }>(`/api/memory/file?${query.toString()}`)
+  },
 }

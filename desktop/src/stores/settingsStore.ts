@@ -54,6 +54,7 @@ type SettingsStore = {
   currentModel: ModelInfo | null
   effortLevel: EffortLevel
   thinkingEnabled: boolean
+  autoMemoryEnabled: boolean
   autoDreamEnabled: boolean
   autoModeOptInAccepted: boolean
   availableModels: ModelInfo[]
@@ -94,6 +95,7 @@ type SettingsStore = {
   setModel: (modelId: string) => Promise<void>
   setEffort: (level: EffortLevel) => Promise<void>
   setThinkingEnabled: (enabled: boolean) => Promise<void>
+  setAutoMemoryEnabled: (enabled: boolean) => Promise<void>
   setAutoDreamEnabled: (enabled: boolean) => Promise<void>
   acceptAutoModeOptIn: () => Promise<void>
   setLocale: (locale: Locale) => void
@@ -183,6 +185,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   currentModel: null,
   effortLevel: 'max',
   thinkingEnabled: true,
+  autoMemoryEnabled: false,
   autoDreamEnabled: false,
   autoModeOptInAccepted: false,
   availableModels: [],
@@ -257,6 +260,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         currentModel: model,
         effortLevel: level,
         thinkingEnabled: userSettings.alwaysThinkingEnabled !== false,
+        autoMemoryEnabled: userSettings.autoMemoryEnabled === true,
         autoDreamEnabled: userSettings.autoDreamEnabled === true,
         autoModeOptInAccepted: userSettings.skipAutoPermissionPrompt === true,
         chatSendBehavior: normalizeChatSendBehavior(userSettings.chatSendBehavior),
@@ -325,6 +329,17 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       await settingsApi.updateUser({ alwaysThinkingEnabled: enabled })
     } catch {
       set({ thinkingEnabled: prev })
+    }
+  },
+
+  setAutoMemoryEnabled: async (enabled) => {
+    const prev = get().autoMemoryEnabled
+    set({ autoMemoryEnabled: enabled })
+    try {
+      await settingsApi.updateUser({ autoMemoryEnabled: enabled })
+    } catch (error) {
+      set({ autoMemoryEnabled: prev })
+      throw error
     }
   },
 
