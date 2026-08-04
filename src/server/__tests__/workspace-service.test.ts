@@ -662,7 +662,7 @@ describe('WorkspaceService', () => {
 
     const linked = await service.readTree('session-1', '项目大脑')
     const linkedFile = linked.entries.find((entry) => entry.name === 'index.md')!
-    expect(linkedFile.path).toBe(path.join(workDir, '项目大脑', 'index.md'))
+    expect(linkedFile.path).toBe('项目大脑/index.md')
     await expect(service.readFile('session-1', linkedFile.path)).resolves.toMatchObject({
       state: 'ok',
       content: '# project brain\n',
@@ -675,6 +675,102 @@ describe('WorkspaceService', () => {
       path: path.join(projectBrain, 'index.md'),
       isDirectory: false,
     })
+  })
+
+  it('reads SVN diffs through a directory symlink inside a Git workspace', async () => {
+    const workDir = await makeTempDir('workspace-service-linked-svn-parent-')
+    const svnWorkspace = await createSvnWorkspace()
+    const linkedSubdirectory = path.join(svnWorkspace, 'linked-subdirectory')
+    const nestedFileName = '变更.txt'
+    await fs.mkdir(linkedSubdirectory)
+    await fs.writeFile(path.join(linkedSubdirectory, nestedFileName), 'nested before\n')
+    svn(svnWorkspace, 'add', 'linked-subdirectory')
+    svn(svnWorkspace, 'commit', '-m', 'add linked subdirectory', 'linked-subdirectory')
+    await fs.writeFile(path.join(linkedSubdirectory, nestedFileName), 'nested before\nnested after\n')
+    const outputDirectory = path.join(linkedSubdirectory, 'x64', 'Generated')
+    await fs.mkdir(outputDirectory, { recursive: true })
+    await fs.writeFile(path.join(outputDirectory, 'new-source.lua'), 'return true\n')
+    await fs.writeFile(path.join(outputDirectory, 'symbols.pdb'), Buffer.from([0, 1, 2, 3]))
+    git(workDir, 'init')
+    await fs.symlink(linkedSubdirectory, path.join(workDir, 'legacy-svn'), 'junction')
+    const service = new WorkspaceService(async () => workDir)
+
+    const rootTree = await service.readTree('session-1')
+    expect(rootTree.entries).toContainEqual({
+      name: 'legacy-svn',
+      path: 'legacy-svn',
+      isDirectory: true,
+      isSymlink: true,
+    })
+    const linkedTree = await service.readTree('session-1', 'legacy-svn')
+    const trackedFile = linkedTree.entries.find((entry) => entry.name === nestedFileName)!
+
+    expect(trackedFile.path).toBe(`legacy-svn/${nestedFileName}`)
+    const status = await service.getStatus('session-1')
+    expect(status.changedFiles).toContainEqual({
+      path: 'legacy-svn',
+      status: 'modified',
+      additions: 0,
+      deletions: 0,
+      isDirectory: true,
+      isSymlink: true,
+    })
+    expect(status.changedFiles).toContainEqual({
+      path: `legacy-svn/${nestedFileName}`,
+      oldPath: undefined,
+      status: 'modified',
+      additions: 1,
+      deletions: 0,
+    })
+    expect(status.changedFiles).toContainEqual({
+      path: 'legacy-svn/x64',
+      oldPath: undefined,
+      status: 'untracked',
+      additions: 0,
+      deletions: 0,
+      isDirectory: true,
+    })
+    expect(status.changedFiles).toContainEqual({
+      path: 'legacy-svn/x64/Generated/new-source.lua',
+      oldPath: undefined,
+      status: 'untracked',
+      additions: 1,
+      deletions: 0,
+    })
+    expect(status.changedFiles.some((file) => file.path.endsWith('symbols.pdb'))).toBe(false)
+    const diff = await service.getDiff('session-1', trackedFile.path)
+    expect(diff).toMatchObject({
+      state: 'ok',
+      diff: expect.stringContaining('+nested after'),
+    })
+    expect(diff.path).toBe(trackedFile.path)
+    await expect(service.getDiff('session-1', 'legacy-svn/x64/Generated/new-source.lua')).resolves.toMatchObject({
+      state: 'ok',
+      path: 'legacy-svn/x64/Generated/new-source.lua',
+      diff: expect.stringContaining('+return true'),
+    })
+  })
+
+  it('does not recursively report files through an unversioned SVN junction', async () => {
+    const svnWorkspace = await createSvnWorkspace()
+    const externalDirectory = await makeTempDir('workspace-service-svn-junction-target-')
+    await fs.mkdir(path.join(externalDirectory, 'nested'))
+    await fs.writeFile(path.join(externalDirectory, 'nested', 'clean.md'), '# clean external file\n')
+    await fs.symlink(externalDirectory, path.join(svnWorkspace, 'external-link'), 'junction')
+    const service = new WorkspaceService(async () => svnWorkspace)
+
+    const status = await service.getStatus('session-1')
+
+    expect(status.state).toBe('ok')
+    expect(status.changedFiles).toContainEqual({
+      path: 'external-link',
+      status: 'untracked',
+      additions: 0,
+      deletions: 0,
+      isDirectory: true,
+      isSymlink: true,
+    })
+    expect(status.changedFiles.some((file) => file.path.startsWith('external-link/'))).toBe(false)
   })
 
   it('returns diffs for modified, added, deleted, and untracked files', async () => {

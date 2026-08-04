@@ -18,6 +18,16 @@ const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
 const VCS_METADATA_DIRECTORY_NAMES = new Set(['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'])
+const PLAINTEXT_FILE_EXTENSIONS = new Set([
+  'asm', 'bat', 'c', 'cc', 'cfg', 'cmake', 'conf', 'cpp', 'cs', 'css', 'csv',
+  'def', 'go', 'h', 'hh', 'hpp', 'html', 'i', 'ini', 'inl', 'java', 'js', 'json',
+  'jsx', 'lh', 'li', 'log', 'lua', 'm', 'md', 'mjs', 'mm', 'ps1', 'py', 'rc',
+  'rs', 'sh', 'sln', 'sql', 'svg', 'tab', 'targets', 'toml', 'ts', 'tsx', 'tsv',
+  'txt', 'vcxproj', 'xml', 'yaml', 'yml',
+])
+const PLAINTEXT_FILE_NAMES = new Set([
+  'cmakelists.txt', 'dockerfile', 'makefile', 'readme', 'license',
+])
 const execFile = promisify(execFileCallback)
 
 function isVcsMetadataDirectoryName(name: string): boolean {
@@ -74,6 +84,8 @@ export type WorkspaceChangedFile = {
   status: WorkspaceFileStatus
   additions: number
   deletions: number
+  isDirectory?: boolean
+  isSymlink?: boolean
 }
 
 export type WorkspaceStatusResult = {
@@ -135,6 +147,8 @@ type StatusEntry = {
   oldPath?: string
   code: string
   status: WorkspaceFileStatus
+  isDirectory?: boolean
+  isSymlink?: boolean
 }
 
 type ScopedStatusEntry = {
@@ -143,6 +157,7 @@ type ScopedStatusEntry = {
   path: string
   oldPath?: string
   status: WorkspaceFileStatus
+  isDirectory?: boolean
   absolutePath: string
   canonicalWorkspaceRoot: string
 }
@@ -315,15 +330,25 @@ export class WorkspaceService {
         ),
       ],
     )
+    const linkedDirectoryChanges = await this.getLinkedSvnDirectoryChanges(
+      workspaceInfo.workspaceRoot,
+    )
 
     if (repoInfo.kind === 'not_git_repo') {
       const svnInfo = await this.getSvnWorkspaceInfo(workDir)
       if (svnInfo.kind === 'ok') {
-        return await this.getSvnStatus(
+        const svnStatus = await this.getSvnStatus(
           workspaceInfo,
           svnInfo.workspaceRoot,
           sessionChanges,
         )
+        if (svnStatus.state === 'ok') {
+          svnStatus.changedFiles = this.mergeLinkedDirectoryChanges(
+            svnStatus.changedFiles,
+            linkedDirectoryChanges,
+          )
+        }
+        return svnStatus
       }
       if (svnInfo.kind === 'error') {
         return {
@@ -343,7 +368,10 @@ export class WorkspaceService {
         repoName: path.basename(workspaceInfo.workspaceRoot),
         branch: null,
         isGitRepo: false,
-        changedFiles: sessionChanges.map(({ diff: _diff, ...change }) => change),
+        changedFiles: this.mergeLinkedDirectoryChanges(
+          sessionChanges.map(({ diff: _diff, ...change }) => change),
+          linkedDirectoryChanges,
+        ),
       }
     }
     if (repoInfo.kind === 'error') {
@@ -370,11 +398,16 @@ export class WorkspaceService {
         error: statusEntries.message,
       }
     }
+    const linkedRootPaths = linkedDirectoryChanges
+      .filter((change) => change.isDirectory && change.isSymlink)
+      .map((change) => change.path)
     const scopedEntries = this.scopeStatusEntries(
       statusEntries.entries,
       repoInfo.repoRoot,
       workspaceInfo.canonicalWorkspaceRoot,
-    )
+    ).filter((entry) => !linkedRootPaths.some((linkedRoot) => (
+      entry.path === linkedRoot || entry.path.startsWith(`${linkedRoot}/`)
+    )))
     const trackedStats = await this.getTrackedDiffStats(repoInfo.repoRoot, scopedEntries)
     if (trackedStats.kind === 'error') {
       return {
@@ -390,7 +423,9 @@ export class WorkspaceService {
 
     const changedFiles = await Promise.all(
       scopedEntries.map(async (entry) => {
-        const stats = entry.status === 'untracked'
+        const stats = entry.isDirectory
+          ? { kind: 'ok' as const, additions: 0, deletions: 0 }
+          : entry.status === 'untracked'
           ? await this.getDiffStats(repoInfo.repoRoot, entry)
           : {
               kind: 'ok' as const,
@@ -410,6 +445,7 @@ export class WorkspaceService {
           status: entry.status,
           additions: stats.additions,
           deletions: stats.deletions,
+          ...(entry.isDirectory ? { isDirectory: true } : {}),
         } satisfies WorkspaceChangedFile
       }),
     ).catch((error) => error as Error)
@@ -448,7 +484,10 @@ export class WorkspaceService {
       repoName: path.basename(repoInfo.repoRoot),
       branch: repoInfo.branch,
       isGitRepo: true,
-      changedFiles: mergedChangedFiles,
+      changedFiles: this.mergeLinkedDirectoryChanges(
+        mergedChangedFiles,
+        linkedDirectoryChanges,
+      ),
     }
   }
 
@@ -752,9 +791,7 @@ export class WorkspaceService {
       })
       .map(({ entry, absoluteEntryPath, isDirectory, isSymlink }) => ({
         name: entry.name,
-        path: resolvedPath.isExternalRoot
-          ? absoluteEntryPath
-          : this.normalizeRelativePath(path.relative(resolvedPath.workspaceRoot, absoluteEntryPath)),
+        path: this.resolveTreeEntryPath(resolvedPath, absoluteEntryPath, entry.name),
         isDirectory,
         ...(isSymlink ? { isSymlink: true } : {}),
       }))
@@ -781,9 +818,10 @@ export class WorkspaceService {
       }
     }
 
-    const repoInfo = await this.getGitRepoInfo(resolvedPath.workspaceRoot)
+    const vcsProbePath = path.dirname(resolvedPath.canonicalTargetPath)
+    const repoInfo = await this.getGitRepoInfo(vcsProbePath)
     if (repoInfo.kind === 'not_git_repo') {
-      const svnInfo = await this.getSvnWorkspaceInfo(resolvedPath.workspaceRoot)
+      const svnInfo = await this.getSvnWorkspaceInfo(vcsProbePath)
       if (svnInfo.kind === 'ok') {
         return await this.getSvnDiff(sessionId, resolvedPath, svnInfo.workspaceRoot)
       }
@@ -1379,9 +1417,20 @@ export class WorkspaceService {
         requestedPath,
       )
     } catch (error) {
-      // `readTree` registers directory symlinks as explicit local viewer
-      // roots. Following such a link is therefore allowed even if it resolves
-      // outside the primary session working directory.
+      // A directory symlink is an intentional local navigation edge. Resolve it
+      // here as well as while listing trees so direct requests do not depend on
+      // an earlier parent-tree request registering the link.
+      if (
+        await this.isDirectorySymlinkInsideWorkspace(
+          workspaceRoot.workspaceRoot,
+          absolutePath,
+        )
+      ) {
+        registerFilesystemAccessRoot(absolutePath)
+        return this.resolveOutsideWorkspacePath(absolutePath, requestedPath)
+      }
+      // Explicit user-selected viewer roots may also sit outside the primary
+      // session working directory.
       if (isWithinRegisteredFilesystemRoot(absolutePath)) {
         return this.resolveOutsideWorkspacePath(absolutePath, requestedPath)
       }
@@ -1501,6 +1550,32 @@ export class WorkspaceService {
     }
   }
 
+  private async isDirectorySymlinkInsideWorkspace(
+    workspaceRoot: string,
+    targetPath: string,
+  ): Promise<boolean> {
+    const relativePath = path.relative(workspaceRoot, targetPath)
+    if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`)) {
+      return false
+    }
+
+    let currentPath = workspaceRoot
+    for (const segment of relativePath.split(path.sep)) {
+      currentPath = path.join(currentPath, segment)
+      try {
+        const stat = await fs.lstat(currentPath)
+        if (stat.isSymbolicLink()) {
+          const targetStat = await this.safeStat(currentPath)
+          return targetStat.kind === 'ok' && targetStat.stat.isDirectory()
+        }
+      } catch {
+        return false
+      }
+    }
+
+    return false
+  }
+
   private isWithinRoot(targetPath: string, rootPath: string): boolean {
     return isSameOrInsidePathForPlatform(targetPath, rootPath)
   }
@@ -1518,6 +1593,117 @@ export class WorkspaceService {
   private normalizeRequestedPath(filePath: string): string {
     if (!filePath) return ''
     return filePath.split(path.sep).join('/')
+  }
+
+  private resolveTreeEntryPath(
+    resolvedPath: WorkspacePathResolution,
+    absoluteEntryPath: string,
+    entryName: string,
+  ): string {
+    if (this.isAbsoluteRequestPath(resolvedPath.requestedPath)) {
+      return absoluteEntryPath
+    }
+    const parentPath = this.normalizeRequestedPath(resolvedPath.relativePath)
+    return parentPath ? path.posix.join(parentPath, entryName) : entryName
+  }
+
+  private async getLinkedSvnDirectoryChanges(
+    workspaceRoot: string,
+  ): Promise<WorkspaceChangedFile[]> {
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = await fs.readdir(workspaceRoot, { withFileTypes: true })
+    } catch {
+      return []
+    }
+
+    const linkedChanges = await Promise.all(entries
+      .filter((entry) => entry.isSymbolicLink())
+      .map(async (entry): Promise<WorkspaceChangedFile[]> => {
+        const linkPath = path.join(workspaceRoot, entry.name)
+        const targetStat = await this.safeStat(linkPath)
+        if (targetStat.kind !== 'ok' || !targetStat.stat.isDirectory()) return []
+
+        const logicalRootPath = this.normalizeRelativePath(path.relative(workspaceRoot, linkPath))
+        const rootMarker: WorkspaceChangedFile = {
+          path: logicalRootPath,
+          status: 'modified',
+          additions: 0,
+          deletions: 0,
+          isDirectory: true,
+          isSymlink: true,
+        }
+
+        let canonicalTarget: string
+        try {
+          canonicalTarget = await fs.realpath(linkPath)
+        } catch {
+          return [rootMarker]
+        }
+
+        const svnInfo = await this.getSvnWorkspaceInfo(canonicalTarget)
+        if (svnInfo.kind !== 'ok') return [rootMarker]
+        const statusEntries = await this.getSvnStatusEntries(svnInfo.workspaceRoot)
+        if (statusEntries.kind !== 'ok') return [rootMarker]
+
+        const scopedEntries = this.scopeStatusEntries(
+          statusEntries.entries,
+          svnInfo.workspaceRoot,
+          canonicalTarget,
+        )
+        const changes = await Promise.all(scopedEntries.map(async (statusEntry) => {
+          const stats = statusEntry.isDirectory
+            ? { kind: 'ok' as const, additions: 0, deletions: 0 }
+            : statusEntry.status === 'untracked'
+            ? await this.getUntrackedStats(statusEntry.absolutePath)
+            : await this.getSvnDiffStatsForCanonicalPath(statusEntry.absolutePath)
+          return {
+            path: path.posix.join(logicalRootPath, statusEntry.path),
+            oldPath: statusEntry.oldPath
+              ? path.posix.join(logicalRootPath, statusEntry.oldPath)
+              : undefined,
+            status: statusEntry.status,
+            additions: stats.kind === 'ok' ? stats.additions : 0,
+            deletions: stats.kind === 'ok' ? stats.deletions : 0,
+            ...(statusEntry.isDirectory ? { isDirectory: true } : {}),
+          } satisfies WorkspaceChangedFile
+        }))
+
+        return [rootMarker, ...changes]
+      }))
+
+    return linkedChanges.flat()
+  }
+
+  private mergeLinkedDirectoryChanges(
+    changedFiles: WorkspaceChangedFile[],
+    linkedChanges: WorkspaceChangedFile[],
+  ): WorkspaceChangedFile[] {
+    if (linkedChanges.length === 0) return changedFiles
+    const changedFileByPath = new Map(changedFiles.map((file) => [file.path, file]))
+    const roots = linkedChanges.filter((change) => change.isDirectory && change.isSymlink)
+
+    for (const root of roots) {
+      const existing = changedFileByPath.get(root.path)
+      const hasNestedChanges = linkedChanges.some((change) => (
+        change.path !== root.path && change.path.startsWith(`${root.path}/`)
+      ))
+      if (existing || hasNestedChanges) {
+        changedFileByPath.set(root.path, {
+          ...root,
+          ...existing,
+          isDirectory: true,
+          isSymlink: true,
+        })
+      }
+    }
+    for (const change of linkedChanges) {
+      if (!(change.isDirectory && change.isSymlink)) {
+        changedFileByPath.set(change.path, change)
+      }
+    }
+
+    return [...changedFileByPath.values()].sort((left, right) => left.path.localeCompare(right.path))
   }
 
   private scopeStatusEntries(
@@ -1543,6 +1729,7 @@ export class WorkspaceService {
         path: scopedPath,
         oldPath: scopedOldPath ?? undefined,
         status: entry.status,
+        ...(entry.isDirectory ? { isDirectory: true } : {}),
         absolutePath: path.resolve(repoRoot, entry.path),
         canonicalWorkspaceRoot: workDir,
       }]
@@ -1655,26 +1842,38 @@ export class WorkspaceService {
   }
 
   private async getSvnWorkspaceInfo(workDir: string): Promise<SvnWorkspaceInfo> {
-    const result = await this.runSvn(workDir, ['info', '--show-item', 'wc-root'])
-    if (result.code !== 0) {
+    let probePath = path.resolve(workDir)
+    while (true) {
+      const result = await this.runSvn(probePath, ['info', '--show-item', 'wc-root'])
+      if (result.code === 0) {
+        const reportedRoot = result.stdout.trim()
+        if (!reportedRoot) return { kind: 'not_svn_workspace' }
+        try {
+          return { kind: 'ok', workspaceRoot: await fs.realpath(path.resolve(reportedRoot)) }
+        } catch (error) {
+          return {
+            kind: 'error',
+            message: this.formatFsError('Failed to canonicalize SVN workspace root', path.resolve(reportedRoot), error),
+          }
+        }
+      }
+
       const details = `${result.stderr}\n${result.stdout}`.toLowerCase()
-      if (!details || details.includes('not a working copy') || details.includes('is not a working copy')) {
-        return { kind: 'not_svn_workspace' }
+      const canProbeParent = !details
+        || details.includes('not a working copy')
+        || details.includes('is not a working copy')
+        || details.includes('was not found')
+        || details.includes('could not display info')
+      if (!canProbeParent) {
+        return {
+          kind: 'error',
+          message: this.formatSvnError('Failed to inspect SVN workspace', ['info', '--show-item', 'wc-root'], probePath, result),
+        }
       }
-      return {
-        kind: 'error',
-        message: this.formatSvnError('Failed to inspect SVN workspace', ['info', '--show-item', 'wc-root'], workDir, result),
-      }
-    }
-    const reportedRoot = result.stdout.trim()
-    if (!reportedRoot) return { kind: 'not_svn_workspace' }
-    try {
-      return { kind: 'ok', workspaceRoot: await fs.realpath(path.resolve(reportedRoot)) }
-    } catch (error) {
-      return {
-        kind: 'error',
-        message: this.formatFsError('Failed to canonicalize SVN workspace root', path.resolve(reportedRoot), error),
-      }
+
+      const parentPath = path.dirname(probePath)
+      if (parentPath === probePath) return { kind: 'not_svn_workspace' }
+      probePath = parentPath
     }
   }
 
@@ -1701,7 +1900,9 @@ export class WorkspaceService {
       workspaceInfo.canonicalWorkspaceRoot,
     )
     const changedFiles = await Promise.all(scopedEntries.map(async (entry) => {
-      const stats = entry.status === 'untracked'
+      const stats = entry.isDirectory
+        ? { kind: 'ok' as const, additions: 0, deletions: 0 }
+        : entry.status === 'untracked'
         ? await this.getUntrackedStats(entry.absolutePath)
         : await this.getSvnDiffStats(svnRoot, entry.repoPath)
       if (stats.kind === 'error') throw new Error(stats.message)
@@ -1711,6 +1912,7 @@ export class WorkspaceService {
         status: entry.status,
         additions: stats.additions,
         deletions: stats.deletions,
+        ...(entry.isDirectory ? { isDirectory: true } : {}),
       } satisfies WorkspaceChangedFile
     })).catch((error) => error as Error)
 
@@ -1778,7 +1980,7 @@ export class WorkspaceService {
           ? { state: 'missing', path: resolvedPath.relativePath }
           : { state: 'error', path: resolvedPath.relativePath, error: diff.message }
     }
-    const diff = await this.runSvnDiff(svnRoot, entry.repoPath)
+    const diff = await this.runSvnDiffForCanonicalPath(resolvedPath.canonicalTargetPath)
     if (diff.kind === 'error') return { state: 'error', path: resolvedPath.relativePath, error: diff.message }
     return diff.diff.trim()
       ? { state: 'ok', path: resolvedPath.relativePath, diff: diff.diff }
@@ -1810,7 +2012,107 @@ export class WorkspaceService {
         status,
       })
     }
-    return { kind: 'ok', entries }
+
+    const enrichedEntries = await Promise.all(entries.map(async (entry) => {
+      const absolutePath = path.resolve(workspaceRoot, entry.path)
+      const [linkStat, targetStat] = await Promise.all([
+        fs.lstat(absolutePath).catch(() => null),
+        this.safeStat(absolutePath),
+      ])
+      return {
+        ...entry,
+        ...(targetStat.kind === 'ok' && targetStat.stat.isDirectory()
+          ? { isDirectory: true as const }
+          : {}),
+        ...(linkStat?.isSymbolicLink() ? { isSymlink: true as const } : {}),
+      }
+    }))
+    const entryByPath = new Map(enrichedEntries.map((entry) => [entry.path, entry]))
+
+    for (const entry of enrichedEntries) {
+      // SVN reports an unversioned junction as a directory. Descending it can
+      // duplicate an entire external working copy under a false logical path.
+      if (entry.status !== 'untracked' || !entry.isDirectory || entry.isSymlink) continue
+      const nestedTextFiles = await this.findUntrackedPlaintextFiles(
+        path.resolve(workspaceRoot, entry.path),
+        workspaceRoot,
+      )
+      for (const nestedEntry of nestedTextFiles) {
+        if (!entryByPath.has(nestedEntry.path)) entryByPath.set(nestedEntry.path, nestedEntry)
+      }
+    }
+
+    return { kind: 'ok', entries: [...entryByPath.values()] }
+  }
+
+  private async findUntrackedPlaintextFiles(
+    directoryPath: string,
+    workspaceRoot: string,
+  ): Promise<StatusEntry[]> {
+    const discovered: StatusEntry[] = []
+    const pending = [directoryPath]
+
+    while (pending.length > 0) {
+      const currentDirectory = pending.pop()!
+      let entries: import('node:fs').Dirent[]
+      try {
+        entries = await fs.readdir(currentDirectory, { withFileTypes: true })
+      } catch {
+        continue
+      }
+
+      for (const entry of entries) {
+        if (entry.isSymbolicLink() || isVcsMetadataDirectoryName(entry.name)) continue
+        const absolutePath = path.join(currentDirectory, entry.name)
+        if (entry.isDirectory()) {
+          pending.push(absolutePath)
+          continue
+        }
+        if (!entry.isFile() || !this.isLikelyPlaintextPath(absolutePath)) continue
+        discovered.push({
+          path: this.normalizeRelativePath(path.relative(workspaceRoot, absolutePath)),
+          code: 'unversioned',
+          status: 'untracked',
+        })
+      }
+    }
+
+    return discovered
+  }
+
+  private isLikelyPlaintextPath(filePath: string): boolean {
+    const fileName = path.basename(filePath).toLowerCase()
+    const extension = path.extname(fileName).slice(1)
+    return PLAINTEXT_FILE_NAMES.has(fileName) || PLAINTEXT_FILE_EXTENSIONS.has(extension)
+  }
+
+  private async runSvnDiffForCanonicalPath(
+    canonicalTargetPath: string,
+  ): Promise<{ kind: 'ok'; diff: string } | { kind: 'error'; message: string }> {
+    const cwd = path.dirname(canonicalTargetPath)
+    const result = await this.runSvn(cwd, ['diff'])
+    if (result.code !== 0) {
+      return {
+        kind: 'error',
+        message: this.formatSvnError('Failed to read SVN diff', ['diff'], cwd, result),
+      }
+    }
+
+    const targetName = path.basename(canonicalTargetPath)
+    const blocks = result.stdout.split(/(?=^Index: )/m)
+    const indexedBlocks = blocks.filter((block) => /^Index: /m.test(block))
+    const matchingBlock = indexedBlocks.find((block) => {
+      const indexPath = /^Index: (.+)\r?$/m.exec(block)?.[1]?.trim()
+      if (!indexPath) return false
+      const indexName = path.basename(indexPath)
+      return process.platform === 'win32'
+        ? indexName.toLowerCase() === targetName.toLowerCase()
+        : indexName === targetName
+    })
+    // Some Windows SVN builds emit non-ASCII Index paths through the active
+    // code page even though diff content is UTF-8. A file-parent directory with
+    // exactly one changed target is still unambiguous.
+    return { kind: 'ok', diff: matchingBlock ?? (indexedBlocks.length === 1 ? indexedBlocks[0]! : '') }
   }
 
   private parseSvnStatus(item: string, props: string): WorkspaceFileStatus | null {
@@ -2086,13 +2388,23 @@ export class WorkspaceService {
         message: this.formatSvnError('Failed to read SVN diff stats', ['diff', '--', relativePath], workspaceRoot, result),
       }
     }
+    return { kind: 'ok', ...this.countSvnDiffStats(result.stdout) }
+  }
+
+  private async getSvnDiffStatsForCanonicalPath(canonicalTargetPath: string): Promise<DiffStatsResult> {
+    const result = await this.runSvnDiffForCanonicalPath(canonicalTargetPath)
+    if (result.kind === 'error') return result
+    return { kind: 'ok', ...this.countSvnDiffStats(result.diff) }
+  }
+
+  private countSvnDiffStats(diff: string): { additions: number; deletions: number } {
     let additions = 0
     let deletions = 0
-    for (const line of result.stdout.split('\n')) {
+    for (const line of diff.split('\n')) {
       if (line.startsWith('+') && !line.startsWith('+++')) additions += 1
       if (line.startsWith('-') && !line.startsWith('---')) deletions += 1
     }
-    return { kind: 'ok', additions, deletions }
+    return { additions, deletions }
   }
 
   private async runSvnDiff(
