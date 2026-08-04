@@ -3,6 +3,7 @@ import { ChevronDown, Download, FileText, FolderOpen, Loader2, RefreshCw, Shield
 import { sessionsApi } from '../../api/sessions'
 import { tracesApi } from '../../api/traces'
 import { formatBytes } from '../../lib/formatBytes'
+import { formatDurationMs } from '../../lib/trace/formatters'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { parseTraceRequestBody } from '../../lib/trace/requestParse'
 import { useChatStore } from '../../stores/chatStore'
@@ -28,6 +29,17 @@ type ToolCallReference = {
   id: string
   name: string
   input: unknown
+}
+
+export type MessageTimingVisual = {
+  durationMs?: number
+  visual?: RelativeMetricVisual
+  attribution?: 'previous-response' | 'following-request'
+}
+
+export type HistoricalRequest = {
+  call: TraceCallRecord
+  messages: NormalizedMessage[]
 }
 
 type ContextAuditPanelProps = {
@@ -156,6 +168,7 @@ export function ContextAuditPanel({ sessionId }: ContextAuditPanelProps) {
               sessionId={sessionId}
               call={call}
               previous={findPreviousCall(trace?.calls ?? [], call)}
+              allCalls={trace?.calls ?? []}
               newestIndex={index}
               callCount={calls.length}
             />
@@ -170,18 +183,21 @@ function ContextAuditCall({
   sessionId,
   call,
   previous,
+  allCalls,
   newestIndex,
   callCount,
 }: {
   sessionId: string
   call: TraceCallRecord
   previous: TraceCallRecord | undefined
+  allCalls: TraceCallRecord[]
   newestIndex: number
   callCount: number
 }) {
   const [open, setOpen] = useState(false)
   const [currentBody, setCurrentBody] = useState<BodyLoad>({ text: call.request.body.preview, isFull: false })
   const [previousBody, setPreviousBody] = useState<BodyLoad | null>(null)
+  const [messageTimings, setMessageTimings] = useState<MessageTimingVisual[] | null>(null)
   const [detail, setDetail] = useState<TraceCallRecord | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [diagnosticQuestion, setDiagnosticQuestion] = useState('')
@@ -199,14 +215,17 @@ function ContextAuditCall({
         ])
         const nextCall = currentDetail.call
         const priorCall = priorDetail?.call ?? null
-        const [request, priorRequest] = await Promise.all([
+        const [request, priorRequest, historicalRequests] = await Promise.all([
           loadRequestBody(sessionId, nextCall),
           priorCall ? loadRequestBody(sessionId, priorCall) : Promise.resolve(null),
+          loadHistoricalRequests(sessionId, allCalls),
         ])
         if (cancelled) return
         setDetail(nextCall)
         setCurrentBody(request)
         setPreviousBody(priorRequest)
+        const parsedCurrent = parseTraceRequestBody(request.text, nextCall.source)
+        setMessageTimings(parsedCurrent ? buildMessageTimingVisuals(parsedCurrent.messages, historicalRequests) : null)
         setLoadError(null)
       } catch (cause) {
         if (!cancelled) setLoadError(cause instanceof Error ? cause.message : String(cause))
@@ -214,7 +233,7 @@ function ContextAuditCall({
     }
     void load()
     return () => { cancelled = true }
-  }, [call.id, open, previous?.id, sessionId])
+  }, [allCalls, call.id, open, previous?.id, sessionId])
 
   const activeCall = detail ?? call
   const analysis = useMemo(
@@ -283,12 +302,14 @@ function ContextAuditCall({
             <div className="border-t border-[var(--color-border)] p-2.5">
               <div className="grid grid-cols-2 gap-2">
                 <Metric label="请求大小" value={formatBytes(activeCall.request.body.bytes)} />
+                <Metric label="完整往返耗时" value={formatDurationMs(activeCall.durationMs)} />
                 <Metric label="系统提示" value={formatBytes(analysis.systemBytes)} />
                 <Metric label="消息" value={`${analysis.messages}（用户 ${analysis.userMessages} / 助手 ${analysis.assistantMessages}）`} />
                 <Metric label="工具定义" value={`${analysis.tools} 个`} />
                 <Metric label="相对上次" value={analysis.deltaLabel} />
                 <Metric label="文件线索" value={`${analysis.files.length} 个`} />
               </div>
+              <p className="mt-2 text-[10px] leading-4 text-[var(--color-text-tertiary)]">耗时统计从开始上行到调用完成。小体积但长耗时通常值得优先检查云端推理/下行；大体积且长耗时仍可能是本地上报、网络或云端，需结合首字节时间进一步归因。</p>
               {analysis.files.length > 0 ? (
                 <div className="mt-3">
                   <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">仅展示在实际请求正文中有显式路径标记的文件；“内容”是 XML 文件块中的实际上传字节，“标记”只是路径附近文本，不会伪造磁盘文件大小。</p>
@@ -331,7 +352,7 @@ function ContextAuditCall({
                 {currentBody.file ? <span className="truncate font-mono">{currentBody.file}</span> : null}
                 <CopyButton text={currentBody.text} label="复制原文" copiedLabel="已复制" className="ml-auto shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 hover:text-[var(--color-text-primary)]" />
               </div>
-              <FormattedRequestView call={activeCall} text={currentBody.text} />
+          <FormattedRequestView call={activeCall} text={currentBody.text} messageTimings={messageTimings} />
               <details className="mt-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
                 <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-secondary)]">原始 JSON（逐字保留）</summary>
                 <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words border-t border-[var(--color-border)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{currentBody.text || '(空请求体)'}</pre>
@@ -383,6 +404,95 @@ type MessageFootprint = {
   distanceFromTail: number
 }
 
+export type RelativeMetricVisual = {
+  share: number
+  relativeWidth: number
+  rank: number
+}
+
+export type MessageSizeVisual = RelativeMetricVisual & {
+  bytes: number
+}
+
+const MOST_EXPENSIVE_MESSAGE_COUNT = 7
+
+export function buildRelativeMetricVisuals(values: number[]): RelativeMetricVisual[] {
+  const total = values.reduce((sum, value) => sum + value, 0)
+  const largestValue = Math.max(0, ...values)
+  const ranks = values
+    .map((value, index) => ({ value, index }))
+    .sort((left, right) => right.value - left.value || left.index - right.index)
+    .reduce<number[]>((result, entry, sortedIndex) => {
+      result[entry.index] = sortedIndex + 1
+      return result
+    }, [])
+
+  return values.map((value, index) => ({
+    share: total === 0 ? 0 : value / total,
+    relativeWidth: largestValue === 0 ? 0 : value / largestValue,
+    rank: ranks[index] ?? index + 1,
+  }))
+}
+
+export function buildMessageSizeVisuals(bytes: number[]): MessageSizeVisual[] {
+  return buildRelativeMetricVisuals(bytes).map((visual, index) => ({ ...visual, bytes: bytes[index]! }))
+}
+
+function MessageSizeBar({ visual }: { visual: MessageSizeVisual }) {
+  const isTopConsumer = visual.rank <= MOST_EXPENSIVE_MESSAGE_COUNT
+  const percentage = Math.round(visual.share * 100)
+  const title = `占消息链 ${percentage}% · ${isTopConsumer ? `高耗第 ${visual.rank} 名` : '非前 7 高耗消息'}`
+  const fillOpacity = isTopConsumer ? 0.22 + (visual.relativeWidth * 0.68) : 0.12
+
+  return (
+    <span className="flex shrink-0 items-center gap-1.5" title={title} aria-label={title}>
+      {isTopConsumer ? <span className="w-5 text-right font-mono text-[9px] font-medium text-[var(--color-info)]">#{visual.rank}</span> : null}
+      <span className="h-1.5 w-16 overflow-hidden rounded-full bg-[var(--color-info)]/10" aria-hidden="true">
+        <span
+          className="block h-full rounded-full bg-[var(--color-info)]"
+          style={{ width: `${visual.relativeWidth * 100}%`, opacity: fillOpacity }}
+        />
+      </span>
+    </span>
+  )
+}
+
+function CallMetricBar({
+  label,
+  visual,
+  tone,
+  title,
+  unavailable = false,
+  showRank = true,
+}: {
+  label: string
+  visual?: RelativeMetricVisual
+  tone: 'info' | 'warning'
+  title: string
+  unavailable?: boolean
+  showRank?: boolean
+}) {
+  const isTopConsumer = showRank && !unavailable && (visual?.rank ?? Infinity) <= MOST_EXPENSIVE_MESSAGE_COUNT
+  const color = tone === 'info' ? 'var(--color-info)' : 'var(--color-warning)'
+  const fillOpacity = showRank && isTopConsumer ? 0.22 + ((visual?.relativeWidth ?? 0) * 0.68) : 0.5
+  const suffix = unavailable ? '无耗时记录' : showRank
+    ? `${isTopConsumer ? `第 ${visual?.rank} 名，` : ''}占当前调用 ${Math.round((visual?.share ?? 0) * 100)}%`
+    : '本轮消息链共享耗时'
+
+  return (
+    <span className="flex items-center gap-1" title={`${title} ${suffix}`} aria-label={`${label} ${suffix}`}>
+      <span className="w-3 font-mono text-[9px] text-[var(--color-text-tertiary)]">{label}</span>
+      <span className="h-1.5 w-12 overflow-hidden rounded-full" style={{ backgroundColor: `color-mix(in srgb, ${color} 10%, transparent)` }} aria-hidden="true">
+        <span
+          className="block h-full rounded-full"
+          style={{ width: `${unavailable ? 0 : (visual?.relativeWidth ?? 0) * 100}%`, backgroundColor: color, opacity: fillOpacity }}
+        />
+      </span>
+      {isTopConsumer ? <span className="w-3 font-mono text-[9px]" style={{ color }}>#{visual?.rank}</span> : <span className="w-3" />}
+    </span>
+  )
+}
+
 type ReadMaterial = {
   path: string
   bytes: number
@@ -432,18 +542,21 @@ function MaterialWatch({ materials }: { materials: ReadMaterial[] }) {
   )
 }
 
-function FormattedRequestView({ call, text }: { call: TraceCallRecord; text: string }) {
+function FormattedRequestView({ call, text, messageTimings }: { call: TraceCallRecord; text: string; messageTimings: MessageTimingVisual[] | null }) {
   const request = useMemo(() => parseTraceRequestBody(text, call.source), [call.source, text])
   if (!request) {
     return <div className="rounded border border-dashed border-[var(--color-border)] p-2 text-[10px] text-[var(--color-text-tertiary)]">此请求不是可解析的 JSON；请在下方查看原始内容。</div>
   }
 
   const toolCalls = collectToolCalls(request.messages)
+  const messageSizeVisuals = buildMessageSizeVisuals(
+    request.messages.map((message) => byteLength(JSON.stringify(message.content))),
+  )
 
   return (
     <div className="flex flex-col gap-2">
       {request.system !== undefined ? (
-        <details open className="rounded border border-[var(--color-border)]">
+        <details className="rounded border border-[var(--color-border)]">
           <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">系统提示</summary>
           <div className="border-t border-[var(--color-border)] p-2"><ReadableContent value={request.system} /></div>
         </details>
@@ -451,7 +564,8 @@ function FormattedRequestView({ call, text }: { call: TraceCallRecord; text: str
       <details open className="rounded border border-[var(--color-border)]">
         <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">消息链（{request.messages.length}）</summary>
         <div className="flex flex-col gap-1.5 border-t border-[var(--color-border)] p-2">
-          {request.messages.map((message, index) => <ContextMessageView key={index} message={message} index={index} toolCalls={toolCalls} />)}
+          <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">蓝条为消息体积；黄条为关联的模型调用耗时（助手消息取生成它的上一轮响应，用户/工具回包取携带它的下一轮调用）。本地工具执行时间未被当前 trace 单独采集，会显示为 —。</p>
+          {request.messages.map((message, index) => <ContextMessageView key={index} message={message} index={index} toolCalls={toolCalls} sizeVisual={messageSizeVisuals[index]!} timing={messageTimings?.[index]} />)}
           {request.messages.length === 0 ? <div className="text-[10px] text-[var(--color-text-tertiary)]">无消息</div> : null}
         </div>
       </details>
@@ -483,13 +597,22 @@ const ROLE_LABELS: Record<NormalizedMessage['role'], string> = {
   tool: '工具',
 }
 
-function ContextMessageView({ message, index, toolCalls }: { message: NormalizedMessage; index: number; toolCalls: Map<string, ToolCallReference> }) {
+function ContextMessageView({ message, index, toolCalls, sizeVisual, timing }: { message: NormalizedMessage; index: number; toolCalls: Map<string, ToolCallReference>; sizeVisual: MessageSizeVisual; timing: MessageTimingVisual | undefined }) {
   const contentBytes = message.content.reduce((total, block) => total + byteLength(blockText(block)), 0)
   const summaryLabel = messageSummaryLabel(message, toolCalls)
+  const toolParameters = messageToolParameterSummary(message, toolCalls)
   return (
     <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
-      <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-primary)]">
-        {index + 1}. {summaryLabel} · 协议角色：{ROLE_LABELS[message.role]} · {message.content.length} 个内容块 · {formatBytes(contentBytes)}
+      <summary className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-[10px] text-[var(--color-text-primary)]">
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{index + 1}. {summaryLabel} · 协议角色：{ROLE_LABELS[message.role]} · {message.content.length} 个内容块 · {formatBytes(contentBytes)}</span>
+          {toolParameters ? <span className="block truncate font-mono text-[9px] text-[var(--color-text-tertiary)]" title={toolParameters}>参数：{toolParameters}</span> : null}
+        </span>
+        <span className="flex shrink-0 items-center gap-2">
+          <MessageSizeBar visual={sizeVisual} />
+          <CallMetricBar label="时" visual={timing?.visual} tone="warning" title={messageTimingTitle(timing)} unavailable={timing?.durationMs === undefined} />
+          <span className="w-9 font-mono text-right text-[9px] text-[var(--color-text-secondary)]">{formatDurationMs(timing?.durationMs)}</span>
+        </span>
       </summary>
       <div className="flex flex-col gap-2 border-t border-[var(--color-border)] p-2">
         {message.content.map((block, blockIndex) => <ContextBlockView key={blockIndex} block={block} toolCalls={toolCalls} />)}
@@ -508,6 +631,46 @@ function messageSummaryLabel(message: NormalizedMessage, toolCalls: Map<string, 
   const toolUses = message.content.filter((block): block is Extract<NormalizedBlock, { type: 'tool_use' }> => block.type === 'tool_use')
   if (toolUses.length > 0) return `工具调用 · ${toolUses.map((toolUse) => toolUse.name || '未命名工具').join('、')}`
   return ROLE_LABELS[message.role]
+}
+
+function messageToolParameterSummary(message: NormalizedMessage, toolCalls: Map<string, ToolCallReference>): string | null {
+  const references: ToolCallReference[] = []
+  for (const block of message.content) {
+    if (block.type === 'tool_use') references.push({ id: block.id ?? '', name: block.name ?? '', input: block.input })
+    if (block.type === 'tool_result' && block.toolUseId) {
+      const reference = toolCalls.get(block.toolUseId)
+      if (reference) references.push(reference)
+    }
+  }
+  if (references.length === 0) return null
+  return references.map(toolCallParameterSummary).join('；')
+}
+
+function toolCallParameterSummary(toolCall: ToolCallReference): string {
+  const name = toolCall.name || '未命名工具'
+  if (!isJsonRecord(toolCall.input)) return `${name}(${compactValue(toolCall.input)})`
+  const input = toolCall.input
+  const lowerName = name.toLowerCase()
+  const select = (...keys: string[]) => keys
+    .map((key) => input[key])
+    .find((value) => value !== undefined && value !== '')
+
+  if (lowerName === 'read') return `${name}(${compactValue(select('file_path', 'filePath', 'path'))})`
+  if (lowerName === 'grep') {
+    const pattern = compactValue(select('pattern', 'query'))
+    const path = compactValue(select('path', 'directory', 'cwd'))
+    const glob = compactValue(select('glob', 'include'))
+    return `${name}(${[pattern, path && `路径=${path}`, glob && `glob=${glob}`].filter(Boolean).join('，')})`
+  }
+  if (lowerName === 'bash' || lowerName === 'shell') return `${name}(${compactValue(select('command', 'cmd', 'script'))})`
+  const entries = Object.entries(input).slice(0, 2).map(([key, value]) => `${key}=${compactValue(value)}`)
+  return `${name}(${entries.join('，') || '无参数'})`
+}
+
+function compactValue(value: unknown): string {
+  if (value === undefined || value === null || value === '') return '—'
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  return text.length > 96 ? `${text.slice(0, 93)}…` : text
 }
 
 function ContextBlockView({ block, toolCalls }: { block: NormalizedBlock; toolCalls: Map<string, ToolCallReference> }) {
@@ -708,6 +871,61 @@ async function loadRequestBody(sessionId: string, call: TraceCallRecord): Promis
   } catch {
     return { text: call.request.body.preview, isFull: false }
   }
+}
+
+async function loadHistoricalRequests(sessionId: string, calls: TraceCallRecord[]): Promise<HistoricalRequest[]> {
+  const orderedCalls = calls.slice().sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+  const requests: HistoricalRequest[] = []
+  // Raw bodies can be large; bound parallel local reads so opening an audit item
+  // does not make the desktop app contend with hundreds of files at once.
+  for (let index = 0; index < orderedCalls.length; index += 4) {
+    const batch = await Promise.all(orderedCalls.slice(index, index + 4).map(async (historicalCall) => {
+      const body = await loadRequestBody(sessionId, historicalCall)
+      const parsed = parseTraceRequestBody(body.text, historicalCall.source)
+      return parsed ? { call: historicalCall, messages: parsed.messages } : null
+    }))
+    requests.push(...batch.filter((request): request is HistoricalRequest => request !== null))
+  }
+  return requests
+}
+
+export function buildMessageTimingVisuals(
+  messages: NormalizedMessage[],
+  history: HistoricalRequest[],
+): MessageTimingVisual[] {
+  const durations = messages.map((message) => {
+    const firstSeenIndex = history.findIndex((request) => request.messages.some((candidate) => messageSignature(candidate) === messageSignature(message)))
+    if (firstSeenIndex < 0) return undefined
+    // An assistant message is generated by the response to the request just before
+    // its first appearance in a later request. User/tool-result messages instead
+    // initiate the request in which they first appear.
+    const associated = message.role === 'assistant'
+      ? history[firstSeenIndex - 1]?.call
+      : history[firstSeenIndex]?.call
+    return associated?.durationMs
+  })
+  const knownDurations = durations.filter((duration): duration is number => duration !== undefined)
+  const visuals = buildRelativeMetricVisuals(knownDurations)
+  let visualIndex = 0
+
+  return durations.map((duration, index) => {
+    if (duration === undefined) return {}
+    const attribution: MessageTimingVisual['attribution'] = messages[index]?.role === 'assistant'
+      ? 'previous-response'
+      : 'following-request'
+    return { durationMs: duration, visual: visuals[visualIndex++]!, attribution }
+  })
+}
+
+function messageSignature(message: NormalizedMessage): string {
+  return `${message.role}:${JSON.stringify(message.content)}`
+}
+
+function messageTimingTitle(timing: MessageTimingVisual | undefined): string {
+  if (!timing?.durationMs) return '没有可关联的模型调用耗时：当前 trace 未记录逐工具本地执行耗时，或缺少该消息首次出现前后的请求。'
+  return timing.attribution === 'previous-response'
+    ? '该助手消息由上一轮模型响应生成；黄色条表示那一次完整模型调用耗时。'
+    : '该用户/工具回包随本次上行发起模型调用；黄色条表示这一次完整模型调用耗时。'
 }
 
 function rawBodyToLoad(raw: TraceRawBody): BodyLoad {
