@@ -10,10 +10,12 @@ import {
   IMAGE_GENERATION_PROVIDER_ID_ENV_KEY,
   IMAGE_GENERATION_PROVIDER_KIND_ENV_KEY,
 } from '../../services/imageGeneration/config.js'
+import { PROVIDER_MODEL_CAPABILITIES_ENV_KEY } from '../../utils/model/providerModelCapabilities.js'
 import { PROVIDER_PRESETS } from '../config/providerPresets.js'
 import type {
   ApiFormat,
   ProviderAuthStrategy,
+  ProviderModelCatalogEntry,
   ProvidersIndex,
   SavedProvider,
 } from '../types/provider.js'
@@ -44,6 +46,7 @@ export const MANAGED_PROVIDER_ENV_KEYS = [
   'ENABLE_TOOL_SEARCH',
   'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
   'ANTHROPIC_MODEL',
+  'CC_HAHA_PROVIDER_MODEL_CAPABILITIES',
   'ANTHROPIC_DEFAULT_FABLE_MODEL',
   'ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION',
   'ANTHROPIC_DEFAULT_FABLE_MODEL_NAME',
@@ -206,21 +209,58 @@ function applyModel1mSupportMapping(
   }
 }
 
+function normalizeModelCatalog(value: unknown): ProviderModelCatalogEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const byId = new Map<string, ProviderModelCatalogEntry>()
+  for (const rawEntry of value) {
+    if (!isRecord(rawEntry) || typeof rawEntry.id !== 'string') continue
+    const id = rawEntry.id.trim()
+    if (!id) continue
+    const capabilities = Array.isArray(rawEntry.capabilities)
+      ? rawEntry.capabilities.filter((capability): capability is ProviderModelCatalogEntry['capabilities'][number] =>
+          typeof capability === 'string' && [
+            'effort',
+            'xhigh_effort',
+            'max_effort',
+            'thinking',
+            'required_thinking',
+            'adaptive_thinking',
+            'interleaved_thinking',
+          ].includes(capability),
+        )
+      : []
+    byId.set(id, {
+      id,
+      ...(typeof rawEntry.name === 'string' && rawEntry.name.trim()
+        ? { name: rawEntry.name.trim() }
+        : {}),
+      ...(typeof rawEntry.description === 'string'
+        ? { description: rawEntry.description }
+        : {}),
+      capabilities: [...new Set(capabilities)],
+    })
+  }
+  return byId.size > 0 ? [...byId.values()] : undefined
+}
+
 export function normalizeSavedProvider(provider: SavedProvider): SavedProvider {
   const {
     disableExperimentalBetas: rawDisableExperimentalBetas,
     imageGeneration: rawImageGeneration,
+    modelCatalog: rawModelCatalog,
     model1mSupport: rawModel1mSupport,
     ...rest
   } = provider
   const rawProvider = provider as SavedProvider & Record<string, unknown>
   const model1mSupport = normalizeModel1mSupport(rawModel1mSupport)
   const imageGeneration = normalizeImageGeneration(rawImageGeneration)
+  const modelCatalog = normalizeModelCatalog(rawModelCatalog)
   return {
     ...rest,
     apiFormat: provider.apiFormat ?? 'anthropic',
     runtimeKind: provider.runtimeKind ?? 'anthropic_compatible',
     models: normalizeModelMapping(provider.models),
+    ...(modelCatalog !== undefined ? { modelCatalog } : {}),
     toolSearchEnabled: normalizeToolSearchEnabled(rawProvider.toolSearchEnabled),
     ...(normalizeDisableExperimentalBetas(rawDisableExperimentalBetas) ? { disableExperimentalBetas: true } : {}),
     ...(model1mSupport !== undefined ? { model1mSupport } : {}),
@@ -241,6 +281,20 @@ function buildImageGenerationManagedEnv(
     [IMAGE_GENERATION_API_KEY_ENV_KEY]: imageGeneration.apiKey ?? provider.apiKey,
     [IMAGE_GENERATION_MODEL_ENV_KEY]: imageGeneration.model,
   }
+}
+
+function buildProviderModelCapabilitiesEnv(
+  modelCatalog: SavedProvider['modelCatalog'],
+): Record<string, string> {
+  if (!modelCatalog?.length) return {}
+  const capabilityMap = Object.fromEntries(
+    modelCatalog
+      .filter((model) => model.capabilities.length > 0)
+      .map((model) => [model.id, model.capabilities.join(',')]),
+  )
+  return Object.keys(capabilityMap).length > 0
+    ? { [PROVIDER_MODEL_CAPABILITIES_ENV_KEY]: JSON.stringify(capabilityMap) }
+    : {}
 }
 
 function defaultProviderOrder(providers: SavedProvider[]): string[] {
@@ -422,6 +476,7 @@ export function buildProviderManagedEnv(
   return {
     ...providerCapabilityEnv,
     ...omitAuthEnv(presetDefaultEnv),
+    ...buildProviderModelCapabilitiesEnv(provider.modelCatalog),
     ...(provider.autoCompactWindow !== undefined && {
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(provider.autoCompactWindow),
     }),

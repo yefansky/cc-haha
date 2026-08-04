@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { EFFORT_BETA_HEADER } from '../../constants/betas.js'
 import { get3PModelCapabilityOverride } from '../../utils/model/modelSupportOverrides.js'
+import { PROVIDER_MODEL_CAPABILITIES_ENV_KEY } from '../../utils/model/providerModelCapabilities.js'
 import { configureEffortParams } from './claude.js'
 
 describe('configureEffortParams', () => {
@@ -11,6 +12,7 @@ describe('configureEffortParams', () => {
   let originalVertex: string | undefined
   let originalFoundry: string | undefined
   let originalDisableExperimentalBetas: string | undefined
+  let originalProviderModelCapabilities: string | undefined
 
   beforeEach(() => {
     originalBaseUrl = process.env.ANTHROPIC_BASE_URL
@@ -20,6 +22,7 @@ describe('configureEffortParams', () => {
     originalVertex = process.env.CLAUDE_CODE_USE_VERTEX
     originalFoundry = process.env.CLAUDE_CODE_USE_FOUNDRY
     originalDisableExperimentalBetas = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+    originalProviderModelCapabilities = process.env[PROVIDER_MODEL_CAPABILITIES_ENV_KEY]
 
     process.env.ANTHROPIC_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding'
     process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'glm-5.2'
@@ -40,6 +43,7 @@ describe('configureEffortParams', () => {
     restoreEnv('CLAUDE_CODE_USE_VERTEX', originalVertex)
     restoreEnv('CLAUDE_CODE_USE_FOUNDRY', originalFoundry)
     restoreEnv('CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS', originalDisableExperimentalBetas)
+    restoreEnv(PROVIDER_MODEL_CAPABILITIES_ENV_KEY, originalProviderModelCapabilities)
     clearCapabilityCache()
   })
 
@@ -57,6 +61,22 @@ describe('configureEffortParams', () => {
     )
 
     expect(outputConfig).toEqual({ effort: 'high' })
+    expect(extraBodyParams).toEqual({})
+    expect(betas).toContain(EFFORT_BETA_HEADER)
+  })
+
+  test('sends selected effort for a dynamically discovered provider model', () => {
+    process.env[PROVIDER_MODEL_CAPABILITIES_ENV_KEY] = JSON.stringify({
+      'dynamic-model': 'thinking,effort,xhigh_effort,max_effort',
+    })
+    clearCapabilityCache()
+    const outputConfig: Record<string, unknown> = {}
+    const extraBodyParams: Record<string, unknown> = {}
+    const betas: string[] = []
+
+    configureEffortParams('xhigh', outputConfig, extraBodyParams, betas, 'dynamic-model')
+
+    expect(outputConfig).toEqual({ effort: 'xhigh' })
     expect(extraBodyParams).toEqual({})
     expect(betas).toContain(EFFORT_BETA_HEADER)
   })

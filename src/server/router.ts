@@ -20,6 +20,7 @@ import { handleComputerUseApi } from './api/computer-use.js'
 import { handleHahaOAuthApi } from './api/haha-oauth.js'
 import { handleHahaOpenAIOAuthApi } from './api/haha-openai-oauth.js'
 import { handleHahaGrokOAuthApi } from './api/haha-grok-oauth.js'
+import { handleKsccOAuthApi } from './api/kscc-oauth.js'
 import { handleMcpApi } from './api/mcp.js'
 import { handleDiagnosticsApi } from './api/diagnostics.js'
 import { handleDoctorApi } from './api/doctor.js'
@@ -87,6 +88,9 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
     case 'haha-grok-oauth':
       return handleHahaGrokOAuthApi(req, url, segments)
+
+    case 'kscc-oauth':
+      return handleKsccOAuthApi(req, url, segments)
 
     case 'adapters':
       // Adapter protocols pull in platform SDKs that are unnecessary for the

@@ -151,6 +151,31 @@ describe('providerStore runtime refresh', () => {
     })
   })
 
+  it('keeps a discovered catalog model selection outside the role mappings', async () => {
+    const provider = makeProvider({
+      modelCatalog: [
+        { id: 'model-main', capabilities: ['thinking'] },
+        { id: 'model-discovered', capabilities: ['thinking', 'effort'] },
+      ],
+    })
+    providersApiMock.update.mockResolvedValue({ provider })
+    providersApiMock.list.mockResolvedValue({ providers: [provider], activeId: null })
+    chatStoreState.sessions = {
+      'session-a': { connectionState: 'connected', chatState: 'idle' },
+    }
+    runtimeStoreState.selections = {
+      'session-a': { providerId: provider.id, modelId: 'model-discovered' },
+    }
+
+    const { useProviderStore } = await import('./providerStore')
+    await useProviderStore.getState().updateProvider(provider.id, { apiKey: 'new-key' })
+
+    expect(setSessionRuntimeMock).toHaveBeenCalledWith('session-a', {
+      providerId: provider.id,
+      modelId: 'model-discovered',
+    })
+  })
+
   it('does not restart busy sessions while a provider update is saved', async () => {
     const provider = makeProvider()
     providersApiMock.update.mockResolvedValue({ provider })

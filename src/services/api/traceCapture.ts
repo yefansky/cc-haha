@@ -34,7 +34,7 @@ const TRACE_INDEX_PARSER_VERSION = 1
 const TRACE_FINGERPRINT_WINDOW_BYTES = 64 * 1024
 // `token(?!s)` keeps secret-bearing keys (token, access_token, api_token) redacted while
 // letting token-count fields (input_tokens, max_tokens, prompt_tokens) through.
-const SENSITIVE_KEY_RE = /authorization|api[-_]?key|secret|token(?!s)|cookie|password|bearer/i
+const SENSITIVE_KEY_RE = /authorization|api[-_]?key|secret|token(?!s)|cookie|password|bearer|macaddress/i
 
 export type TraceCaptureSettings = {
   enabled: boolean

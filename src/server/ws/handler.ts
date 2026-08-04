@@ -3987,15 +3987,30 @@ async function resolveRuntimeEffort(
   if (!isModelReasoningEffort(effort)) return { valid: false }
   const provider = await providerService.getProvider(providerId).catch(() => null)
   if (!provider) return { valid: false }
+  const catalogModel = provider.modelCatalog?.find(
+    (entry) => entry.id.toLowerCase() === modelId.toLowerCase(),
+  )
+  if (catalogModel) {
+    if (!catalogModel.capabilities.includes('effort')) return { valid: false }
+    if (effort === 'xhigh' && !catalogModel.capabilities.includes('xhigh_effort')) {
+      return { valid: false }
+    }
+    if (effort === 'max' && !catalogModel.capabilities.includes('max_effort')) {
+      return { valid: false }
+    }
+  }
+  const capabilitiesOverride = catalogModel
+    ? catalogModel.capabilities.join(',')
+    : getModelReasoningCapabilityOverride(
+        modelId,
+        provider.models,
+        getPresetDefaultEnv(provider.presetId),
+      )
   const normalizedEffort = normalizeModelReasoningEffort(
     modelId,
     effort,
     provider.apiFormat ?? 'anthropic',
-    getModelReasoningCapabilityOverride(
-      modelId,
-      provider.models,
-      getPresetDefaultEnv(provider.presetId),
-    ),
+    capabilitiesOverride,
   )
   return {
     valid: true,

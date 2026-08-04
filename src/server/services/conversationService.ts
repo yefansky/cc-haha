@@ -67,6 +67,11 @@ import {
   createImageMetadataText,
   maybeResizeAndDownsampleImageBuffer,
 } from '../../utils/imageResizer.js'
+import {
+  buildKsccRuntimeEnv,
+  KSCC_HEADERS_ENV_KEY,
+  KSCC_PROTOCOL_ENV_KEY,
+} from './ksccProtocol.js'
 
 const MAX_CAPTURED_PROCESS_LINES = 80
 const MAX_CAPTURED_SDK_MESSAGES = 40
@@ -1529,6 +1534,7 @@ export class ConversationService {
       'ANTHROPIC_AUTH_TOKEN',
       'ENABLE_TOOL_SEARCH',
       'ANTHROPIC_MODEL',
+      'CC_HAHA_PROVIDER_MODEL_CAPABILITIES',
       'ANTHROPIC_DEFAULT_FABLE_MODEL',
       'ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION',
       'ANTHROPIC_DEFAULT_FABLE_MODEL_NAME',
@@ -1554,6 +1560,8 @@ export class ConversationService {
       IMAGE_GENERATION_BASE_URL_ENV_KEY,
       IMAGE_GENERATION_API_KEY_ENV_KEY,
       IMAGE_GENERATION_MODEL_ENV_KEY,
+      KSCC_PROTOCOL_ENV_KEY,
+      KSCC_HEADERS_ENV_KEY,
     ] as const
 
     const cleanEnv = await getProcessEnvWithTerminalShellEnvironment()
@@ -1598,6 +1606,9 @@ export class ConversationService {
     const traceCaptureEnabled = (await readTraceCaptureSettings()).enabled
     if (explicitProviderEnv && options?.model?.trim()) {
       explicitProviderEnv.ANTHROPIC_MODEL = options.model.trim()
+    }
+    if (explicitProviderEnv && explicitProvider?.presetId === 'kscc') {
+      Object.assign(explicitProviderEnv, buildKsccRuntimeEnv(workDir))
     }
     const attributionHeaderEnv = attributionHeaderEnvForModel(
       options?.model?.trim() ||

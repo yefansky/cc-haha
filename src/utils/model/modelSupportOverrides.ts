@@ -2,6 +2,7 @@ import memoize from 'lodash-es/memoize.js'
 import { MODEL_REASONING_CAPABILITY_TIERS } from '../../shared/modelReasoning.js'
 import { normalizeModelContextKey } from './modelContextWindows.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
+import { getProviderModelCapability } from './providerModelCapabilities.js'
 
 export type ModelCapabilityOverride =
   | 'effort'
@@ -23,6 +24,8 @@ export const get3PModelCapabilityOverride = memoize(
       return undefined
     }
     const normalizedModel = normalizeModelContextKey(model)
+    const catalogOverride = getProviderModelCapability(normalizedModel, capability)
+    if (catalogOverride !== undefined) return catalogOverride
     for (const tier of MODEL_REASONING_CAPABILITY_TIERS) {
       const pinned = process.env[tier.modelEnvVar]
       const capabilities = process.env[tier.capabilitiesEnvVar]

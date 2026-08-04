@@ -146,10 +146,14 @@ describe('getAnthropicClient', () => {
       marker: process.env.CC_HAHA_GROK_OAUTH_PROVIDER,
       tokenFile: process.env.GROK_OAUTH_FILE,
       configDir: process.env.CLAUDE_CONFIG_DIR,
+      claudeOauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,
+      anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN,
     }
     process.env.CC_HAHA_GROK_OAUTH_PROVIDER = '1'
     process.env.GROK_OAUTH_FILE = tokenFile
     process.env.CLAUDE_CONFIG_DIR = tempDir
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+    delete process.env.ANTHROPIC_AUTH_TOKEN
     try {
       const client = await getAnthropicClient({ maxRetries: 0, model: 'grok-4.5' })
       expect(client.apiKey).toBe(GROK_OAUTH_DUMMY_KEY)
@@ -162,6 +166,10 @@ describe('getAnthropicClient', () => {
       else process.env.GROK_OAUTH_FILE = previous.tokenFile
       if (previous.configDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = previous.configDir
+      if (previous.claudeOauthToken === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = previous.claudeOauthToken
+      if (previous.anthropicAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
+      else process.env.ANTHROPIC_AUTH_TOKEN = previous.anthropicAuthToken
       await fs.rm(tempDir, { recursive: true, force: true })
     }
   })
@@ -320,6 +328,75 @@ describe('getAnthropicClient', () => {
 
       if (originalSimple === undefined) delete process.env.CLAUDE_CODE_SIMPLE
       else process.env.CLAUDE_CODE_SIMPLE = originalSimple
+    }
+  })
+
+  test('applies host-provided KSCC protocol headers at the final fetch seam', async () => {
+    const { getAnthropicClient } = await import('./client.js')
+    let requestHeaders: Headers | null = null
+    const previous = {
+      authToken: process.env.ANTHROPIC_AUTH_TOKEN,
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      baseUrl: process.env.ANTHROPIC_BASE_URL,
+      simple: process.env.CLAUDE_CODE_SIMPLE,
+      protocol: process.env.CC_HAHA_KSCC_PROTOCOL,
+      headers: process.env.CC_HAHA_KSCC_HEADERS,
+    }
+    process.env.ANTHROPIC_AUTH_TOKEN = 'kscc-token'
+    process.env.ANTHROPIC_API_KEY = ''
+    process.env.ANTHROPIC_BASE_URL = 'http://120.92.138.34'
+    process.env.CLAUDE_CODE_SIMPLE = '1'
+    process.env.CC_HAHA_KSCC_PROTOCOL = '1'
+    process.env.CC_HAHA_KSCC_HEADERS = JSON.stringify({
+      'ksyun-code-version': '1.1.28',
+      'ksyun-code-type': 'kscc-sdk-cli',
+      'X-KSC-COMPANY-CODE': 'seasun',
+      macaddress: 'encoded-mac',
+      'x-stainless-package-version': '0.94.0',
+    })
+
+    try {
+      const client = await getAnthropicClient({
+        maxRetries: 0,
+        model: 'glm-5',
+        fetchOverride: async (_input, init) => {
+          requestHeaders = new Headers(init?.headers)
+          return Response.json({
+            id: 'msg-kscc-protocol',
+            type: 'message',
+            role: 'assistant',
+            model: 'glm-5',
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          })
+        },
+      })
+      await client.messages.create({
+        model: 'glm-5',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hello' }],
+      })
+
+      expect(requestHeaders?.get('ksyun-code-version')).toBe('1.1.28')
+      expect(requestHeaders?.get('ksyun-code-type')).toBe('kscc-sdk-cli')
+      expect(requestHeaders?.get('x-ksc-company-code')).toBe('seasun')
+      expect(requestHeaders?.get('x-ksc-request-id')).toMatch(/^[0-9a-f-]{36}$/)
+      expect(requestHeaders?.get('macaddress')).toBe('encoded-mac')
+      expect(requestHeaders?.get('x-stainless-package-version')).toBe('0.94.0')
+    } finally {
+      for (const [envKey, value] of [
+        ['ANTHROPIC_AUTH_TOKEN', previous.authToken],
+        ['ANTHROPIC_API_KEY', previous.apiKey],
+        ['ANTHROPIC_BASE_URL', previous.baseUrl],
+        ['CLAUDE_CODE_SIMPLE', previous.simple],
+        ['CC_HAHA_KSCC_PROTOCOL', previous.protocol],
+        ['CC_HAHA_KSCC_HEADERS', previous.headers],
+      ] as const) {
+        if (value === undefined) delete process.env[envKey]
+        else process.env[envKey] = value
+      }
     }
   })
 })

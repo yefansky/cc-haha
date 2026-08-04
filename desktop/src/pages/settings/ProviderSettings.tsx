@@ -25,6 +25,7 @@ import { normalizeProviderBaseUrl, presetMatchesBaseUrl, selectableProviderPrese
 import { ClaudeOfficialLogin } from '../../components/settings/ClaudeOfficialLogin'
 import { ChatGPTOfficialLogin } from '../../components/settings/ChatGPTOfficialLogin'
 import { GrokOfficialLogin } from '../../components/settings/GrokOfficialLogin'
+import { KsccLogin } from '../../components/settings/KsccLogin'
 import { CcSwitchImportModal } from '../../components/settings/CcSwitchImportModal'
 import { ModelIdCombobox } from '../../components/settings/ModelIdCombobox'
 import { ProviderImageGenerationFields, type ImageGenerationFormValue } from '../../components/settings/ProviderImageGenerationFields'
@@ -246,6 +247,14 @@ export function ProviderSettings() {
           </>
         )}
       />
+
+      <section className="mb-3 rounded-lg border border-[var(--color-border-separator)] bg-[var(--color-surface)] px-4 py-3">
+        <div className="mb-2">
+          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">KSCC</h3>
+          <p className="text-xs text-[var(--color-text-tertiary)]">Claude Code 兼容服务</p>
+        </div>
+        <KsccLogin />
+      </section>
 
       <DndContext
         sensors={sensors}

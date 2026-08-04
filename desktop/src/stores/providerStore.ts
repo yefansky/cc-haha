@@ -112,7 +112,10 @@ function mergeSavedOrderIntoProviderOrder(providerOrder: string[], savedOrder: s
 
 function providerModelIds(provider: SavedProvider): Set<string> {
   return new Set(
-    Object.values(provider.models)
+    [
+      ...Object.values(provider.models),
+      ...(provider.modelCatalog?.map((model) => model.id) ?? []),
+    ]
       .map((modelId) => modelId.trim())
       .filter(Boolean),
   )
