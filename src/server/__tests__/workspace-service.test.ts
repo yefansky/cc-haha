@@ -690,6 +690,46 @@ describe('WorkspaceService', () => {
     })
   })
 
+  it('allocates a larger output buffer for verbose SVN XML status', async () => {
+    const workspaceDir = await createSvnWorkspace()
+    const service = new WorkspaceService(async () => workspaceDir) as WorkspaceService & {
+      runSvn: (workDir: string, args: string[], maxBuffer?: number) => Promise<{
+        stdout: string
+        stderr: string
+        code: number
+      }>
+    }
+    const originalRunSvn = service.runSvn.bind(service)
+    let statusBuffer: number | undefined
+    service.runSvn = async (workDir, args, maxBuffer) => {
+      if (args[0] === 'status') statusBuffer = maxBuffer
+      return originalRunSvn(workDir, args, maxBuffer)
+    }
+
+    await expect(service.getStatus('session-1')).resolves.toMatchObject({ state: 'ok', isGitRepo: false })
+    expect(statusBuffer).toBeGreaterThan(2_000_000)
+  })
+
+  it('does not expose partial SVN XML as a file-view error', () => {
+    const service = new WorkspaceService(async () => null) as WorkspaceService & {
+      formatSvnError: (prefix: string, args: string[], workDir: string, result: {
+        stdout: string
+        stderr: string
+        code: number
+      }) => string
+    }
+
+    const message = service.formatSvnError(
+      'Failed to read SVN status',
+      ['status', '--xml', '--no-ignore'],
+      'F:\\Head',
+      { stdout: '<?xml version="1.0"?><status><entry path="many-files" /></status>', stderr: '', code: 1 },
+    )
+
+    expect(message).toContain('SVN returned XML status output but the command did not complete.')
+    expect(message).not.toContain('<entry')
+  })
+
   it('reads SVN diffs through a directory symlink inside a Git workspace', async () => {
     const workDir = await makeTempDir('workspace-service-linked-svn-parent-')
     const svnWorkspace = await createSvnWorkspace()
