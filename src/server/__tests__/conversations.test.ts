@@ -4991,6 +4991,86 @@ describe('WebSocket Chat Integration', () => {
     }
   }, 20_000)
 
+  it('should accept catalog-declared xhigh effort for a saved provider model', async () => {
+    const providerService = new ProviderService()
+    const modelId = 'dynamic-effort-model'
+    const provider = await providerService.addProvider({
+      presetId: 'custom',
+      name: 'Dynamic Effort Provider',
+      apiKey: 'dynamic-effort-key',
+      baseUrl: 'https://dynamic-effort.example.com',
+      apiFormat: 'anthropic',
+      runtimeKind: 'anthropic_compatible',
+      models: { main: modelId, haiku: modelId, sonnet: modelId, opus: modelId },
+      modelCatalog: [{
+        id: modelId,
+        capabilities: ['thinking', 'effort', 'adaptive_thinking', 'xhigh_effort'],
+      }],
+    })
+    await providerService.activateProvider(provider.id)
+
+    const createRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workDir: process.cwd() }),
+    })
+    const { sessionId } = await createRes.json() as { sessionId: string }
+    const originalStartSession = conversationService.startSession.bind(conversationService)
+    const startCalls: Array<{ options?: { model?: string; effort?: string; providerId?: string | null } }> = []
+    conversationService.startSession = (async function patchedStartSession(
+      sid: string,
+      workDir: string,
+      sdkUrl: string,
+      options?: { permissionMode?: string; model?: string; effort?: string; thinking?: 'enabled' | 'adaptive' | 'disabled'; providerId?: string | null },
+    ) {
+      startCalls.push({ options })
+      return originalStartSession(sid, workDir, sdkUrl, options)
+    }) as typeof conversationService.startSession
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
+        const timeout = setTimeout(() => {
+          ws.close()
+          reject(new Error('Timed out waiting for saved-provider xhigh runtime turn'))
+        }, 10_000)
+
+        ws.onmessage = (event) => {
+          const message = JSON.parse(event.data as string)
+          if (message.type === 'connected') {
+            ws.send(JSON.stringify({
+              type: 'set_runtime_config',
+              providerId: provider.id,
+              modelId,
+              effortLevel: 'xhigh',
+            }))
+            ws.send(JSON.stringify({ type: 'user_message', content: 'use catalog xhigh' }))
+          } else if (message.type === 'error') {
+            clearTimeout(timeout)
+            ws.close()
+            reject(new Error(message.message))
+          } else if (message.type === 'message_complete') {
+            clearTimeout(timeout)
+            ws.close()
+            resolve()
+          }
+        }
+        ws.onerror = () => reject(new Error('WebSocket failed for saved-provider xhigh runtime'))
+      })
+
+      expect(startCalls[0]?.options).toMatchObject({
+        providerId: provider.id,
+        model: modelId,
+        effort: 'xhigh',
+      })
+    } finally {
+      conversationService.startSession = originalStartSession
+      conversationService.stopSession(sessionId)
+      await providerService.activateOfficial()
+      await providerService.deleteProvider(provider.id)
+    }
+  }, 20_000)
+
   it('should reject a reasoning effort that the selected ChatGPT model does not support', async () => {
     const sessionId = `chat-openai-invalid-effort-${crypto.randomUUID()}`
     await new Promise<void>((resolve, reject) => {

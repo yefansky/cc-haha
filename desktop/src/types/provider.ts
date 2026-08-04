@@ -28,6 +28,22 @@ export type Model1mSupport = {
 
 export type ModelContextWindows = Record<string, number>
 
+export type ProviderModelCapability =
+  | 'effort'
+  | 'xhigh_effort'
+  | 'max_effort'
+  | 'thinking'
+  | 'required_thinking'
+  | 'adaptive_thinking'
+  | 'interleaved_thinking'
+
+export type ProviderModelCatalogEntry = {
+  id: string
+  name?: string
+  description?: string
+  capabilities: ProviderModelCapability[]
+}
+
 export type SavedProvider = {
   id: string
   presetId: string
@@ -38,6 +54,7 @@ export type SavedProvider = {
   apiFormat: ApiFormat
   runtimeKind?: ProviderRuntimeKind
   models: ModelMapping
+  modelCatalog?: ProviderModelCatalogEntry[]
   model1mSupport?: Model1mSupport
   autoCompactWindow?: number
   modelContextWindows?: ModelContextWindows

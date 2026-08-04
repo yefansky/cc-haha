@@ -9,6 +9,7 @@ import {
 } from '../services/providerRuntimeEnv.js'
 import { resolveAppliedEffort } from '../../utils/effort.js'
 import { get3PModelCapabilityOverride } from '../../utils/model/modelSupportOverrides.js'
+import { PROVIDER_MODEL_CAPABILITIES_ENV_KEY } from '../../utils/model/providerModelCapabilities.js'
 
 let tmpDir: string
 let originalConfigDir: string | undefined
@@ -140,6 +141,46 @@ describe('providerRuntimeEnv', () => {
       }
       clearCapabilityCache()
     }
+  })
+
+  test('exposes per-model capabilities for dynamically discovered provider models', async () => {
+    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+      activeId: 'provider-dynamic',
+      providers: [
+        {
+          id: 'provider-dynamic',
+          presetId: 'dynamic-provider',
+          name: 'Dynamic Provider',
+          apiKey: 'dynamic-token',
+          authStrategy: 'auth_token',
+          baseUrl: 'https://dynamic.example.test/anthropic',
+          apiFormat: 'anthropic',
+          models: {
+            main: 'dynamic-a',
+            haiku: 'dynamic-a',
+            sonnet: 'dynamic-a',
+            opus: 'dynamic-a',
+          },
+          modelCatalog: [
+            {
+              id: 'dynamic-a',
+              capabilities: ['thinking', 'effort', 'xhigh_effort', 'max_effort'],
+            },
+            {
+              id: 'dynamic-b',
+              capabilities: ['thinking'],
+            },
+          ],
+        },
+      ],
+    })
+
+    const env = readActiveProviderManagedEnv(tmpDir)
+
+    expect(JSON.parse(env![PROVIDER_MODEL_CAPABILITIES_ENV_KEY])).toEqual({
+      'dynamic-a': 'thinking,effort,xhigh_effort,max_effort',
+      'dynamic-b': 'thinking',
+    })
   })
 
   test('active provider env overrides stale proxy settings while preserving unrelated env', async () => {

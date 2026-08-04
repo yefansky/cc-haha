@@ -92,6 +92,31 @@ function buildProviderModels(
   provider: SavedProvider,
   labels: Record<'main' | 'haiku' | 'sonnet' | 'opus', string>,
 ): ModelInfo[] {
+  if (provider.modelCatalog?.length) {
+    return provider.modelCatalog.map((model) => {
+      const supportsEffort = model.capabilities.includes('effort')
+      const supportedReasoningEfforts: ReasoningEffortLevel[] = supportsEffort
+        ? [
+            'low',
+            'medium',
+            'high',
+            ...(model.capabilities.includes('xhigh_effort') ? ['xhigh' as const] : []),
+            ...(model.capabilities.includes('max_effort') ? ['max' as const] : []),
+          ]
+        : []
+      return {
+        id: model.id,
+        name: model.name ?? model.id,
+        description: model.description ?? '',
+        context: provider.modelContextWindows?.[model.id]
+          ? String(provider.modelContextWindows[model.id])
+          : '',
+        supportedReasoningEfforts,
+        ...(supportsEffort ? { defaultReasoningEffort: 'high' as const } : {}),
+      }
+    })
+  }
+
   const entries: Array<{ id: string; label: string }> = [
     { id: provider.models.main.trim(), label: labels.main },
     { id: provider.models.haiku.trim(), label: labels.haiku },

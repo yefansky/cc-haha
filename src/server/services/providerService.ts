@@ -60,6 +60,7 @@ import type {
 import {
   BUILT_IN_PROVIDER_IDS,
 } from '../types/provider.js'
+import { buildKsccTestRequest } from './ksccProtocol.js'
 
 const DEFAULT_INDEX: ProvidersIndex = {
   schemaVersion: CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
@@ -230,6 +231,7 @@ export class ProviderService {
       apiFormat: input.apiFormat ?? 'anthropic',
       runtimeKind: input.runtimeKind ?? 'anthropic_compatible',
       models: normalizeModelMapping(input.models),
+      ...(input.modelCatalog !== undefined && { modelCatalog: input.modelCatalog }),
       ...(input.model1mSupport !== undefined && { model1mSupport: input.model1mSupport }),
       ...(input.autoCompactWindow !== undefined && { autoCompactWindow: input.autoCompactWindow }),
       ...(input.modelContextWindows !== undefined && { modelContextWindows: input.modelContextWindows }),
@@ -241,6 +243,65 @@ export class ProviderService {
     index.providerOrder = appendNewProviderToOrder(index.providerOrder, provider.id, index.providers)
     index.providers.push(provider)
     await this.writeIndex(index)
+    return provider
+  }
+
+  async upsertKsccProvider(input: {
+    apiKey: string
+    baseUrl: string
+    modelCatalog: SavedProvider['modelCatalog']
+  }): Promise<SavedProvider> {
+    const index = await this.readIndex()
+    const existingIndex = index.providers.findIndex((provider) => provider.presetId === 'kscc')
+    const existing = existingIndex === -1 ? undefined : index.providers[existingIndex]
+    const modelIds = new Set(input.modelCatalog?.map((model) => model.id) ?? [])
+    const model = existing && modelIds.has(existing.models.main)
+      ? existing.models.main
+      : input.modelCatalog?.find((value) => value.id.trim())?.id
+    if (!model) throw ApiError.badRequest('KSCC did not return any available models')
+
+    const models = {
+      main: model,
+      haiku: model,
+      sonnet: model,
+      opus: model,
+    }
+    const provider: SavedProvider = existingIndex === -1
+      ? {
+          id: crypto.randomUUID(),
+          presetId: 'kscc',
+          name: 'KSCC',
+          apiKey: input.apiKey,
+          authStrategy: 'auth_token_empty_api_key',
+          baseUrl: input.baseUrl,
+          apiFormat: 'anthropic',
+          runtimeKind: 'anthropic_compatible',
+          models,
+          modelCatalog: input.modelCatalog,
+          toolSearchEnabled: true,
+          notes: 'Authorized through KSCC enterprise sign-in',
+        }
+      : {
+          ...index.providers[existingIndex],
+          name: 'KSCC',
+          apiKey: input.apiKey,
+          authStrategy: 'auth_token_empty_api_key',
+          baseUrl: input.baseUrl,
+          apiFormat: 'anthropic',
+          runtimeKind: 'anthropic_compatible',
+          models,
+          modelCatalog: input.modelCatalog,
+        }
+
+    if (existingIndex === -1) {
+      index.providerOrder = appendNewProviderToOrder(index.providerOrder, provider.id, index.providers)
+      index.providers.push(provider)
+    } else {
+      index.providers[existingIndex] = provider
+    }
+    index.activeId = provider.id
+    await this.writeIndex(index)
+    await this.syncToSettings(provider)
     return provider
   }
 
@@ -259,6 +320,7 @@ export class ProviderService {
       ...(input.apiFormat !== undefined && { apiFormat: input.apiFormat }),
       ...(input.runtimeKind !== undefined && { runtimeKind: input.runtimeKind }),
       ...(input.models !== undefined && { models: normalizeModelMapping(input.models) }),
+      ...(input.modelCatalog !== undefined && input.modelCatalog !== null && { modelCatalog: input.modelCatalog }),
       ...(input.model1mSupport !== undefined && input.model1mSupport !== null && { model1mSupport: input.model1mSupport }),
       ...(typeof input.autoCompactWindow === 'number' && { autoCompactWindow: input.autoCompactWindow }),
       ...(input.modelContextWindows !== undefined && input.modelContextWindows !== null && { modelContextWindows: input.modelContextWindows }),
@@ -268,6 +330,9 @@ export class ProviderService {
     }
     if (input.model1mSupport === null) {
       delete updated.model1mSupport
+    }
+    if (input.modelCatalog === null) {
+      delete updated.modelCatalog
     }
     if (input.autoCompactWindow === null) {
       delete updated.autoCompactWindow
@@ -577,6 +642,11 @@ export class ProviderService {
     if (!baseUrl || !apiKey) {
       return { connectivity: { success: false, latencyMs: 0, error: 'Missing baseUrl or apiKey' } }
     }
+    if (provider.presetId === 'kscc') {
+      return {
+        connectivity: await this.testKsccConnectivity(baseUrl, apiKey, normalizeModelStringForAPI(modelId)),
+      }
+    }
     return this.testProviderConfig({
       baseUrl,
       apiKey,
@@ -584,6 +654,65 @@ export class ProviderService {
       authStrategy,
       apiFormat,
     })
+  }
+
+  /** KSCC validates its own client protocol and only exposes a streaming endpoint. */
+  private async testKsccConnectivity(
+    baseUrl: string,
+    apiKey: string,
+    modelId: string,
+  ): Promise<ProviderTestStepResult> {
+    const start = Date.now()
+    const networkSettings = await loadNetworkSettings()
+    const request = buildKsccTestRequest(baseUrl, apiKey, modelId)
+    try {
+      const response = await fetch(request.url, {
+        method: 'POST',
+        headers: request.headers,
+        body: JSON.stringify(request.body),
+        signal: AbortSignal.timeout(networkSettings.aiRequestTimeoutMs),
+        ...getNetworkProxyFetchOptions(networkSettings, request.url),
+      })
+      const latencyMs = Date.now() - start
+      const responseText = await response.text().catch(() => '')
+      if (!response.ok) {
+        let error = `HTTP ${response.status}`
+        try {
+          const parsed = JSON.parse(responseText) as { error?: { message?: string } }
+          error = parsed.error?.message || error
+        } catch {
+          if (responseText.trim()) error = responseText.trim().slice(0, 200)
+        }
+        return { success: false, latencyMs, error, modelUsed: modelId, httpStatus: response.status }
+      }
+
+      if (!responseText.includes('"type":"message_start"')) {
+        return {
+          success: false,
+          latencyMs,
+          error: 'KSCC returned 200 but no valid message stream',
+          modelUsed: modelId,
+          httpStatus: response.status,
+        }
+      }
+      return { success: true, latencyMs, modelUsed: modelId, httpStatus: response.status }
+    } catch (err: unknown) {
+      const latencyMs = Date.now() - start
+      if (err instanceof DOMException && err.name === 'TimeoutError') {
+        return {
+          success: false,
+          latencyMs,
+          error: `Request timed out (${Math.round(networkSettings.aiRequestTimeoutMs / 1000)}s)`,
+          modelUsed: modelId,
+        }
+      }
+      return {
+        success: false,
+        latencyMs,
+        error: err instanceof Error ? err.message : String(err),
+        modelUsed: modelId,
+      }
+    }
   }
 
   async testProviderConfig(input: TestProviderInput): Promise<ProviderTestResult> {

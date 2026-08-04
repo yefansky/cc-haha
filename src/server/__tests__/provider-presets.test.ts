@@ -55,6 +55,7 @@ describe('provider presets API', () => {
   })
 
   test('local Anthropic-compatible presets appear immediately before custom', () => {
+    expect(PROVIDER_PRESETS.at(-4)?.id).toBe('kscc')
     expect(PROVIDER_PRESETS.at(-3)?.id).toBe('lmstudio')
     expect(PROVIDER_PRESETS.at(-2)?.id).toBe('ollama')
     expect(PROVIDER_PRESETS.at(-1)?.id).toBe('custom')
@@ -70,6 +71,7 @@ describe('provider presets API', () => {
     const jiekouai = PROVIDER_PRESETS.find((preset) => preset.id === 'jiekouai')
     const shengsuanyun = PROVIDER_PRESETS.find((preset) => preset.id === 'shengsuanyun')
     const teamorouter = PROVIDER_PRESETS.find((preset) => preset.id === 'teamorouter')
+    const kscc = PROVIDER_PRESETS.find((preset) => preset.id === 'kscc')
 
     expect(lmstudio?.baseUrl).toBe('http://localhost:1234')
     expect(lmstudio?.apiFormat).toBe('anthropic')
@@ -125,6 +127,11 @@ describe('provider presets API', () => {
     expect(teamorouter?.defaultModels.sonnet).toBe('claude-sonnet-5')
     expect(teamorouter?.defaultModels.opus).toBe('claude-opus-4-8')
     expect(teamorouter?.modelContextWindows?.['claude-opus-4-8']).toBe(1000000)
+    expect(kscc?.baseUrl).toBe('http://120.92.138.34')
+    expect(kscc?.apiFormat).toBe('anthropic')
+    expect(kscc?.authStrategy).toBe('auth_token_empty_api_key')
+    expect(kscc?.defaultModels.main).toBe('glm-5')
+    expect(kscc?.defaultEnv?.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined()
   })
 
   test('configured presets can expose optional API key and promo metadata', () => {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { get3PModelCapabilityOverride } from '../model/modelSupportOverrides.js'
+import { PROVIDER_MODEL_CAPABILITIES_ENV_KEY } from '../model/providerModelCapabilities.js'
 import { resolveSideQueryThinkingConfig } from '../sideQuery.js'
 import {
   getModelBetas,
@@ -34,6 +35,7 @@ describe('provider-aware thinking support', () => {
   let originalVertex: string | undefined
   let originalFoundry: string | undefined
   let originalExplicitDisabledThinking: string | undefined
+  let originalProviderModelCapabilities: string | undefined
 
   beforeEach(() => {
     originalApiKey = process.env.ANTHROPIC_API_KEY
@@ -46,6 +48,7 @@ describe('provider-aware thinking support', () => {
     originalVertex = process.env.CLAUDE_CODE_USE_VERTEX
     originalFoundry = process.env.CLAUDE_CODE_USE_FOUNDRY
     originalExplicitDisabledThinking = process.env.CC_HAHA_SEND_DISABLED_THINKING
+    originalProviderModelCapabilities = process.env[PROVIDER_MODEL_CAPABILITIES_ENV_KEY]
 
     delete process.env.ANTHROPIC_API_KEY
     delete process.env.CLAUDE_CODE_USE_BEDROCK
@@ -64,6 +67,7 @@ describe('provider-aware thinking support', () => {
     restoreEnv('CLAUDE_CODE_USE_VERTEX', originalVertex)
     restoreEnv('CLAUDE_CODE_USE_FOUNDRY', originalFoundry)
     restoreEnv('CC_HAHA_SEND_DISABLED_THINKING', originalExplicitDisabledThinking)
+    restoreEnv(PROVIDER_MODEL_CAPABILITIES_ENV_KEY, originalProviderModelCapabilities)
     clearCapabilityCache()
     clearBetaCache()
   })
@@ -207,6 +211,25 @@ describe('provider-aware thinking support', () => {
 
     expect(modelSupportsEffort('kimi-k2.6')).toBe(false)
     expect(modelSupportsMaxEffort('kimi-k2.6')).toBe(false)
+  })
+
+  test('uses dynamic provider model capabilities for models outside role mappings', () => {
+    process.env.ANTHROPIC_API_KEY = 'third-party-key'
+    process.env.ANTHROPIC_BASE_URL = 'https://provider.example.test/anthropic'
+    process.env[PROVIDER_MODEL_CAPABILITIES_ENV_KEY] = JSON.stringify({
+      'dynamic-model-a': 'thinking,effort,adaptive_thinking,xhigh_effort,max_effort',
+      'dynamic-model-b': 'thinking',
+    })
+    clearCapabilityCache()
+
+    expect(modelSupportsThinking('dynamic-model-a')).toBe(true)
+    expect(modelSupportsAdaptiveThinking('dynamic-model-a')).toBe(true)
+    expect(modelSupportsEffort('dynamic-model-a')).toBe(true)
+    expect(modelSupportsXHighEffort('dynamic-model-a')).toBe(true)
+    expect(modelSupportsMaxEffort('dynamic-model-a')).toBe(true)
+    expect(modelSupportsThinking('dynamic-model-b')).toBe(true)
+    expect(modelSupportsEffort('dynamic-model-b')).toBe(false)
+    expect(modelSupportsEffort('unlisted-model')).toBe(false)
   })
 
   test('does not infer first-party effort or betas from current model names on third-party URLs', () => {

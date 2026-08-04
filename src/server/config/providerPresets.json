@@ -212,6 +212,22 @@
     }
   },
   {
+    "id": "kscc",
+    "name": "KSCC",
+    "baseUrl": "http://120.92.138.34",
+    "apiFormat": "anthropic",
+    "defaultModels": {
+      "main": "glm-5",
+      "haiku": "glm-5",
+      "sonnet": "glm-5",
+      "opus": "glm-5"
+    },
+    "needsApiKey": true,
+    "websiteUrl": "",
+    "authStrategy": "auth_token_empty_api_key",
+    "defaultEnv": {}
+  },
+  {
     "id": "lmstudio",
     "name": "LM Studio",
     "baseUrl": "http://localhost:1234",

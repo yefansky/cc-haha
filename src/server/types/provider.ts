@@ -63,6 +63,22 @@ export const ModelContextWindowsSchema = z.record(
   z.string().min(1),
   z.number().int().min(16000).max(10000000),
 )
+export const ProviderModelCapabilitySchema = z.enum([
+  'effort',
+  'xhigh_effort',
+  'max_effort',
+  'thinking',
+  'required_thinking',
+  'adaptive_thinking',
+  'interleaved_thinking',
+])
+export const ProviderModelCatalogEntrySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).optional(),
+  description: z.string().optional(),
+  capabilities: z.array(ProviderModelCapabilitySchema).default([]),
+})
+export const ProviderModelCatalogSchema = z.array(ProviderModelCatalogEntrySchema)
 export const ToolSearchEnabledSchema = z.boolean()
 export const DisableExperimentalBetasSchema = z.boolean()
 
@@ -76,6 +92,7 @@ export const SavedProviderSchema = z.object({
   apiFormat: ApiFormatSchema.default('anthropic'),
   runtimeKind: ProviderRuntimeKindSchema.default('anthropic_compatible'),
   models: ModelMappingSchema,
+  modelCatalog: ProviderModelCatalogSchema.optional(),
   model1mSupport: Model1mSupportSchema.optional(),
   autoCompactWindow: AutoCompactWindowSchema.optional(),
   modelContextWindows: ModelContextWindowsSchema.optional(),
@@ -100,6 +117,7 @@ export const CreateProviderSchema = z.object({
   apiFormat: ApiFormatSchema.default('anthropic'),
   runtimeKind: ProviderRuntimeKindSchema.default('anthropic_compatible'),
   models: ModelMappingSchema,
+  modelCatalog: ProviderModelCatalogSchema.optional(),
   model1mSupport: Model1mSupportSchema.optional(),
   autoCompactWindow: AutoCompactWindowSchema.optional(),
   modelContextWindows: ModelContextWindowsSchema.optional(),
@@ -116,6 +134,7 @@ export const UpdateProviderSchema = z.object({
   apiFormat: ApiFormatSchema.optional(),
   runtimeKind: ProviderRuntimeKindSchema.optional(),
   models: ModelMappingSchema.optional(),
+  modelCatalog: ProviderModelCatalogSchema.nullable().optional(),
   model1mSupport: Model1mSupportSchema.nullable().optional(),
   autoCompactWindow: AutoCompactWindowSchema.nullable().optional(),
   modelContextWindows: ModelContextWindowsSchema.nullable().optional(),
@@ -140,6 +159,8 @@ export const ReorderProvidersSchema = z.object({
 
 // TypeScript types
 export type ModelMapping = z.infer<typeof ModelMappingSchema>
+export type ProviderModelCapability = z.infer<typeof ProviderModelCapabilitySchema>
+export type ProviderModelCatalogEntry = z.infer<typeof ProviderModelCatalogEntrySchema>
 export type Model1mSupport = z.infer<typeof Model1mSupportSchema>
 export type SavedProvider = z.infer<typeof SavedProviderSchema>
 export type ProvidersIndex = z.infer<typeof ProvidersIndexSchema>

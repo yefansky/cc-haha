@@ -729,6 +729,40 @@ describe('ConversationService', () => {
     expect(disabledEnv.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe('1')
   })
 
+  test('buildChildEnv injects the native KSCC protocol identity for KSCC sessions', async () => {
+    const providerService = new ProviderService()
+    const provider = await providerService.addProvider({
+      presetId: 'kscc',
+      name: 'KSCC',
+      apiKey: 'kscc-token',
+      baseUrl: 'http://120.92.138.34',
+      apiFormat: 'anthropic',
+      models: {
+        main: 'glm-5',
+        haiku: 'glm-5',
+        sonnet: 'glm-5',
+        opus: 'glm-5',
+      },
+    })
+
+    const service = new ConversationService() as any
+    const env = (await service.buildChildEnv('/tmp', undefined, {
+      providerId: provider.id,
+    })) as Record<string, string>
+    const headers = JSON.parse(env.CC_HAHA_KSCC_HEADERS) as Record<string, string>
+
+    expect(env.CC_HAHA_KSCC_PROTOCOL).toBe('1')
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('kscc-token')
+    expect(env.ANTHROPIC_API_KEY).toBe('')
+    expect(headers['ksyun-code-version']).toBe('1.1.28')
+    expect(headers['ksyun-code-type']).toBe('kscc-sdk-cli')
+    expect(headers['X-KSC-COMPANY-CODE']).toBe('seasun')
+    expect(headers.projectpath).toBe(encodeURIComponent('/tmp'))
+    expect(headers['owtffssent-version']).toBe('2023-06-01')
+    expect(headers['owtffssent-beta']).toContain('claude-code-20250219')
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined()
+  })
+
   test('buildChildEnv injects trace provider metadata for desktop sdk session-scoped providers', async () => {
     const providerService = new ProviderService()
     const provider = await providerService.addProvider({

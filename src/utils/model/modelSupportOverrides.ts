@@ -1,5 +1,6 @@
 import memoize from 'lodash-es/memoize.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
+import { getProviderModelCapability } from './providerModelCapabilities.js'
 
 export type ModelCapabilityOverride =
   | 'effort'
@@ -38,6 +39,8 @@ export const get3PModelCapabilityOverride = memoize(
     if (getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()) {
       return undefined
     }
+    const catalogOverride = getProviderModelCapability(model, capability)
+    if (catalogOverride !== undefined) return catalogOverride
     const m = model.toLowerCase()
     for (const tier of TIERS) {
       const pinned = process.env[tier.modelEnvVar]

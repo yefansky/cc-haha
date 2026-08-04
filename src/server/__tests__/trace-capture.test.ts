@@ -318,6 +318,7 @@ describe('trace capture service', () => {
         url: 'https://api.deepseek.com/v1/chat/completions',
         headers: {
           Authorization: 'Bearer sk-header-secret',
+          macaddress: '00%3A11%3A22%3A33%3A44%3A55',
           'Content-Type': 'application/json',
         },
         body,
@@ -344,6 +345,7 @@ describe('trace capture service', () => {
     expect(trace.summary.totalOutputTokens).toBe(7)
     expect(trace.summary.models).toEqual([{ model: 'deepseek-v4-pro', calls: 1 }])
     expect(trace.calls[0].request.headers.Authorization).toBe('[redacted]')
+    expect(trace.calls[0].request.headers.macaddress).toBe('[redacted]')
     expect(trace.calls[0].request.body.preview).toContain('explain the failed provider response')
     expect(trace.calls[0].request.body.preview).not.toContain('sk-body-secret')
     expect(trace.calls[0].request.body.preview.length).toBe(240_000)

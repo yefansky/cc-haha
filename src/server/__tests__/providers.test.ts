@@ -1744,6 +1744,51 @@ describe('ProviderService', () => {
   })
 
   describe('testProvider', () => {
+    test('uses the native streaming protocol when testing a saved KSCC provider', async () => {
+      const originalFetch = globalThis.fetch
+      const calls: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
+      globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+        calls.push({
+          url: String(url),
+          headers: init?.headers as Record<string, string>,
+          body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+        })
+        return new Response([
+          'event: message_start',
+          'data: {"type":"message_start","message":{"model":"glm-5"}}',
+          '',
+          'event: message_stop',
+          'data: {"type":"message_stop"}',
+          '',
+        ].join('\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+      }) as typeof fetch
+
+      try {
+        const svc = new ProviderService()
+        const provider = await svc.addProvider(sampleInput({
+          presetId: 'kscc',
+          name: 'KSCC',
+          baseUrl: 'http://120.92.138.34',
+          apiKey: 'kscc-token',
+          authStrategy: 'auth_token_empty_api_key',
+          apiFormat: 'anthropic',
+          models: { main: 'glm-5', haiku: 'glm-5', sonnet: 'glm-5', opus: 'glm-5' },
+        }))
+
+        const result = await svc.testProvider(provider.id)
+
+        expect(result.connectivity.success).toBe(true)
+        expect(calls[0].url).toBe('http://120.92.138.34/v1/messages?beta=true')
+        expect(calls[0].headers.Authorization).toBe('Bearer kscc-token')
+        expect(calls[0].headers['ksyun-code-type']).toBe('kscc-sdk-cli')
+        expect(calls[0].headers['owtffssent-version']).toBe('2023-06-01')
+        expect(calls[0].body.stream).toBe(true)
+        expect(calls[0].body.metadata).toEqual(expect.objectContaining({ user_id: expect.any(String) }))
+      } finally {
+        globalThis.fetch = originalFetch
+      }
+    })
+
     test('should use preset default auth for saved no-key Anthropic-compatible providers', async () => {
       const originalFetch = globalThis.fetch
       const calls: Array<{ headers: Record<string, string> }> = []
@@ -2164,13 +2209,23 @@ describe('Providers API', () => {
         sonnet: 'gpt-4-sonnet',
         opus: 'gpt-4-opus',
       },
+      modelCatalog: [{
+        id: 'gpt-4',
+        name: 'GPT-4 Dynamic',
+        capabilities: ['thinking', 'effort'],
+      }],
     })
     const res = await handleProvidersApi(req, url, segments)
 
     expect(res.status).toBe(201)
-    const body = (await res.json()) as { provider: { name: string; models: { main: string }; autoCompactWindow: number; disableExperimentalBetas?: boolean } }
+    const body = (await res.json()) as { provider: { name: string; models: { main: string }; modelCatalog?: Array<{ id: string; capabilities: string[] }>; autoCompactWindow: number; disableExperimentalBetas?: boolean } }
     expect(body.provider.name).toBe('New Provider')
     expect(body.provider.models.main).toBe('gpt-4')
+    expect(body.provider.modelCatalog).toEqual([{
+      id: 'gpt-4',
+      name: 'GPT-4 Dynamic',
+      capabilities: ['thinking', 'effort'],
+    }])
     expect(body.provider.autoCompactWindow).toBe(64000)
     expect(body.provider.disableExperimentalBetas).toBe(true)
   })
@@ -2289,13 +2344,18 @@ describe('Providers API', () => {
     const { req, url, segments } = makeRequest('PUT', `/api/providers/${added.id}`, {
       name: 'Renamed Provider',
       disableExperimentalBetas: true,
+      modelCatalog: [{ id: 'model-main', capabilities: ['effort', 'xhigh_effort'] }],
     })
     const res = await handleProvidersApi(req, url, segments)
 
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { provider: { name: string; disableExperimentalBetas?: boolean } }
+    const body = (await res.json()) as { provider: { name: string; disableExperimentalBetas?: boolean; modelCatalog?: Array<{ id: string; capabilities: string[] }> } }
     expect(body.provider.name).toBe('Renamed Provider')
     expect(body.provider.disableExperimentalBetas).toBe(true)
+    expect(body.provider.modelCatalog).toEqual([{
+      id: 'model-main',
+      capabilities: ['effort', 'xhigh_effort'],
+    }])
   })
 
   // ─── DELETE /api/providers/:id ───────────────────────────────────────────

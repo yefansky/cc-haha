@@ -3091,6 +3091,17 @@ async function isRuntimeEffortSupported(
     return supportedEfforts.includes(effort)
   }
   if (!isOpenAIOfficialProviderId(providerId)) {
+    if (typeof providerId === 'string') {
+      const { providers } = await providerService.listProviders()
+      const model = providers
+        .find((provider) => provider.id === providerId)
+        ?.modelCatalog?.find((entry) => entry.id === modelId)
+      if (model) {
+        if (!model.capabilities.includes('effort')) return false
+        if (effort === 'xhigh') return model.capabilities.includes('xhigh_effort')
+        if (effort === 'max') return model.capabilities.includes('max_effort')
+      }
+    }
     return VALID_CLAUDE_EFFORT_LEVELS.has(effort)
   }
   if (!isOpenAIReasoningEffort(effort)) {

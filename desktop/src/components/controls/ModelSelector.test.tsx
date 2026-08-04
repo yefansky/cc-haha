@@ -257,6 +257,65 @@ describe('ModelSelector', () => {
     })
   })
 
+  it('renders discovered provider models with their declared effort levels', async () => {
+    useSettingsStore.setState({
+      locale: 'en',
+      availableModels: MODELS,
+      currentModel: MODELS[0],
+      activeProviderName: 'Dynamic Provider',
+      effortLevel: 'high',
+    })
+    useProviderStore.setState({
+      providers: [{
+        id: 'dynamic-provider',
+        presetId: 'dynamic',
+        name: 'Dynamic Provider',
+        apiKey: '***',
+        baseUrl: 'https://dynamic.example.test',
+        apiFormat: 'anthropic',
+        models: {
+          main: 'dynamic-a',
+          haiku: 'dynamic-a',
+          sonnet: 'dynamic-a',
+          opus: 'dynamic-a',
+        },
+        modelCatalog: [
+          {
+            id: 'dynamic-a',
+            capabilities: ['thinking', 'effort', 'xhigh_effort', 'max_effort'],
+          },
+          {
+            id: 'dynamic-b',
+            capabilities: ['thinking', 'effort', 'max_effort'],
+          },
+        ],
+      }],
+      activeId: 'dynamic-provider',
+      hasLoadedProviders: true,
+      isLoading: false,
+    })
+
+    render(<ModelSelector runtimeKey="dynamic-session" />)
+
+    await clickByRole(/dynamic-a/i)
+    expect(screen.getByRole('button', { name: /dynamic-b/i })).toBeInTheDocument()
+    await clickByRole(/dynamic-b/i)
+    expect(useSessionRuntimeStore.getState().selections['dynamic-session']).toEqual({
+      providerId: 'dynamic-provider',
+      modelId: 'dynamic-b',
+      effortLevel: 'high',
+    })
+
+    await clickByRole('Effort: High')
+    const slider = screen.getByRole('slider', { name: 'Effort' })
+    expect(slider).toHaveAttribute('aria-valuemax', '3')
+    fireEvent.keyDown(slider, { key: 'End' })
+    expect(useSessionRuntimeStore.getState().selections['dynamic-session']).toMatchObject({
+      modelId: 'dynamic-b',
+      effortLevel: 'max',
+    })
+  })
+
   it('defaults blank provider-scoped runtime selections to the active provider main model', async () => {
     useSettingsStore.setState({
       locale: 'en',
