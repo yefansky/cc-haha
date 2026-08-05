@@ -75,6 +75,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   const selectSessions = useSessionStore((s) => s.selectSessions)
   const deselectSessions = useSessionStore((s) => s.deselectSessions)
   const renameSession = useSessionStore((s) => s.renameSession)
+  const copySession = useSessionStore((s) => s.copySession)
   const addToast = useUIStore((s) => s.addToast)
   const sidebarOpen = useUIStore((s) => s.sidebarOpen)
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
@@ -520,6 +521,21 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
     setContextMenu(null)
     setPendingDeleteSessionId(id)
   }, [])
+
+  const handleCopy = useCallback(async (id: string) => {
+    setContextMenu(null)
+    try {
+      const copy = await copySession(id)
+      useTabStore.getState().openTab(copy.sessionId, copy.title)
+      useChatStore.getState().connectToSession(copy.sessionId)
+      closeMobileDrawer()
+    } catch (error) {
+      addToast({
+        type: 'error',
+        message: error instanceof Error ? error.message : t('sidebar.sessionListFailed'),
+      })
+    }
+  }, [addToast, closeMobileDrawer, copySession, t])
 
   const confirmDelete = useCallback(async () => {
     if (!pendingDeleteSessionId) return
@@ -1194,6 +1210,12 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
           className="fixed z-[var(--z-dropdown)] min-w-[180px] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-2 shadow-[var(--shadow-dropdown)]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
+          <button
+            onClick={() => void handleCopy(contextMenu.id)}
+            className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+          >
+            {t('sidebar.copySession')}
+          </button>
           <button
             onClick={() => {
               const session = sessions.find((s) => s.id === contextMenu.id)

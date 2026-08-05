@@ -191,6 +191,16 @@ export async function handleSessionsApi(
       return await branchSession(req, sessionId)
     }
 
+    if (subResource === 'copy') {
+      if (req.method !== 'POST') {
+        return Response.json(
+          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+          { status: 405 },
+        )
+      }
+      return await copySession(sessionId)
+    }
+
     if (subResource === 'turn-checkpoints') {
       if (req.method !== 'GET') {
         return Response.json(
@@ -1222,6 +1232,38 @@ async function branchSession(req: Request, sessionId: string): Promise<Response>
       if (error.code === 'SOURCE_NOT_FOUND') {
         throw ApiError.notFound(error.message)
       }
+      throw ApiError.badRequest(error.message)
+    }
+    throw error
+  }
+}
+
+async function copySession(sessionId: string): Promise<Response> {
+  const launchInfo = await sessionService.getSessionLaunchInfo(sessionId)
+  if (!launchInfo) throw ApiError.notFound(`Session not found: ${sessionId}`)
+
+  const source = await sessionService.getSession(sessionId)
+  try {
+    const result = await createSessionBranch({
+      sourceSessionId: sessionId,
+      sourceTranscriptPath: launchInfo.filePath,
+      title: source?.title || launchInfo.customTitle || undefined,
+      sourceWorkDir: launchInfo.workDir,
+      sourceRepository: launchInfo.repository,
+      sourceWorktreeSession: launchInfo.worktreeSession,
+      naming: 'copy',
+    })
+    sessionService.invalidateExternalSessionMutation()
+    recentProjectsCache = null
+    return Response.json({
+      sessionId: result.sessionId,
+      title: result.title,
+      workDir: result.workDir ?? launchInfo.workDir,
+      sourceSessionId: sessionId,
+    }, { status: 201 })
+  } catch (error) {
+    if (error instanceof SessionBranchingError) {
+      if (error.code === 'SOURCE_NOT_FOUND') throw ApiError.notFound(error.message)
       throw ApiError.badRequest(error.message)
     }
     throw error

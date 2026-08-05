@@ -73,6 +73,7 @@ vi.mock('../../i18n', () => ({
       'common.cancel': 'Cancel',
       'common.delete': 'Delete',
       'common.rename': 'Rename',
+      'sidebar.copySession': 'Copy session',
       'sidebar.timeGroup.today': 'Today',
       'sidebar.timeGroup.yesterday': 'Yesterday',
       'sidebar.timeGroup.last7days': 'Last 7 Days',
@@ -196,6 +197,7 @@ describe('Sidebar', () => {
   const disconnectSession = vi.fn()
   const fetchSessions = vi.fn()
   const createSession = vi.fn()
+  const copySession = vi.fn()
   const deleteSession = vi.fn()
   const deleteSessions = vi.fn()
   const addToast = vi.fn()
@@ -205,6 +207,7 @@ describe('Sidebar', () => {
     disconnectSession.mockReset()
     fetchSessions.mockReset()
     createSession.mockReset()
+    copySession.mockReset()
     deleteSession.mockReset()
     deleteSessions.mockReset()
     addToast.mockReset()
@@ -242,9 +245,10 @@ describe('Sidebar', () => {
       indexStatus: null,
       isBatchMode: false,
       selectedSessionIds: new Set(),
-      fetchSessions,
-      createSession,
-      deleteSession,
+        fetchSessions,
+        createSession,
+        copySession,
+        deleteSession,
       deleteSessions,
     })
     useChatStore.setState({
@@ -1062,6 +1066,27 @@ describe('Sidebar', () => {
 
     expect(useTabStore.getState().tabs).toEqual([])
     expect(useTabStore.getState().activeTabId).toBeNull()
+  })
+
+  it('copies a session from its context menu and opens an isolated session tab', async () => {
+    copySession.mockResolvedValue({
+      sessionId: 'copied-session-1',
+      title: '复制Open Session',
+      workDir: '/workspace/project',
+    })
+    useSessionStore.setState({
+      sessions: [makeSession('session-1', 'Open Session', '/workspace/project', new Date().toISOString())],
+    })
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: /Open Session/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy session' }))
+
+    await waitFor(() => {
+      expect(copySession).toHaveBeenCalledWith('session-1')
+      expect(connectToSession).toHaveBeenCalledWith('copied-session-1')
+    })
+    expect(useTabStore.getState().activeTabId).toBe('copied-session-1')
   })
 
   it('selects and deletes multiple sessions from batch mode', async () => {

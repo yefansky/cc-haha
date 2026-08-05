@@ -11,6 +11,7 @@ export const jp: Record<TranslationKey, string> = {
   'common.stop': '停止',
   'common.tokens': '{count} トークン',
   'common.rename': '名前を変更',
+  'sidebar.copySession': '会話をコピー',
   'common.retry': '再試行',
   'common.loading': '読み込み中...',
   'common.select': '選択',
