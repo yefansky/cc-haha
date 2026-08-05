@@ -345,6 +345,8 @@ describe('MessageList nested tool calls', () => {
     expect(container.querySelectorAll('[data-message-shell="assistant"]').length).toBeLessThan(220)
     expect(container.querySelector('[data-virtual-message-item]')).not.toBeNull()
     expect(container.querySelector('[data-virtual-spacer="top"]')).not.toBeNull()
+    expect((container.querySelector('[data-virtual-spacer="top"]')?.parentElement as HTMLElement).style.overflowAnchor)
+      .toBe('none')
     // Virtualized window items must NOT get content-visibility: it zeroes their
     // ResizeObserver-measured height in the virtualizer (the regression this guards).
     for (const item of container.querySelectorAll('[data-virtual-message-item]')) {
