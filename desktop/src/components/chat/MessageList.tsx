@@ -2709,6 +2709,10 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
         <div
           ref={scrollContentRef}
           className={compact ? 'mx-auto max-w-full' : 'mx-auto max-w-[860px]'}
+          // The virtualizer owns the spacer heights. Letting the browser choose
+          // an anchor inside this subtree makes its automatic correction race
+          // against ResizeObserver measurement updates while reading history.
+          style={virtualTranscriptWindow.enabled ? { overflowAnchor: 'none' } : undefined}
         >
           {virtualTranscriptWindow.enabled ? (
             <VirtualSpacer height={virtualTranscriptWindow.beforeHeight} position="top" />
