@@ -256,6 +256,7 @@ export type WorkspaceChangedFile = {
   isDirectory?: boolean
   isSymlink?: boolean
 }
+export type CopySessionResponse = Pick<BranchSessionResponse, 'sessionId' | 'title' | 'workDir' | 'sourceSessionId'>
 
 export type WorkspaceStatusResult = {
   state: 'ok' | 'not_git_repo' | 'missing_workdir' | 'error'
@@ -405,6 +406,10 @@ export const sessionsApi = {
 
   branch(sessionId: string, body: BranchSessionRequest) {
     return api.post<BranchSessionResponse>(`/api/sessions/${sessionId}/branch`, body)
+  },
+
+  copy(sessionId: string) {
+    return api.post<CopySessionResponse>(`/api/sessions/${sessionId}/copy`)
   },
 
   delete(sessionId: string) {

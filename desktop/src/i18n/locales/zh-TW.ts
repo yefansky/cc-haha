@@ -11,6 +11,7 @@ export const zh: Record<TranslationKey, string> = {
   'common.stop': '停止',
   'common.tokens': '{count} tokens',
   'common.rename': '重新命名',
+  'sidebar.copySession': '複製會話',
   'common.retry': '重試',
   'common.loading': '載入中...',
   'common.select': '選擇',

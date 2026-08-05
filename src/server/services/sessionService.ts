@@ -533,6 +533,14 @@ export class SessionService {
     this.observedSharedMutationEpoch = sharedState.epoch
   }
 
+  /**
+   * Use after a trusted transcript writer creates or replaces a session file
+   * outside this service, so the next list request cannot serve stale data.
+   */
+  invalidateExternalSessionMutation(): void {
+    this.invalidateSessionListCache()
+  }
+
   private prepareSessionListCaches(scope: string): void {
     if (this.activeSessionListCacheScope !== scope) {
       this.sessionListCache.clear()

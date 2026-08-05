@@ -98,6 +98,7 @@ export type CreateSessionBranchOptions = {
   sourceWorkDir?: string | null
   sourceRepository?: unknown
   sourceWorktreeSession?: PersistedWorktreeSession | null
+  naming?: 'branch' | 'copy'
 }
 
 export class SessionBranchingError extends Error {
@@ -283,6 +284,23 @@ export async function getUniqueForkName(
   return `${baseName} (Branch ${nextNumber})`
 }
 
+export async function getUniqueCopyName(
+  baseName: string,
+  projectDirPath: string,
+): Promise<string> {
+  const existingTitles = new Set(
+    (await listExistingTitles(projectDirPath))
+      .map((title) => title.trim())
+      .filter(Boolean),
+  )
+  const prefix = `复制${baseName}`
+  if (!existingTitles.has(prefix)) return prefix
+
+  let suffix = 2
+  while (existingTitles.has(`${prefix} ${suffix}`)) suffix++
+  return `${prefix} ${suffix}`
+}
+
 function buildPreservedMetadataEntries(
   sourceEntries: RawEntry[],
   copiedMessageIds: Set<string>,
@@ -376,6 +394,7 @@ export async function createSessionBranch(
     sourceWorkDir,
     sourceRepository,
     sourceWorktreeSession,
+    naming = 'branch',
   } = options
 
   const projectDirPath = path.dirname(sourceTranscriptPath)
@@ -493,7 +512,9 @@ export async function createSessionBranch(
         message.type === 'user',
     ),
   )
-  const effectiveTitle = await getUniqueForkName(title ?? firstPrompt, projectDirPath)
+  const effectiveTitle = naming === 'copy'
+    ? await getUniqueCopyName(title ?? firstPrompt, projectDirPath)
+    : await getUniqueForkName(title ?? firstPrompt, projectDirPath)
 
   let metadataEntries = buildPreservedMetadataEntries(
     sourceEntries,

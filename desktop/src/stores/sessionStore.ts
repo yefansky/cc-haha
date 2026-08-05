@@ -3,6 +3,7 @@ import {
   sessionsApi,
   type BatchDeleteSessionsResponse,
   type BranchSessionResponse,
+  type CopySessionResponse,
   type CreateSessionRepositoryOptions,
 } from '../api/sessions'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
@@ -21,6 +22,7 @@ type CreateSessionOptions = {
 }
 
 type BranchSessionResult = Pick<BranchSessionResponse, 'sessionId' | 'title' | 'workDir'>
+type CopySessionResult = Pick<CopySessionResponse, 'sessionId' | 'title' | 'workDir'>
 
 type SessionStore = {
   sessions: SessionListItem[]
@@ -39,6 +41,7 @@ type SessionStore = {
     targetMessageId: string,
     options?: { title?: string },
   ) => Promise<BranchSessionResult>
+  copySession: (sourceSessionId: string) => Promise<CopySessionResult>
   deleteSession: (id: string) => Promise<void>
   deleteSessions: (ids: string[]) => Promise<BatchDeleteSessionsResponse>
   enterBatchMode: () => void
@@ -167,6 +170,31 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       title: result.title,
       workDir: result.workDir,
     }
+  },
+
+  copySession: async (sourceSessionId) => {
+    const result = await sessionsApi.copy(sourceSessionId)
+    invalidateRecentProjectsCache()
+    const sourceSession = get().sessions.find((session) => session.id === sourceSessionId)
+    const now = new Date().toISOString()
+    const optimisticSession: SessionListItem = {
+      id: result.sessionId,
+      title: result.title,
+      createdAt: now,
+      modifiedAt: now,
+      messageCount: sourceSession?.messageCount ?? 0,
+      projectPath: sourceSession?.projectPath ?? '',
+      projectRoot: sourceSession?.projectRoot ?? sourceSession?.workDir ?? result.workDir ?? null,
+      workDir: result.workDir ?? sourceSession?.workDir ?? null,
+      workDirExists: true,
+      permissionMode: sourceSession?.permissionMode,
+    }
+    set((state) => ({
+      sessions: [optimisticSession, ...state.sessions.filter((session) => session.id !== result.sessionId)],
+      activeSessionId: result.sessionId,
+    }))
+    void get().fetchSessions()
+    return result
   },
 
   deleteSession: async (id: string) => {

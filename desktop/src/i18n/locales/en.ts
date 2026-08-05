@@ -9,6 +9,7 @@ export const en = {
   'common.stop': 'Stop',
   'common.tokens': '{count} tokens',
   'common.rename': 'Rename',
+  'sidebar.copySession': 'Copy session',
   'common.retry': 'Retry',
   'common.loading': 'Loading...',
   'common.select': 'Select',

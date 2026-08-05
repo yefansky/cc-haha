@@ -4706,6 +4706,61 @@ describe('Sessions API', () => {
     ])
   })
 
+  it('POST /api/sessions/:id/copy should duplicate the active conversation into independent storage', async () => {
+    const sessionId = 'aaaaaaaa-1111-4111-8111-111111111111'
+    const workDir = path.join(tmpDir, 'copy-api-workdir')
+    const firstUserId = crypto.randomUUID()
+    const assistantId = crypto.randomUUID()
+    const sourcePath = await writeSessionFile(sanitizePath(workDir), sessionId, [
+      {
+        type: 'session-meta',
+        isMeta: true,
+        workDir,
+        permissionMode: 'acceptEdits',
+        runtimeProviderId: 'provider-a',
+        runtimeModelId: 'model-a',
+        effortLevel: 'high',
+        timestamp: '2026-01-01T00:00:00.000Z',
+      },
+      { ...makeUserEntry('copy every bit of context', firstUserId), sessionId, cwd: workDir },
+      { ...makeAssistantEntry('copied reply', firstUserId), uuid: assistantId, sessionId, cwd: workDir },
+      { type: 'custom-title', sessionId, customTitle: '项目大脑已启动' },
+    ])
+    const sourceBefore = await fs.readFile(sourcePath, 'utf8')
+
+    const cachedListRes = await fetch(`${baseUrl}/api/sessions`)
+    expect(cachedListRes.status).toBe(200)
+    expect((await cachedListRes.json() as { sessions: Array<{ id: string }> }).sessions)
+      .toContainEqual(expect.objectContaining({ id: sessionId }))
+
+    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/copy`, { method: 'POST' })
+    expect(res.status).toBe(201)
+    const body = await res.json() as { sessionId: string, title: string, workDir: string }
+    expect(body.sessionId).not.toBe(sessionId)
+    expect(body.title).toBe('复制项目大脑已启动')
+    expect(body.workDir).toBe(workDir)
+
+    const refreshedListRes = await fetch(`${baseUrl}/api/sessions`)
+    expect((await refreshedListRes.json() as { sessions: Array<{ id: string }> }).sessions)
+      .toContainEqual(expect.objectContaining({ id: body.sessionId }))
+
+    const copiedLaunchInfo = await service.getSessionLaunchInfo(body.sessionId)
+    expect(copiedLaunchInfo).toMatchObject({
+      workDir,
+      permissionMode: 'acceptEdits',
+      runtimeProviderId: 'provider-a',
+      runtimeModelId: 'model-a',
+      effortLevel: 'high',
+    })
+    expect((await service.getSessionMessages(body.sessionId)).map((message) => message.id)).toEqual([
+      firstUserId,
+      assistantId,
+    ])
+    await fs.appendFile(copiedLaunchInfo!.filePath, `${JSON.stringify({ type: 'user', uuid: crypto.randomUUID(), sessionId: body.sessionId, timestamp: new Date().toISOString(), message: { role: 'user', content: 'only in copy' } })}\n`)
+    expect(await fs.readFile(sourcePath, 'utf8')).toBe(sourceBefore)
+    expect((await service.getSessionMessages(sessionId)).map((message) => message.id)).toEqual([firstUserId, assistantId])
+  })
+
   it('POST /api/sessions/:id/branch should reject sidechain targets', async () => {
     const sessionId = '22222222-2222-4222-8222-222222222222'
     const rootUserId = crypto.randomUUID()

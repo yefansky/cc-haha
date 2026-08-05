@@ -11,6 +11,7 @@ export const kr: Record<TranslationKey, string> = {
   'common.stop': '중지',
   'common.tokens': '{count} 토큰',
   'common.rename': '이름 바꾸기',
+  'sidebar.copySession': '세션 복사',
   'common.retry': '다시 시도',
   'common.loading': '불러오는 중...',
   'common.select': '선택',
