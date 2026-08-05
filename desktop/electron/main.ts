@@ -21,6 +21,7 @@ import { acquireSingleInstanceLock } from './services/singleInstance'
 import { installTray, shouldInstallTray, type TrayController } from './services/tray'
 import { ElectronUpdaterService, updaterSessionProxyConfig } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
+import { configureProductUpdateFeed } from './services/updateSource'
 import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
 import { ElectronPreviewService, type PreviewBounds } from './services/preview'
 import {
@@ -195,6 +196,7 @@ function resolvePetServerAccess(): PreviewLocalAccess | null {
 
 function getUpdaterService() {
   const smokeUpdater = createUpdateSmokeUpdaterFromEnv(process.env)
+  if (!smokeUpdater) configureProductUpdateFeed(autoUpdater)
   updaterService ??= new ElectronUpdaterService(smokeUpdater ?? autoUpdater, {
     async apply(proxy) {
       // Update traffic runs on electron-updater's own session partition;

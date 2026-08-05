@@ -66,6 +66,12 @@ import { formatBytes } from '../lib/formatBytes'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
 import { getDesktopHost } from '../lib/desktopHost'
 import { publicAssetPath } from '../lib/publicAsset'
+import {
+  PRODUCT_AUTHORS,
+  PRODUCT_ISSUES_URL,
+  PRODUCT_RELEASES_URL,
+  PRODUCT_REPOSITORY,
+} from '../lib/productBranding'
 import { isBrowserSafePort } from '../lib/browserSafePort'
 import {
   getDesktopNotificationPermission,
@@ -3950,10 +3956,6 @@ function PluginSettings() {
 
 // ─── About Settings ──────────────────────────────────────
 
-const GITHUB_REPO = 'https://github.com/NanmiCoder/cc-haha'
-const GITHUB_ISSUES = `${GITHUB_REPO}/issues`
-const GITHUB_RELEASES = `${GITHUB_REPO}/releases`
-const AUTHOR_GITHUB = 'https://github.com/NanmiCoder'
 const SOCIAL_LINKS = [
   { name: 'Bilibili', icon: '/icons/bilibili.svg', url: 'https://space.bilibili.com/434377496', label: '程序员阿江-Relakkes' },
   { name: 'Douyin', icon: '/icons/douyin.svg', url: 'https://www.douyin.com/user/MS4wLjABAAAATJPY7LAlaa5X-c8uNdWkvz0jUGgpw4eeXIwu_8BhvqE', label: '程序员阿江-Relakkes' },
@@ -4094,12 +4096,15 @@ function AboutSettings() {
       {/* Logo + App Name + Version */}
       <img src={publicAssetPath('app-icon.png')} alt="Claude Code Haha" className="w-20 h-20 mb-4" />
       <h1 className="text-xl font-bold text-[var(--color-text-primary)]">Claude Code Haha</h1>
+      <p className="mt-1 text-center text-xs text-[var(--color-text-tertiary)]">
+        {t('settings.about.customizationDescription')}
+      </p>
       {version && (
         <div className="mt-1 flex items-center gap-2 text-xs text-[var(--color-text-tertiary)]">
-          <span>{t('settings.about.version')} {version}</span>
+          <span>{t('settings.about.installedVersion')} {version}</span>
           <span className="text-[var(--color-border)]">·</span>
           <button
-            onClick={() => openUrl(GITHUB_RELEASES)}
+            onClick={() => openUrl(PRODUCT_RELEASES_URL)}
             className="rounded-[var(--radius-sm)] text-[var(--color-text-accent)] transition-colors hover:text-[var(--color-brand)] focus:outline-none focus:shadow-[var(--shadow-focus-ring)]"
           >
             {t('settings.about.changelog')}
@@ -4110,12 +4115,12 @@ function AboutSettings() {
       {/* GitHub Repo */}
       <div className="mt-6 w-full">
         <button
-          onClick={() => openUrl(GITHUB_REPO)}
+          onClick={() => openUrl(PRODUCT_REPOSITORY)}
           className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-[var(--color-border)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
         >
           <img src={publicAssetPath('icons/github.svg')} alt="GitHub" className="w-5 h-5 opacity-70" />
           <div className="flex-1 text-left">
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">NanmiCoder/cc-haha</div>
+            <div className="text-sm font-medium text-[var(--color-text-primary)]">yefansky/cc-haha</div>
             <div className="text-xs text-[var(--color-text-tertiary)]">{t('settings.about.starHint')}</div>
           </div>
         </button>
@@ -4143,7 +4148,7 @@ function AboutSettings() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-xs uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
-                {t('settings.about.version')}
+                {t('settings.about.installedVersion')}
               </div>
               <div className="text-sm font-medium text-[var(--color-text-primary)] mt-1">
                 {version || t('update.currentVersionUnknown')}
@@ -4315,14 +4320,20 @@ function AboutSettings() {
       {/* Author */}
       <div className="w-full">
         <h3 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-3">{t('settings.about.author')}</h3>
-        <button
-          onClick={() => openUrl(AUTHOR_GITHUB)}
-          className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-        >
-          <img src={publicAssetPath('icons/github.svg')} alt="GitHub" className="w-4 h-4 opacity-60" />
-          <span className="text-sm text-[var(--color-text-primary)]">程序员阿江-Relakkes</span>
-          <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">GitHub</span>
-        </button>
+        {PRODUCT_AUTHORS.map((author) => (
+          <button
+            key={author.url}
+            onClick={() => openUrl(author.url)}
+            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
+          >
+            <img src={publicAssetPath('icons/github.svg')} alt="GitHub" className="w-4 h-4 opacity-60" />
+            <span className="text-sm text-[var(--color-text-primary)]">{author.name}</span>
+            {author.role === 'customization' && (
+              <span className="text-xs text-[var(--color-text-tertiary)]">{t('settings.about.customizationAuthor')}</span>
+            )}
+            <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">GitHub</span>
+          </button>
+        ))}
       </div>
 
       {/* Social Media */}
@@ -4345,7 +4356,7 @@ function AboutSettings() {
 
       <div className="mt-6 w-full">
         <button
-          onClick={() => openUrl(GITHUB_ISSUES)}
+          onClick={() => openUrl(PRODUCT_ISSUES_URL)}
           className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-[var(--color-border)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
         >
           <span className="material-symbols-outlined text-[20px] text-[var(--color-text-tertiary)]">feedback</span>

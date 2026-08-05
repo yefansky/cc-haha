@@ -1159,6 +1159,9 @@ export const jp: Record<TranslationKey, string> = {
   // Settings > About
   'settings.tab.about': '情報',
   'settings.about.version': 'バージョン',
+  'settings.about.installedVersion': 'インストール済みバージョン',
+  'settings.about.customizationDescription': 'Yefan による二次カスタマイズ版。JX3 プロジェクトでの協業と配布向けです。',
+  'settings.about.customizationAuthor': '二次カスタマイズ',
   'settings.about.changelog': 'リリースノート',
   'settings.about.repo': 'GitHub リポジトリ',
   'settings.about.starHint': 'このプロジェクトが役立った場合は、Star を付けることをご検討ください',
@@ -1167,7 +1170,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.about.author': '作者',
   'settings.about.socialMedia': 'ソーシャルメディア',
   'settings.about.updates': 'アプリの更新',
-  'settings.about.updatesDesc': 'GitHub Releases を確認し、インストーラーをダウンロードして、インストール後に再起動します。',
+  'settings.about.updatesDesc': 'yefansky/cc-haha の GitHub Releases を確認し、インストーラーをダウンロードして、インストール後に再起動します。',
 
   // Settings > Computer Use
   'settings.tab.computerUse': 'コンピューター操作',
