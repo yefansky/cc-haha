@@ -1331,6 +1331,9 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   // Settings > About
   'settings.tab.about': 'About',
   'settings.about.version': 'Version',
+  'settings.about.installedVersion': 'Installed version',
+  'settings.about.customizationDescription': 'Customized by Yefan for JX3 project collaboration and distribution.',
+  'settings.about.customizationAuthor': 'Customization',
   'settings.about.changelog': 'Release Notes',
   'settings.about.repo': 'GitHub Repository',
   'settings.about.starHint': 'If this project helps you, consider giving it a Star',
@@ -1339,7 +1342,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'settings.about.author': 'Author',
   'settings.about.socialMedia': 'Social Media',
   'settings.about.updates': 'App Updates',
-  'settings.about.updatesDesc': 'Check GitHub Releases, download the installer, and relaunch after install.',
+  'settings.about.updatesDesc': 'Check yefansky/cc-haha GitHub Releases, download the installer, and relaunch after install.',
 
   // Settings > Computer Use
   'settings.tab.computerUse': 'Computer Use',

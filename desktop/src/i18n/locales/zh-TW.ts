@@ -1332,6 +1332,9 @@ export const zh: Record<TranslationKey, string> = {
   // Settings > About
   'settings.tab.about': '關於',
   'settings.about.version': '版本',
+  'settings.about.installedVersion': '已安裝版本',
+  'settings.about.customizationDescription': '葉帆二次修改定制，適用於劍網3專案協作與分發。',
+  'settings.about.customizationAuthor': '二次修改定制',
   'settings.about.changelog': '更新日誌',
   'settings.about.repo': 'GitHub 倉庫',
   'settings.about.starHint': '如果這個專案對你有幫助，歡迎給個 Star',
@@ -1340,7 +1343,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.about.author': '作者',
   'settings.about.socialMedia': '社交媒體',
   'settings.about.updates': '應用更新',
-  'settings.about.updatesDesc': '檢查 GitHub Releases，下載安裝包，並在安裝後自動重啟。',
+  'settings.about.updatesDesc': '檢查 yefansky/cc-haha GitHub Releases，下載安裝包，並在安裝後自動重啟。',
 
   // Settings > Computer Use
   'settings.tab.computerUse': 'Computer Use',

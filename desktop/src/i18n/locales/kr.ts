@@ -1333,6 +1333,9 @@ export const kr: Record<TranslationKey, string> = {
   // Settings > About
   'settings.tab.about': '정보',
   'settings.about.version': '버전',
+  'settings.about.installedVersion': '설치된 버전',
+  'settings.about.customizationDescription': 'Yefan이 2차 수정 및 맞춤화했으며 JX3 프로젝트 협업과 배포에 적합합니다.',
+  'settings.about.customizationAuthor': '2차 맞춤 수정',
   'settings.about.changelog': '릴리스 노트',
   'settings.about.repo': 'GitHub 저장소',
   'settings.about.starHint': '이 프로젝트가 도움이 되었다면 Star를 눌러 주세요',
@@ -1341,7 +1344,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.about.author': '작성자',
   'settings.about.socialMedia': '소셜 미디어',
   'settings.about.updates': '앱 업데이트',
-  'settings.about.updatesDesc': 'GitHub Releases를 확인하고 설치 관리자를 다운로드한 후 설치 후 다시 시작합니다.',
+  'settings.about.updatesDesc': 'yefansky/cc-haha GitHub Releases를 확인하고 설치 관리자를 다운로드한 후 설치 후 다시 시작합니다.',
 
   // Settings > Computer Use
   'settings.tab.computerUse': '컴퓨터 사용',

@@ -1332,6 +1332,9 @@ export const zh: Record<TranslationKey, string> = {
   // Settings > About
   'settings.tab.about': '关于',
   'settings.about.version': '版本',
+  'settings.about.installedVersion': '已安装版本',
+  'settings.about.customizationDescription': '叶帆二次修改定制，适用于剑网3项目协作与分发。',
+  'settings.about.customizationAuthor': '二次修改定制',
   'settings.about.changelog': '更新日志',
   'settings.about.repo': 'GitHub 仓库',
   'settings.about.starHint': '如果这个项目对你有帮助，欢迎给个 Star',
@@ -1340,7 +1343,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.about.author': '作者',
   'settings.about.socialMedia': '社交媒体',
   'settings.about.updates': '应用更新',
-  'settings.about.updatesDesc': '检查 GitHub Releases，下载安装包，并在安装后自动重启。',
+  'settings.about.updatesDesc': '检查 yefansky/cc-haha GitHub Releases，下载安装包，并在安装后自动重启。',
 
   // Settings > Computer Use
   'settings.tab.computerUse': 'Computer Use',
