@@ -290,6 +290,7 @@ describe('CurrentTurnChangeCard – row opens the workspace diff', () => {
       'src/main.ts',
       'diff',
       expect.objectContaining({ sourceTurnKey: 'msg-1' }),
+      undefined,
       { kind: 'turn', targetUserMessageId: 'msg-1', userMessageIndex: 0 },
     )
   })
@@ -303,6 +304,7 @@ describe('CurrentTurnChangeCard – row opens the workspace diff', () => {
       'README.md',
       'diff',
       expect.objectContaining({ sourceTurnKey: 'msg-1' }),
+      undefined,
       { kind: 'turn', targetUserMessageId: 'msg-1', userMessageIndex: 0 },
     )
   })
@@ -506,6 +508,7 @@ describe('CurrentTurnChangeCard – conversation continuity', () => {
         sourceTurnKey: 'msg-1',
         sourceElementId: row.id,
       },
+      undefined,
       { kind: 'turn', targetUserMessageId: 'msg-1', userMessageIndex: 0 },
     )
   })

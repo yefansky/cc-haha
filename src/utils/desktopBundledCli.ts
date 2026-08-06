@@ -74,9 +74,16 @@ export function buildClaudeCliArgs(
   launcher: ClaudeCliLauncher,
   baseArgs: string[],
   appRoot: string | undefined = process.env.CLAUDE_APP_ROOT,
+  execPath: string = process.execPath,
 ): string[] {
   if (launcher.kind === 'script') {
-    return ['bun', launcher.command, ...baseArgs]
+    // Bun's Windows process launcher does not reliably resolve the extensionless
+    // `bun` shim from PATH. Development and test servers are already running in
+    // Bun, so reuse that exact executable instead of asking uv_spawn to find it.
+    const bunCommand = /^bun(?:\.exe)?$/i.test(path.basename(execPath))
+      ? execPath
+      : 'bun'
+    return [bunCommand, launcher.command, ...baseArgs]
   }
 
   if (launcher.kind === 'sidecar') {

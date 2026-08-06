@@ -7,7 +7,16 @@ let configDir: string | null = null
 
 afterEach(async () => {
   if (configDir) {
-    await rm(configDir, { recursive: true, force: true })
+    try {
+      await rm(configDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      })
+    } catch (error) {
+      console.warn(`[print.partialOutput] could not remove ${configDir}: ${String(error)}`)
+    }
     configDir = null
   }
 })
@@ -29,7 +38,7 @@ describe('print mode partial output', () => {
 
       try {
         const child = Bun.spawn(
-          ['./bin/claude-haha', '--bare', '-p', 'Reply briefly'],
+          [process.execPath, './bin/claude-haha', '--bare', '-p', 'Reply briefly'],
           {
             cwd: process.cwd(),
             env: {
@@ -106,7 +115,7 @@ describe('print mode partial output', () => {
 
       try {
         const child = Bun.spawn(
-          ['./bin/claude-haha', '--bare', '-p', 'Reply briefly'],
+          [process.execPath, './bin/claude-haha', '--bare', '-p', 'Reply briefly'],
           {
             cwd: process.cwd(),
             env: {

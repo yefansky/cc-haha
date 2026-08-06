@@ -419,7 +419,7 @@ export async function executeAgentFlow(options: {
     },
   })
 
-  const server = Bun.spawn(['bun', 'run', 'src/server/index.ts', '--host', '127.0.0.1', '--port', String(port)], {
+  const server = Bun.spawn([process.execPath, 'run', 'src/server/index.ts', '--host', '127.0.0.1', '--port', String(port)], {
     cwd: rootDir,
     stdout: 'pipe',
     stderr: 'pipe',
@@ -505,7 +505,7 @@ export async function executeAgentFlow(options: {
     server.kill()
     await server.exited.catch(() => undefined)
     await Promise.all(pumps).catch(() => undefined)
-    rmSync(workRoot, { recursive: true, force: true })
+    rmSync(workRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     sandbox.cleanup()
   }
 

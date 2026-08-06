@@ -38,7 +38,7 @@ for (const testFile of testFiles) {
   let exitCode = 1
   try {
     const proc = Bun.spawn([
-      'bun',
+      process.execPath,
       '--no-env-file',
       'test',
       rootBunTestFilter(testFile),
@@ -50,7 +50,7 @@ for (const testFile of testFiles) {
     })
     exitCode = await proc.exited
   } finally {
-    rmSync(sandboxHome, { recursive: true, force: true })
+    rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
   if (exitCode !== 0) {
     process.exit(exitCode)

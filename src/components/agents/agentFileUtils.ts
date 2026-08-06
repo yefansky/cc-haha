@@ -515,7 +515,7 @@ async function writeFileAndFlush(
   flag: 'w' | 'wx' = 'w',
   rejectFinalSymlink = false,
 ): Promise<void> {
-  const openFlag = rejectFinalSymlink
+  const openFlag = rejectFinalSymlink && process.platform !== 'win32'
     ? fsConstants.O_WRONLY | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW
     : flag
   const handle = await open(filePath, openFlag)

@@ -613,7 +613,10 @@ export async function createRepositoryBranch(
   // `--` keeps a start point that looks like a flag from being parsed as one.
   // Reachable: a pre-existing `-x` branch is listed like any other and can be
   // chosen as the base. The name itself is already guarded above.
-  const result = await runGit(absWorkDir, ['branch', '--', name, baseRef])
+  // Git for Windows still observes MAX_PATH for loose refs unless long-path
+  // handling is enabled. A valid branch near our explicit length cap can
+  // otherwise fail only because the repository lives under a long directory.
+  const result = await runGit(absWorkDir, ['-c', 'core.longpaths=true', 'branch', '--', name, baseRef])
   if (result.code !== 0) {
     const stderr = result.stderr.trim()
     // Collisions git catches but the list cannot: a case-fold clash on macOS and

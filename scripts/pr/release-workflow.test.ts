@@ -1,9 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync, readdirSync } from 'node:fs'
 
+function readText(path: string) {
+  return readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
+}
+
 describe('release desktop workflow', () => {
   function readReleaseWorkflow() {
-    return readFileSync('.github/workflows/release-desktop.yml', 'utf8')
+    return readText('.github/workflows/release-desktop.yml')
   }
 
   function extractJob(workflow: string, jobName: string) {
@@ -598,7 +602,7 @@ describe('release desktop workflow', () => {
     expect(desktopPackage.scripts?.['test:windows-storage-recovery']).toContain('-SelfTest')
 
     const installerHook = readFileSync('desktop/build/installer.nsh', 'utf8')
-    const recoveryHelper = readFileSync('desktop/build/recover-legacy-install-data.ps1', 'utf8')
+    const recoveryHelper = readText('desktop/build/recover-legacy-install-data.ps1')
     expect(installerHook).toContain('!macro customInit')
     expect(installerHook).toContain('!macro customCheckAppRunning')
     expect(installerHook).toContain('!macro customPageAfterChangeDir')

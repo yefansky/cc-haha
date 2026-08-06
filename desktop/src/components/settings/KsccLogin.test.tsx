@@ -94,4 +94,14 @@ describe('KsccLogin', () => {
     await waitFor(() => expect(activateProvider).toHaveBeenCalledWith(ksccProvider.id))
     await waitFor(() => expect(statusMock).toHaveBeenCalledTimes(2))
   })
+
+  it('shows the active logged-in state without offering a provider switch', async () => {
+    statusMock.mockResolvedValue({ loggedIn: true, pending: false, active: true })
+    useProviderStore.setState({ providers: [ksccProvider], activeId: ksccProvider.id, isLoading: false })
+    const { container } = render(<KsccLogin />)
+
+    await waitFor(() => expect(useKsccOAuthStore.getState().status?.active).toBe(true))
+    await waitFor(() => expect(container.textContent).toContain('KSCC'))
+    expect(container.querySelectorAll('button')).toHaveLength(1)
+  })
 })

@@ -473,7 +473,14 @@ async function readBoundedRegularFile(options: {
 
   try {
     const openedStat = await file.stat()
-    if (!openedStat.isFile() || openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) {
+    const hasComparableIdentity = process.platform !== 'win32'
+      && pathStat.ino !== 0
+      && openedStat.ino !== 0
+    if (
+      !openedStat.isFile()
+      || (hasComparableIdentity
+        && (openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino))
+    ) {
       throw new PetPackageError(options.invalidCode, options.invalidMessage)
     }
     if (openedStat.size > options.maxBytes) {
@@ -491,10 +498,13 @@ async function readBoundedRegularFile(options: {
       chunks.push(chunk.subarray(0, bytesRead))
     }
     const afterReadStat = await file.stat()
+    const hasComparableHandleIdentity = process.platform !== 'win32'
+      && openedStat.ino !== 0
+      && afterReadStat.ino !== 0
     if (
       !afterReadStat.isFile() ||
-      afterReadStat.dev !== openedStat.dev ||
-      afterReadStat.ino !== openedStat.ino ||
+      (hasComparableHandleIdentity
+        && (afterReadStat.dev !== openedStat.dev || afterReadStat.ino !== openedStat.ino)) ||
       afterReadStat.size !== openedStat.size ||
       totalBytes !== openedStat.size
     ) {

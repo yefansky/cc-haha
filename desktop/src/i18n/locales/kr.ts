@@ -1,6 +1,8 @@
 import type { TranslationKey } from './en'
+import { contextAuditKr } from '../contextAuditTranslations'
 
 export const kr: Record<TranslationKey, string> = {
+  ...contextAuditKr,
   // ─── Common ──────────────────────────────────────
   'common.cancel': '취소',
   'common.save': '저장',
@@ -1329,6 +1331,21 @@ export const kr: Record<TranslationKey, string> = {
   'settings.plugins.capabilityLabel.hooks': '후크',
   'settings.plugins.capabilityLabel.mcpServers': 'MCP 서버',
   'settings.plugins.capabilityLabel.lspServers': 'LSP 서버',
+
+  // Settings > KSCC
+  'settings.kscc.providerMissing': 'KSCC 공급자가 생성되지 않았습니다. 다시 로그인하세요.',
+  'settings.kscc.loggedInActive': 'KSCC에 로그인되어 있으며 현재 사용 중입니다',
+  'settings.kscc.loggedInInactive': 'KSCC에 로그인되어 있습니다. 아래 공급자 목록에서 전환할 수 있습니다.',
+  'settings.kscc.switching': '전환 중…',
+  'settings.kscc.switch': 'KSCC로 전환',
+  'settings.kscc.loginAgain': '다시 로그인',
+  'settings.kscc.switchFailed': 'KSCC 전환 실패: {error}',
+  'settings.kscc.description': 'KSCC에 로그인합니다. 로컬 로그인 상태가 있으면 재사용하고, 없으면 로그인 페이지를 엽니다.',
+  'settings.kscc.connecting': 'KSCC에 연결 중…',
+  'settings.kscc.loginAndEnable': 'KSCC 로그인 및 활성화',
+  'settings.kscc.copyLoginLink': '로그인 링크 복사',
+  'settings.kscc.waitingForBrowser': '브라우저에서 KSCC 로그인이 완료되기를 기다리는 중…',
+  'settings.kscc.loginFailed': 'KSCC 로그인 실패: {error}',
 
   // Settings > About
   'settings.tab.about': '정보',

@@ -1,9 +1,12 @@
 import { lookup } from 'node:dns/promises'
 import { readFile } from 'node:fs/promises'
-import { isIP } from 'node:net'
-// Bun maps the bare `undici` specifier to a compatibility shim whose explicit
-// Client is incomplete. The package subpath loads the repository dependency.
-import { Client } from 'undici/index.js'
+import {
+  request as httpRequest,
+  type IncomingMessage,
+  type RequestOptions,
+} from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { isIP, type LookupFunction } from 'node:net'
 import {
   IMAGE_MAX_BYTES,
   IMAGE_MIME_WHITELIST,
@@ -43,6 +46,16 @@ export type RemoteImageDependencies = {
 export type SafeRemoteImage =
   | { ok: true; buffer: Buffer; mime: string }
   | { ok: false; reason: string }
+
+export function createPinnedLookup(address: RemoteAddress): LookupFunction {
+  return ((_hostname, options, callback) => {
+    if (typeof options === 'object' && options.all) {
+      callback(null, [address])
+      return
+    }
+    callback(null, address.address, address.family)
+  }) as LookupFunction
+}
 
 function normalizeHostname(hostname: string): string {
   return hostname.startsWith('[') && hostname.endsWith(']')
@@ -171,63 +184,75 @@ export async function requestPinnedRemoteImageHop(
   address: RemoteAddress,
   timeoutMs: number,
 ): Promise<RemoteImageHopResponse> {
-  const abortController = new AbortController()
-  const client = new Client(url.origin, {
-    connectTimeout: timeoutMs,
-    headersTimeout: timeoutMs,
-    bodyTimeout: timeoutMs,
-    maxHeaderSize: 64 * 1024,
-    maxResponseSize: IMAGE_MAX_BYTES + 1,
-    connect: {
-      lookup(_hostname, options, callback) {
-        if (options.all) {
-          callback(null, [address])
-          return
-        }
-        callback(null, address.address, address.family)
-      },
+  const pinnedLookup = createPinnedLookup(address)
+  const options: RequestOptions = {
+    protocol: url.protocol,
+    hostname: url.hostname,
+    port: url.port || undefined,
+    method: 'GET',
+    path: `${url.pathname}${url.search}`,
+    headers: {
+      Accept: IMAGE_MIME_WHITELIST.join(', '),
+      'User-Agent': 'claude-code-haha-im-adapter',
+      Connection: 'close',
     },
-  })
-  const totalTimer = setTimeout(() => {
-    abortController.abort(new Error('remote image request timed out'))
-  }, timeoutMs)
-
-  try {
-    const response = await client.request({
-      method: 'GET',
-      path: `${url.pathname}${url.search}`,
-      headers: {
-        Accept: IMAGE_MIME_WHITELIST.join(', '),
-        'User-Agent': 'claude-code-haha-im-adapter',
-      },
-      signal: abortController.signal,
-    })
-    const close = (error?: Error): void => {
-      abortController.abort(error)
-      clearTimeout(totalTimer)
-      void response.body.dump().catch(() => {})
-      void client.destroy(error ?? null).catch(() => {})
-    }
-    return {
-      status: response.statusCode,
-      headers: response.headers,
-      body: (async function* () {
-        try {
-          for await (const chunk of response.body) yield chunk
-        } finally {
-          clearTimeout(totalTimer)
-          await client.close().catch(() => {})
-        }
-      })(),
-      destroy: close,
-    }
-  } catch (error) {
-    clearTimeout(totalTimer)
-    await client.destroy(
-      error instanceof Error ? error : new Error(String(error)),
-    ).catch(() => {})
-    throw error
+    agent: false,
+    maxHeaderSize: 64 * 1024,
+    lookup: pinnedLookup,
   }
+  if (url.protocol === 'https:') {
+    // The TCP connection is pinned to `address`, while SNI and certificate
+    // verification must still use the original, already-vetted hostname.
+    options.servername = url.hostname
+  }
+
+  return await new Promise<RemoteImageHopResponse>((resolve, reject) => {
+    const requester = url.protocol === 'https:' ? httpsRequest : httpRequest
+    let response: IncomingMessage | undefined
+    let settled = false
+    const request = requester(options)
+    const totalTimer = setTimeout(() => {
+      request.destroy(new Error('remote image request timed out'))
+    }, timeoutMs)
+
+    request.once('response', (incoming) => {
+      response = incoming
+      settled = true
+      const close = (error?: Error): void => {
+        clearTimeout(totalTimer)
+        incoming.destroy(error)
+        request.destroy(error)
+      }
+      resolve({
+        status: incoming.statusCode ?? 0,
+        headers: incoming.headers,
+        body: (async function* () {
+          try {
+            for await (const chunk of incoming) yield chunk
+          } finally {
+            clearTimeout(totalTimer)
+            if (!incoming.complete) incoming.destroy()
+            request.destroy()
+          }
+        })(),
+        destroy: close,
+      })
+    })
+    // Keep the listener for the request lifetime: some runtimes can emit a
+    // second teardown error after the initial connect/abort failure.
+    request.on('error', (error) => {
+      clearTimeout(totalTimer)
+      if (!settled) {
+        settled = true
+        reject(error)
+        return
+      }
+      // Once headers have resolved the hop promise, surface transport failures
+      // through the response iterator consumed by the caller.
+      response?.destroy(error)
+    })
+    request.end()
+  })
 }
 
 function headerValue(

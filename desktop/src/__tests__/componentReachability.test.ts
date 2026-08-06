@@ -119,7 +119,7 @@ describe('component reachability', () => {
   it('finds the entry points it is supposed to walk from', () => {
     // A typo in ENTRY_HTML, or a renamed entry, would make everything look unreachable
     // and the failure message would send the reader hunting in the wrong place.
-    const entries = entryPoints().map((path) => relative(ROOT, path))
+    const entries = entryPoints().map((path) => relative(ROOT, path).replaceAll('\\', '/'))
     expect(entries).toContain('src/main.tsx')
     expect(entries.length).toBeGreaterThanOrEqual(2)
     // The walk must actually traverse: main.tsx alone proves nothing.

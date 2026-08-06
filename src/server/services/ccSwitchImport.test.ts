@@ -46,7 +46,12 @@ async function teardown() {
       process.env[key] = value
     }
   }
-  await fs.rm(tmpDir, { recursive: true, force: true })
+  await fs.rm(tmpDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  })
 }
 
 /** Mirror of the platform-specific Tauri store location. */
@@ -117,26 +122,31 @@ async function writeFixtureDb(rows: DbRow[], dir = ccSwitchDir): Promise<void> {
         is_current, in_failover_queue
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    for (const row of rows) {
-      insert.run(
-        row.id,
-        row.appType ?? 'claude',
-        row.name ?? row.id,
-        row.settingsConfig ?? JSON.stringify({ env: row.env ?? {} }),
-        'https://example.com',
-        'third_party',
-        row.createdAt ?? null,
-        row.sortIndex ?? null,
-        row.notes ?? null,
-        null,
-        null,
-        row.meta ?? null,
-        row.isCurrent ? 1 : 0,
-        0,
-      )
+    try {
+      for (const row of rows) {
+        insert.run(
+          row.id,
+          row.appType ?? 'claude',
+          row.name ?? row.id,
+          row.settingsConfig ?? JSON.stringify({ env: row.env ?? {} }),
+          'https://example.com',
+          'third_party',
+          row.createdAt ?? null,
+          row.sortIndex ?? null,
+          row.notes ?? null,
+          null,
+          null,
+          row.meta ?? null,
+          row.isCurrent ? 1 : 0,
+          0,
+        )
+      }
+    } finally {
+      insert.finalize()
     }
   } finally {
-    db.close()
+    db.clearQueryCache()
+    db.close(true)
   }
 }
 
@@ -242,7 +252,8 @@ async function writeGenerationDb(
       )
     }
   } finally {
-    db.close()
+    db.clearQueryCache()
+    db.close(true)
   }
 }
 
@@ -464,7 +475,8 @@ describe('cc-switch store discovery', () => {
     db.run('INSERT INTO providers VALUES (?,?,?,?,?,?)', [
       'drifted', 'claude', 'Drifted', JSON.stringify({ env: claudeEnv() }), '{}', 0,
     ])
-    db.close()
+    db.clearQueryCache()
+    db.close(true)
 
     const result = await scanCcSwitchProviders()
 
@@ -484,7 +496,8 @@ describe('cc-switch store discovery', () => {
       const db = new Database(path.join(ccSwitchDir, 'cc-switch.db'), { create: true })
       db.run(ddl)
       if (insert) db.run(insert.sql, insert.values as never)
-      db.close()
+      db.clearQueryCache()
+      db.close(true)
     }
 
     const SETTINGS = JSON.stringify({ env: claudeEnv() })
@@ -567,7 +580,8 @@ describe('cc-switch store discovery', () => {
       db.run('CREATE TABLE providers (id TEXT, app_type TEXT, name TEXT, settings_config TEXT, meta TEXT, is_current BOOLEAN)')
       db.run('INSERT INTO providers VALUES (?,?,?,?,?,?)', ['bad', 'claude', 'Bad', '{not json', '{}', 0])
       db.run('INSERT INTO providers VALUES (?,?,?,?,?,?)', ['good', 'claude', 'Good', SETTINGS, '{}', 0])
-      db.close()
+      db.clearQueryCache()
+      db.close(true)
 
       const result = await scanCcSwitchProviders()
 

@@ -66,7 +66,10 @@ for (const [index, suite] of suites.entries()) {
   const sandboxHome = mkdtempSync(resolve(tmpdir(), 'cc-haha-chat-contract-'))
   let exitCode = 1
   try {
-    const proc = Bun.spawn(suite.command, {
+    const command = suite.command[0] === 'bun'
+      ? [process.execPath, ...suite.command.slice(1)]
+      : suite.command
+    const proc = Bun.spawn(command, {
       cwd: suite.cwd,
       env: createSandboxedTestEnvironment(sandboxHome),
       stdout: 'inherit',
@@ -74,7 +77,7 @@ for (const [index, suite] of suites.entries()) {
     })
     exitCode = await proc.exited
   } finally {
-    rmSync(sandboxHome, { recursive: true, force: true })
+    rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 
   if (exitCode !== 0) {

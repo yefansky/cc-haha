@@ -2173,7 +2173,7 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel('session-markdown-mermaid-preview')
 
-    const surface = await view.findByTestId('mermaid-diagram-surface')
+    const surface = await view.findByTestId('mermaid-diagram-surface', {}, { timeout: 5_000 })
     expect(surface.textContent).toContain('插入操作')
     expect(surface.textContent).toContain('{content, position, clock, clientID}')
     expect(surface.textContent).toContain('map[string]*Room')

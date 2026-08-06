@@ -27,7 +27,7 @@ describe('coverage gate helpers', () => {
       '--coverage-reporter=lcov',
       '--coverage-reporter=text',
       '--coverage-dir',
-      '/tmp/coverage/root-server',
+      join('/tmp/coverage', 'root-server'),
       './src/example.test.ts',
     ])
   })

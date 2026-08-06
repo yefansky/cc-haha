@@ -23,7 +23,10 @@ async function runCheck(check: Check): Promise<number> {
   const cwd = check.cwd ? `${rootDir}/${check.cwd}` : rootDir
   console.log(`\n[persistence-upgrade] ${check.title}`)
   console.log(`$ ${check.command.join(' ')}`)
-  const proc = Bun.spawn(check.command, {
+  const command = check.command[0] === 'bun'
+    ? [process.execPath, ...check.command.slice(1)]
+    : check.command
+  const proc = Bun.spawn(command, {
     cwd,
     stdout: 'inherit',
     stderr: 'inherit',

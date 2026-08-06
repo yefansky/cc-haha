@@ -54,7 +54,10 @@ describe('createAdapterClient', () => {
   // grepping the entrypoints.
   it('keeps every project under home reachable when a default project is set', async () => {
     const base = fs.mkdtempSync(path.join(HOME, '.cc-haha-test-'))
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-haha-outside-'))
+    // os.tmpdir() is commonly inside HOME on Windows, so it cannot represent
+    // a denied project there. The filesystem root already exists and is
+    // unambiguously outside a normal user home on every supported platform.
+    const outside = path.parse(HOME).root
     try {
       const myApp = path.join(base, 'work', 'my-app')
       const sibling = path.join(base, 'side', 'blog')
@@ -74,7 +77,6 @@ describe('createAdapterClient', () => {
       }
     } finally {
       fs.rmSync(base, { recursive: true, force: true })
-      fs.rmSync(outside, { recursive: true, force: true })
     }
   })
 

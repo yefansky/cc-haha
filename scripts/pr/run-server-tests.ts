@@ -71,7 +71,7 @@ async function runTestFile(file: string): Promise<TestFileResult> {
   try {
     const proc = Bun.spawn(
       [
-        'bun',
+        process.execPath,
         '--no-env-file',
         'test',
         '--max-concurrency=1',
@@ -114,7 +114,13 @@ async function runTestFile(file: string): Promise<TestFileResult> {
       evidenceComplete,
     }
   } finally {
-    rmSync(sandboxHome, { recursive: true, force: true })
+    try {
+      rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    } catch (error) {
+      // Windows scanners and SQLite can briefly retain handles after the child
+      // exits. A cleanup race must not erase the actual per-file test result.
+      console.warn(`[server-tests] could not remove sandbox ${sandboxHome}: ${String(error)}`)
+    }
   }
 }
 

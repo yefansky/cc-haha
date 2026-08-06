@@ -2682,8 +2682,8 @@ describe('WebSocket Chat Integration', () => {
         })
 
         await waitUntil(
-          () => conversationService.hasSession(sessionId),
-          `prewarmed CLI process for ${sessionId}`,
+          () => conversationService.getSessionInitMessage(sessionId) !== null,
+          `prewarmed CLI init message for ${sessionId}`,
         )
 
         const startedAt = performance.now()

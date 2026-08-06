@@ -278,12 +278,25 @@ async function resolveCcSwitchConfigDir(): Promise<string | null> {
 // ─── Store readers ────────────────────────────────────────────────────────────
 
 type SqliteRow = Record<string, unknown>
-type SqliteStatement = { all: () => SqliteRow[] }
-type SqliteDatabase = { query: (sql: string) => SqliteStatement; close: () => void }
+type SqliteStatement = { all: () => SqliteRow[]; finalize?: () => void }
+type SqliteDatabase = {
+  query: (sql: string) => SqliteStatement
+  clearQueryCache: () => void
+  close: (force?: boolean) => void
+}
 type SqliteDatabaseConstructor = new (
   filename: string,
   options?: { readonly?: boolean },
 ) => SqliteDatabase
+
+function queryAll(db: SqliteDatabase, sql: string): SqliteRow[] {
+  const statement = db.query(sql)
+  try {
+    return statement.all()
+  } finally {
+    statement.finalize?.()
+  }
+}
 
 /**
  * Deliberately column-light: `sortRows()` reproduces cc-switch's canonical
@@ -334,13 +347,14 @@ const KNOWN_CC_SWITCH_APP_TYPES = new Set([
 ])
 
 function inspectProvidersSchema(db: SqliteDatabase): 'ok' | 'schema-unsupported' {
-  const table = db
-    .query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'providers'`)
-    .all()
+  const table = queryAll(
+    db,
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'providers'`,
+  )
   if (table.length === 0) return 'schema-unsupported'
 
   const columns = new Set(
-    db.query('PRAGMA table_info(providers)').all()
+    queryAll(db, 'PRAGMA table_info(providers)')
       .map((column) => toOptionalString((column as SqliteRow).name))
       .filter((name): name is string => name !== undefined),
   )
@@ -351,7 +365,7 @@ function inspectProvidersSchema(db: SqliteDatabase): 'ok' | 'schema-unsupported'
 
 /** True when the table holds rows but not one of them names an app we recognise. */
 function hasOnlyUnknownAppTypes(db: SqliteDatabase): boolean {
-  const appTypes = db.query('SELECT DISTINCT app_type FROM providers').all()
+  const appTypes = queryAll(db, 'SELECT DISTINCT app_type FROM providers')
     .map((row) => toOptionalString((row as SqliteRow).app_type))
     .filter((appType): appType is string => appType !== undefined)
 
@@ -387,7 +401,7 @@ async function readProvidersFromSqlite(dbPath: string): Promise<RowsResult> {
     const schema = inspectProvidersSchema(db)
     if (schema !== 'ok') return { ok: false, reason: schema }
 
-    const rawRows = db.query(PROVIDERS_QUERY).all()
+    const rawRows = queryAll(db, PROVIDERS_QUERY)
     const rows = rawRows
       .map(toSqliteRow)
       .filter((row): row is CcSwitchProviderRow => row !== null)
@@ -405,7 +419,8 @@ async function readProvidersFromSqlite(dbPath: string): Promise<RowsResult> {
     return { ok: false, reason: 'unreadable' }
   } finally {
     try {
-      db?.close()
+      db?.clearQueryCache()
+      db?.close(true)
     } catch {
       // Closing a half-open handle is best effort.
     }

@@ -1,4 +1,7 @@
+import { contextAuditEn } from '../contextAuditTranslations'
+
 export const en = {
+  ...contextAuditEn,
   // ─── Common ──────────────────────────────────────
   'common.cancel': 'Cancel',
   'common.save': 'Save',
@@ -1327,6 +1330,21 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'settings.plugins.capabilityLabel.hooks': 'Hooks',
   'settings.plugins.capabilityLabel.mcpServers': 'MCP servers',
   'settings.plugins.capabilityLabel.lspServers': 'LSP servers',
+
+  // Settings > KSCC
+  'settings.kscc.providerMissing': 'The KSCC provider has not been created. Please sign in again.',
+  'settings.kscc.loggedInActive': 'Signed in to KSCC and currently using it',
+  'settings.kscc.loggedInInactive': 'Signed in to KSCC. You can switch to it in the provider list below.',
+  'settings.kscc.switching': 'Switching…',
+  'settings.kscc.switch': 'Switch to KSCC',
+  'settings.kscc.loginAgain': 'Sign in again',
+  'settings.kscc.switchFailed': 'Failed to switch to KSCC: {error}',
+  'settings.kscc.description': 'Sign in to KSCC. An existing local KSCC session will be reused; otherwise, the sign-in page will open.',
+  'settings.kscc.connecting': 'Connecting to KSCC…',
+  'settings.kscc.loginAndEnable': 'Sign in and enable KSCC',
+  'settings.kscc.copyLoginLink': 'Copy sign-in link',
+  'settings.kscc.waitingForBrowser': 'Waiting for KSCC sign-in to finish in the browser…',
+  'settings.kscc.loginFailed': 'KSCC sign-in failed: {error}',
 
   // Settings > About
   'settings.tab.about': 'About',

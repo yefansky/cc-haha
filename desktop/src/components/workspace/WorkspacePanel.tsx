@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type RefObject } from 'react'
-import { CircleAlert, FileText, FolderOpen, FolderPlus, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X, type LucideIcon } from 'lucide-react'
+import { CircleAlert, FileText, FolderOpen, FolderPlus, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X } from 'lucide-react'
 import { Highlight } from 'prism-react-renderer'
 import {
   sessionsApi,

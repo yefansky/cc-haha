@@ -4,6 +4,7 @@ import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  createPinnedLookup,
   loadSafeRemoteImage,
   materializePendingUploadImage,
   requestPinnedRemoteImageHop,
@@ -37,6 +38,27 @@ function response(
 }
 
 describe('loadSafeRemoteImage', () => {
+  it('returns only the vetted address when the transport requests all DNS answers', async () => {
+    const address = { address: '93.184.216.34', family: 4 as const }
+    const lookup = createPinnedLookup(address)
+    const answers = await new Promise<unknown>((resolve, reject) => {
+      ;(lookup as any)('images.example', { all: true }, (error: Error | null, result: unknown) => {
+        if (error) reject(error)
+        else resolve(result)
+      })
+    })
+
+    expect(answers).toEqual([address])
+
+    const single = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+      ;(lookup as any)('images.example', {}, (error: Error | null, result: string, family: number) => {
+        if (error) reject(error)
+        else resolve({ address: result, family })
+      })
+    })
+    expect(single).toEqual(address)
+  })
+
   it('rejects non-http URLs and credential-bearing URLs before resolution', async () => {
     let resolutionCalls = 0
     const dependencies: RemoteImageDependencies = {
@@ -287,6 +309,61 @@ describe('loadSafeRemoteImage', () => {
       }
     })()).rejects.toThrow()
     expect(Date.now() - startedAt).toBeLessThan(500)
+  })
+
+  it('rejects when the pinned peer disconnects before sending headers', async () => {
+    const server = createServer()
+    server.on('connection', (socket) => socket.destroy())
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing test port')
+
+    await expect(requestPinnedRemoteImageHop(
+      new URL(`http://images.example:${address.port}/closed.png`),
+      { address: '127.0.0.1', family: 4 },
+      1_000,
+    )).rejects.toThrow()
+  })
+
+  it('keeps the original hostname on the pinned HTTPS request path', async () => {
+    const server = createServer()
+    server.on('clientError', (_error, socket) => socket.destroy())
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing test port')
+
+    await expect(requestPinnedRemoteImageHop(
+      new URL(`https://images.example:${address.port}/tls.png`),
+      { address: '127.0.0.1', family: 4 },
+      1_000,
+    )).rejects.toThrow()
+  })
+
+  it('actively destroys an open pinned response without leaving the body alive', async () => {
+    const server = createServer((_request, reply) => {
+      reply.writeHead(200, { 'content-type': 'image/png' })
+      reply.write('first')
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing test port')
+
+    const hop = await requestPinnedRemoteImageHop(
+      new URL(`http://images.example:${address.port}/cancel.png`),
+      { address: '127.0.0.1', family: 4 },
+      1_000,
+    )
+    const consuming = (async () => {
+      for await (const _chunk of hop.body) {
+        // The server deliberately leaves the response open.
+      }
+    })()
+    hop.destroy(new Error('cancelled by caller'))
+
+    await expect(consuming).rejects.toThrow('cancelled by caller')
   })
 })
 

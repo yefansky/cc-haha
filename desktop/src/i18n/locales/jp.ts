@@ -1,6 +1,8 @@
 import type { TranslationKey } from './en'
+import { contextAuditJp } from '../contextAuditTranslations'
 
 export const jp: Record<TranslationKey, string> = {
+  ...contextAuditJp,
   // ─── Common ──────────────────────────────────────
   'common.cancel': 'キャンセル',
   'common.save': '保存',
@@ -1329,6 +1331,21 @@ export const jp: Record<TranslationKey, string> = {
   'settings.plugins.capabilityLabel.hooks': 'フック',
   'settings.plugins.capabilityLabel.mcpServers': 'MCP サーバー',
   'settings.plugins.capabilityLabel.lspServers': 'LSP サーバー',
+
+  // Settings > KSCC
+  'settings.kscc.providerMissing': 'KSCC プロバイダーが作成されていません。もう一度ログインしてください。',
+  'settings.kscc.loggedInActive': 'KSCC にログイン済みで、現在使用中です',
+  'settings.kscc.loggedInInactive': 'KSCC にログイン済みです。下のプロバイダー一覧から切り替えられます。',
+  'settings.kscc.switching': '切り替え中…',
+  'settings.kscc.switch': 'KSCC に切り替え',
+  'settings.kscc.loginAgain': '再ログイン',
+  'settings.kscc.switchFailed': 'KSCC への切り替えに失敗しました：{error}',
+  'settings.kscc.description': 'KSCC にログインします。ローカルのログイン状態があれば再利用し、なければログインページを開きます。',
+  'settings.kscc.connecting': 'KSCC に接続中…',
+  'settings.kscc.loginAndEnable': 'KSCC にログインして有効化',
+  'settings.kscc.copyLoginLink': 'ログインリンクをコピー',
+  'settings.kscc.waitingForBrowser': 'ブラウザーでの KSCC ログイン完了を待っています…',
+  'settings.kscc.loginFailed': 'KSCC のログインに失敗しました：{error}',
 
   // Settings > About
   'settings.tab.about': '情報',

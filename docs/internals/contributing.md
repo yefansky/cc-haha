@@ -332,6 +332,57 @@ bun run check:policy
 
 各平台的重点不同：macOS 要确认 release job 走的是签名产物且启动策略检查通过；Windows 要确认 `latest.yml`、`.exe`、`.exe.blockmap` 都在 Release 资产里，未签名时的 SmartScreen 提示不代表 updater 失败；Linux 优先用 AppImage 验证自动更新，`.deb` 只作手动安装包发布。
 
+## 维护定制 Fork 与同步上游
+
+长期维护定制版本时，把上游和自己的发布仓库分成两个 remote。以下示例约定 `origin` 指向上游、`fork` 指向定制仓库；如果本机命名不同，先用 `git remote -v` 核对，不要直接复制推送命令。
+
+第一次设置后开启冲突决议复用：
+
+```bash
+git config rerere.enabled true
+git config rerere.autoupdate false
+```
+
+`rerere` 会记录已经确认过的冲突解法，但关闭自动暂存，方便每次重新检查上游是否改变了冲突语义。一次同步按下面的顺序执行：
+
+```bash
+git fetch --all --prune
+git switch main
+git status --short
+git branch backup/pre-upstream-sync-YYYYMMDD
+
+# 记下同步前的定制提交范围；这里的 <old-base> 是上次同步的上游基线。
+git log --oneline <old-base>..HEAD
+
+git rebase origin/main
+```
+
+冲突处理以定制行为为默认选择，同时逐项吸收上游 bugfix、数据迁移、API 约束和新测试。不要机械使用整文件的 `--ours` 或 `--theirs`：rebase 中两者含义容易误解，而且会隐藏同一文件里互不冲突的改进。每解决一组冲突后运行相关窄测试，再 `git add` 和 `git rebase --continue`；发现设计冲突时，在代码或 PR 说明中记录为何保留某一侧。
+
+rebase 完成后，用三种视角核对历史：
+
+```bash
+# 逐个比较同步前后的定制提交，最适合发现提交丢失或语义漂移。
+git range-diff <old-base>..<pre-rebase-tip> origin/main..HEAD
+
+# 只看定制版本相对当前上游仍然保留的最终差异。
+git diff --stat origin/main...HEAD
+git diff origin/main...HEAD
+
+# 看清上游本次带来了什么。
+git log --oneline <old-base>..origin/main
+```
+
+然后运行 `bun run check:impact` 选出的窄检查。同步范围较大、准备发布或需要声明完整验收时，必须再运行 `bun run verify`；桌面端还要启动新构建的 sidecar，检查 `/health`、首页和关键 API，并实际打开 UI 验证定制入口和上游新增入口。测试产物路径和剩余风险写进同步记录。
+
+历史重写后的推送只能在确认 backup、`range-diff` 和全部门禁后进行：
+
+```bash
+git push --force-with-lease fork main
+```
+
+始终使用 `--force-with-lease`，不要用裸 `--force`。如果 fork 的 `main` 有其他人新推送的提交，lease 会拒绝覆盖；先 fetch、审查并重新同步。保留 backup 分支直到新版本运行验证完成，下次同步时再删除旧 backup。
+
 ## PR 提交流程
 
 1. 新建普通产品分支，例如 `fix/session-reconnect` 或 `feat/provider-quality-gate`。

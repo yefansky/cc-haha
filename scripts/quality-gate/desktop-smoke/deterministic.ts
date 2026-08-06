@@ -84,12 +84,21 @@ async function pollUntil(
  * Neither is required to run the rest of the deterministic gate, so a contributor
  * without them gets an explicit skip instead of a confusing failure.
  */
-export function describeDesktopUiSmokePrerequisites(rootDir: string): string | null {
+export function describeDesktopUiSmokePrerequisites(
+  rootDir: string,
+  probeExecutable: (command: string[]) => number = (command) =>
+    Bun.spawnSync(command, { stdout: 'pipe', stderr: 'pipe' }).exitCode,
+): string | null {
   if (!existsSync(join(rootDir, 'desktop', 'node_modules', '.bin'))) {
     return 'desktop dependencies are not installed (run `bun install` in desktop/)'
   }
-  const probe = Bun.spawnSync(['agent-browser', '--version'], { stdout: 'pipe', stderr: 'pipe' })
-  if (probe.exitCode !== 0) {
+  let exitCode: number
+  try {
+    exitCode = probeExecutable(['agent-browser', '--version'])
+  } catch {
+    return 'agent-browser is not installed (see https://github.com/anthropics/agent-browser)'
+  }
+  if (exitCode !== 0) {
     return 'agent-browser is not installed (see https://github.com/anthropics/agent-browser)'
   }
   return null

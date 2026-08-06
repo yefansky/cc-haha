@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -50,6 +50,18 @@ describe('deterministic desktop UI smoke setup', () => {
       expect(describeDesktopUiSmokePrerequisites(empty)).toContain('desktop dependencies')
     } finally {
       rmSync(empty, { recursive: true, force: true })
+    }
+  })
+
+  test('treats a Windows ENOENT probe as a missing optional browser', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-haha-ui-smoke-browser-prereq-'))
+    try {
+      mkdirSync(join(root, 'desktop', 'node_modules', '.bin'), { recursive: true })
+      expect(describeDesktopUiSmokePrerequisites(root, () => {
+        throw Object.assign(new Error('Executable not found'), { code: 'ENOENT' })
+      })).toContain('agent-browser is not installed')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 

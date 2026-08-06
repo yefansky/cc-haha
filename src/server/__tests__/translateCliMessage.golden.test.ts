@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { translateCliMessage } from '../ws/handler.js'
+import { __markActiveTurnForTests, translateCliMessage } from '../ws/handler.js'
 import { goldenScenarios } from './translateCliMessage.golden.js'
 
 const GOLDEN_PATH = fileURLToPath(new URL('./fixtures/translate-cli-message.golden.json', import.meta.url))
@@ -19,6 +19,7 @@ type GoldenFile = Record<string, GoldenStep[]>
  */
 function replay(scenarioId: string, messages: Array<Record<string, unknown>>, salt: string): GoldenStep[] {
   const sessionId = `golden-${scenarioId}-${salt}`
+  __markActiveTurnForTests(sessionId)
   return messages.map((message) => ({
     in: describeFrame(message),
     out: JSON.parse(JSON.stringify(translateCliMessage(message, sessionId))) as unknown[],

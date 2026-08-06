@@ -332,6 +332,58 @@ Every release should be verified by upgrading from the previous stable build at 
 
 Platforms differ in what matters: on macOS confirm the release job used the signed artifacts and the launch-policy check passed; on Windows confirm `latest.yml`, `.exe`, and `.exe.blockmap` are all in the release assets, and remember that a SmartScreen prompt on an unsigned build does not mean the updater failed; on Linux verify auto-update through the AppImage, since `.deb` ships as a manual installer only.
 
+## Maintaining a Customized Fork
+
+Keep the upstream repository and the customized release repository as separate remotes. The examples below assume `origin` is upstream and `fork` is the customized repository. If your local names differ, inspect `git remote -v` before copying any push command.
+
+Enable reusable conflict resolutions once:
+
+```bash
+git config rerere.enabled true
+git config rerere.autoupdate false
+```
+
+`rerere` remembers conflict resolutions that were reviewed previously. Automatic staging stays disabled so every recurrence can be checked for changed upstream semantics. Run each synchronization in this order:
+
+```bash
+git fetch --all --prune
+git switch main
+git status --short
+git branch backup/pre-upstream-sync-YYYYMMDD
+
+# Record the customization range before rewriting it. <old-base> is the
+# upstream baseline used by the previous synchronization.
+git log --oneline <old-base>..HEAD
+
+git rebase origin/main
+```
+
+Conflict resolution defaults to preserving customized behavior while still absorbing upstream bug fixes, migrations, API constraints, and new tests. Do not apply whole-file `--ours` or `--theirs` mechanically: their meaning during rebase is easy to misread, and either choice can hide independent improvements in the same file. After each conflict group, run its focused tests before `git add` and `git rebase --continue`. Record the reason whenever two designs genuinely conflict.
+
+After the rebase, audit the history from three perspectives:
+
+```bash
+# Compare every customization commit before and after the rewrite.
+git range-diff <old-base>..<pre-rebase-tip> origin/main..HEAD
+
+# Show the final customization delta that remains on top of current upstream.
+git diff --stat origin/main...HEAD
+git diff origin/main...HEAD
+
+# Show what arrived from upstream in this synchronization.
+git log --oneline <old-base>..origin/main
+```
+
+Run the focused checks selected by `bun run check:impact`. For a broad synchronization, a release candidate, or a full-validation claim, also run `bun run verify`. Desktop changes additionally require starting the newly built sidecar, checking `/health`, the root page, and key APIs, then opening the real UI to verify both customized entry points and newly added upstream entry points. Record artifact paths and remaining risks in the synchronization notes.
+
+A history-rewriting push is allowed only after the backup, `range-diff`, and all required gates have been reviewed:
+
+```bash
+git push --force-with-lease fork main
+```
+
+Always use `--force-with-lease`, never plain `--force`. If someone pushed new commits to the fork's `main`, the lease must reject the overwrite; fetch, review, and synchronize again. Keep the backup branch until the updated build has passed runtime verification, then remove the old backup during the next synchronization.
+
 ## PR Workflow
 
 1. Create a product branch such as `fix/session-reconnect` or `feat/provider-quality-gate`.

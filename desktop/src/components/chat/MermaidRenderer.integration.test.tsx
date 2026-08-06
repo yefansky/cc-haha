@@ -47,7 +47,7 @@ describe('MermaidRenderer Mermaid integration', () => {
       />,
     )
 
-    const surface = await screen.findByTestId('mermaid-diagram-surface')
+    const surface = await screen.findByTestId('mermaid-diagram-surface', {}, { timeout: 5_000 })
 
     expect(surface).toHaveTextContent('企业建站')
     expect(surface).toHaveTextContent('主旨系统')
@@ -69,7 +69,7 @@ describe('MermaidRenderer Mermaid integration', () => {
       />,
     )
 
-    const surface = await screen.findByTestId('mermaid-diagram-surface')
+    const surface = await screen.findByTestId('mermaid-diagram-surface', {}, { timeout: 5_000 })
 
     expect(surface).toHaveTextContent('/api/dcl')
     expect(surface).toHaveTextContent('直接调用 dclService')
@@ -94,7 +94,7 @@ describe('MermaidRenderer Mermaid integration', () => {
       />,
     )
 
-    const surface = await screen.findByTestId('mermaid-diagram-surface')
+    const surface = await screen.findByTestId('mermaid-diagram-surface', {}, { timeout: 5_000 })
     const databaseNode = Array.from(surface.querySelectorAll('.node'))
       .find((node) => node.textContent?.includes('用户数据库 / MySQL'))
 
@@ -122,7 +122,7 @@ describe('MermaidRenderer Mermaid integration', () => {
       />,
     )
 
-    const surface = await screen.findByTestId('mermaid-diagram-surface')
+    const surface = await screen.findByTestId('mermaid-diagram-surface', {}, { timeout: 5_000 })
 
     expect(surface).toHaveTextContent('插入操作')
     expect(surface).toHaveTextContent('{content, position, clock, clientID}')

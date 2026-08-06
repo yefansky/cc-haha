@@ -88,6 +88,7 @@ function normalize(value: unknown, ids: Map<string, string>): unknown {
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {}
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry === undefined) continue
       out[key] = key === 'timestamp' ? 0 : normalize(entry, ids)
     }
     return out

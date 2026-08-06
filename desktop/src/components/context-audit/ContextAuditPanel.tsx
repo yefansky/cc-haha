@@ -13,11 +13,13 @@ import type { NormalizedBlock, NormalizedMessage } from '../../lib/trace/types'
 import type { TraceCallRecord, TraceRawBody, TraceSession } from '../../types/trace'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { CopyButton } from '@/components/ui/CopyButton'
+import { useTranslation, type TranslationKey } from '../../i18n'
 
 const POLL_INTERVAL_MS = 1_500
 const LARGE_BODY_BYTES = 100 * 1024
 const MAX_MARKDOWN_RENDER_CHARS = 500_000
 const HIGH_TOKEN_COUNT = 50_000
+type Translate = ReturnType<typeof useTranslation>
 
 type BodyLoad = {
   text: string
@@ -52,6 +54,7 @@ type ContextAuditPanelProps = {
  * only when its path occurs explicitly in the captured request text.
  */
 export function ContextAuditPanel({ sessionId }: ContextAuditPanelProps) {
+  const t = useTranslation()
   const [trace, setTrace] = useState<TraceSession | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -114,15 +117,15 @@ export function ContextAuditPanel({ sessionId }: ContextAuditPanelProps) {
         <div className="flex items-center gap-2">
           <ShieldCheck size={17} className="text-[var(--color-info)]" aria-hidden="true" />
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">上下文审计</h2>
+            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">{t('contextAudit.title')}</h2>
             <p className="mt-0.5 text-[11px] leading-4 text-[var(--color-text-tertiary)]">
-              实际上行请求，最新在前；原文已按密钥规则脱敏，仅保存本机。
+              {t('contextAudit.description')}
             </p>
           </div>
           <button
             type="button"
-            aria-label="刷新上下文审计"
-            title="刷新"
+            aria-label={t('contextAudit.refreshLabel')}
+            title={t('contextAudit.refresh')}
             onClick={() => void refresh()}
             className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]"
           >
@@ -130,9 +133,9 @@ export function ContextAuditPanel({ sessionId }: ContextAuditPanelProps) {
           </button>
         </div>
         <div className="mt-3 grid grid-cols-3 gap-2">
-          <Metric label="上行次数" value={String(calls.length)} />
-          <Metric label="累计字节" value={formatBytes(totalRequestBytes)} />
-          <Metric label="完整原文" value={`${capturedFullCount}/${calls.length}`} />
+          <Metric label={t('contextAudit.requestCount')} value={String(calls.length)} />
+          <Metric label={t('contextAudit.totalBytes')} value={formatBytes(totalRequestBytes)} />
+          <Metric label={t('contextAudit.fullCaptures')} value={`${capturedFullCount}/${calls.length}`} />
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
           <button
@@ -142,17 +145,17 @@ export function ContextAuditPanel({ sessionId }: ContextAuditPanelProps) {
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2 py-1 text-[11px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
           >
             {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            导出审计 JSON
+            {t('contextAudit.exportJson')}
           </button>
           <button
             type="button"
             onClick={() => void openFolder()}
             disabled={!trace || !getDesktopHost().capabilities.shell}
-            title={getDesktopHost().capabilities.shell ? '打开本机 trace 文件夹' : '仅桌面版可直接打开文件夹'}
+            title={getDesktopHost().capabilities.shell ? t('contextAudit.openTraceFolder') : t('contextAudit.desktopFolderOnly')}
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2 py-1 text-[11px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
           >
             <FolderOpen size={13} />
-            打开文件夹
+            {t('contextAudit.openFolder')}
           </button>
         </div>
       </header>
@@ -194,6 +197,7 @@ function ContextAuditCall({
   newestIndex: number
   callCount: number
 }) {
+  const t = useTranslation()
   const [open, setOpen] = useState(false)
   const [currentBody, setCurrentBody] = useState<BodyLoad>({ text: call.request.body.preview, isFull: false })
   const [previousBody, setPreviousBody] = useState<BodyLoad | null>(null)
@@ -237,10 +241,10 @@ function ContextAuditCall({
 
   const activeCall = detail ?? call
   const analysis = useMemo(
-    () => analyzeRequest(activeCall, currentBody.text, previousBody?.text ?? null),
-    [activeCall, currentBody.text, previousBody?.text],
+    () => analyzeRequest(activeCall, currentBody.text, previousBody?.text ?? null, t),
+    [activeCall, currentBody.text, previousBody?.text, t],
   )
-  const risks = getRisks(activeCall, currentBody, analysis)
+  const risks = getRisks(activeCall, currentBody, analysis, t)
 
   const createDiagnosticSession = async () => {
     setCreatingDiagnostic(true)
@@ -251,9 +255,10 @@ function ContextAuditCall({
         ...(previous ? { comparisonCallId: previous.id } : {}),
       })
       const newSessionId = await useSessionStore.getState().createSession(bundle.workDir)
-      await sessionsApi.rename(newSessionId, '上下文诊断')
-      useSessionStore.getState().updateSessionTitle(newSessionId, '上下文诊断')
-      useTabStore.getState().openTab(newSessionId, '上下文诊断')
+      const diagnosticTitle = t('contextAudit.diagnosticTitle')
+      await sessionsApi.rename(newSessionId, diagnosticTitle)
+      useSessionStore.getState().updateSessionTitle(newSessionId, diagnosticTitle)
+      useTabStore.getState().openTab(newSessionId, diagnosticTitle)
       const chat = useChatStore.getState()
       chat.connectToSession(newSessionId, { prewarm: false })
       chat.setComposerDraft(newSessionId, { input: bundle.prompt, attachments: [] })
@@ -273,24 +278,24 @@ function ContextAuditCall({
         <ChevronDown size={15} className="shrink-0 transition-transform group-open:rotate-180" />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-[var(--color-text-primary)]">第 {callCount - newestIndex} 条上行</span>
-            {activeCall.status === 'pending' ? <Status label="发送中" tone="warning" /> : null}
-            {activeCall.status === 'error' || activeCall.error ? <Status label="失败" tone="error" /> : null}
+            <span className="text-xs font-semibold text-[var(--color-text-primary)]">{t('contextAudit.requestNumber', { number: callCount - newestIndex })}</span>
+            {activeCall.status === 'pending' ? <Status label={t('contextAudit.sending')} tone="warning" /> : null}
+            {activeCall.status === 'error' || activeCall.error ? <Status label={t('contextAudit.failed')} tone="error" /> : null}
           </span>
           <span className="mt-1 flex gap-2 overflow-hidden text-[10px] text-[var(--color-text-tertiary)]">
             <span>{formatDate(activeCall.startedAt)}</span>
-            <span className="truncate">{activeCall.model ?? 'unknown model'}</span>
+            <span className="truncate">{activeCall.model ?? t('contextAudit.unknownModel')}</span>
           </span>
         </span>
         <span className="shrink-0 text-right text-[11px] text-[var(--color-text-secondary)]">
           <span className="block font-mono">{formatBytes(activeCall.request.body.bytes)}</span>
-          <span className="block text-[10px] text-[var(--color-text-tertiary)]">{formatInputTokens(activeCall)}</span>
+          <span className="block text-[10px] text-[var(--color-text-tertiary)]">{formatInputTokens(activeCall, t)}</span>
         </span>
       </summary>
 
       {open ? (
         <div className="border-t border-[var(--color-border)] px-3 py-3">
-          {loadError ? <div role="alert" className="mb-2 text-xs text-[var(--color-error)]">加载完整请求失败：{loadError}</div> : null}
+          {loadError ? <div role="alert" className="mb-2 text-xs text-[var(--color-error)]">{t('contextAudit.loadFullFailed', { error: loadError })}</div> : null}
           {risks.length > 0 ? (
             <div className="mb-3 flex flex-wrap gap-1.5">
               {risks.map((risk) => <Status key={risk} label={risk} tone="warning" />)}
@@ -298,92 +303,92 @@ function ContextAuditCall({
           ) : null}
 
           <details open className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
-            <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">统计与相邻差异</summary>
+            <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">{t('contextAudit.statsAndDiff')}</summary>
             <div className="border-t border-[var(--color-border)] p-2.5">
               <div className="grid grid-cols-2 gap-2">
-                <Metric label="请求大小" value={formatBytes(activeCall.request.body.bytes)} />
-                <Metric label="完整往返耗时" value={formatDurationMs(activeCall.durationMs)} />
-                <Metric label="系统提示" value={formatBytes(analysis.systemBytes)} />
-                <Metric label="消息" value={`${analysis.messages}（用户 ${analysis.userMessages} / 助手 ${analysis.assistantMessages}）`} />
-                <Metric label="工具定义" value={`${analysis.tools} 个`} />
-                <Metric label="相对上次" value={analysis.deltaLabel} />
-                <Metric label="文件线索" value={`${analysis.files.length} 个`} />
+                <Metric label={t('contextAudit.requestSize')} value={formatBytes(activeCall.request.body.bytes)} />
+                <Metric label={t('contextAudit.roundTripDuration')} value={formatDurationMs(activeCall.durationMs)} />
+                <Metric label={t('contextAudit.systemPrompt')} value={formatBytes(analysis.systemBytes)} />
+                <Metric label={t('contextAudit.messages')} value={t('contextAudit.messageCounts', { total: analysis.messages, user: analysis.userMessages, assistant: analysis.assistantMessages })} />
+                <Metric label={t('contextAudit.toolDefinitions')} value={t('contextAudit.itemCount', { count: analysis.tools })} />
+                <Metric label={t('contextAudit.sincePrevious')} value={analysis.deltaLabel} />
+                <Metric label={t('contextAudit.fileHints')} value={t('contextAudit.itemCount', { count: analysis.files.length })} />
               </div>
-              <p className="mt-2 text-[10px] leading-4 text-[var(--color-text-tertiary)]">耗时统计从开始上行到调用完成。小体积但长耗时通常值得优先检查云端推理/下行；大体积且长耗时仍可能是本地上报、网络或云端，需结合首字节时间进一步归因。</p>
+              <p className="mt-2 text-[10px] leading-4 text-[var(--color-text-tertiary)]">{t('contextAudit.durationHint')}</p>
               {analysis.files.length > 0 ? (
                 <div className="mt-3">
-                  <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">仅展示在实际请求正文中有显式路径标记的文件；“内容”是 XML 文件块中的实际上传字节，“标记”只是路径附近文本，不会伪造磁盘文件大小。</p>
+                  <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">{t('contextAudit.fileHintExplanation')}</p>
                   <div className="mt-1.5 max-h-36 overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
                     {analysis.files.map((file) => (
                       <div key={file.path} className="flex items-center gap-2 border-b border-[var(--color-border)]/60 px-2 py-1.5 text-[10px] last:border-b-0">
                         <FileText size={12} className="shrink-0 text-[var(--color-text-tertiary)]" />
                         <span className="min-w-0 flex-1 truncate font-mono text-[var(--color-text-secondary)]" title={file.path}>{file.path}</span>
-                        <span className="shrink-0 text-[var(--color-text-tertiary)]">{file.kind === 'content' ? '内容 ' : '标记 '}{formatBytes(file.contextBytes)}</span>
+                        <span className="shrink-0 text-[var(--color-text-tertiary)]">{file.kind === 'content' ? t('contextAudit.contentKind') : t('contextAudit.markerKind')} {formatBytes(file.contextBytes)}</span>
                       </div>
                     ))}
                   </div>
                 </div>
               ) : null}
               <details className="mt-3 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
-                <summary className="cursor-pointer px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-primary)]">KV Cache、换出与关键材料</summary>
+                <summary className="cursor-pointer px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-primary)]">{t('contextAudit.cacheAndMaterials')}</summary>
                 <div className="space-y-3 border-t border-[var(--color-border)] p-2">
-                  <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">“实际”来自本次请求和服务端 usage；“候选”只说明本地观察到的连续相同前缀，不把它当成提供商已命中的 KV Cache。</p>
+                  <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">{t('contextAudit.cacheExplanation')}</p>
                   <div className="grid grid-cols-2 gap-2">
-                    <Metric label="候选共同前缀" value={analysis.cachePrefix.label} />
-                    <Metric label="候选前缀大小" value={formatBytes(analysis.cachePrefix.bytes)} />
-                    <Metric label="服务端缓存读取" value={formatTokenMetric(activeCall.usage?.cacheReadInputTokens)} />
-                    <Metric label="服务端缓存创建" value={formatTokenMetric(activeCall.usage?.cacheCreationInputTokens)} />
-                    <Metric label="换出观察" value={analysis.compaction.label} />
-                    <Metric label="消息链正文" value={formatBytes(analysis.messageBytes)} />
+                    <Metric label={t('contextAudit.candidatePrefix')} value={analysis.cachePrefix.label} />
+                    <Metric label={t('contextAudit.candidatePrefixSize')} value={formatBytes(analysis.cachePrefix.bytes)} />
+                    <Metric label={t('contextAudit.serverCacheRead')} value={formatTokenMetric(activeCall.usage?.cacheReadInputTokens, t)} />
+                    <Metric label={t('contextAudit.serverCacheCreation')} value={formatTokenMetric(activeCall.usage?.cacheCreationInputTokens, t)} />
+                    <Metric label={t('contextAudit.compactionObservation')} value={analysis.compaction.label} />
+                    <Metric label={t('contextAudit.messageBody')} value={formatBytes(analysis.messageBytes)} />
                   </div>
                   <MessageFootprint messages={analysis.messageFootprints} />
                   <MaterialWatch materials={analysis.materials} />
-                  <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">注意力风险依据：材料是否实际在场、距消息链尾部的距离、正文体积、以及是否连续保留。它不能直接测量模型注意力权重。</p>
+                  <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">{t('contextAudit.attentionRiskHint')}</p>
                 </div>
               </details>
             </div>
           </details>
 
           <details className="mt-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
-            <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">上行内容（脱敏）</summary>
+            <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">{t('contextAudit.redactedRequest')}</summary>
             <div className="border-t border-[var(--color-border)] p-2.5">
               <div className="mb-2 flex items-center gap-2 text-[10px] text-[var(--color-text-tertiary)]">
-                <span>{currentBody.isFull ? '完整本地原文' : '请求副本（未关联完整原文）'}</span>
+                <span>{currentBody.isFull ? t('contextAudit.fullLocalBody') : t('contextAudit.requestCopy')}</span>
                 {currentBody.file ? <span className="truncate font-mono">{currentBody.file}</span> : null}
-                <CopyButton text={currentBody.text} label="复制原文" copiedLabel="已复制" className="ml-auto shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 hover:text-[var(--color-text-primary)]" />
+                <CopyButton text={currentBody.text} label={t('contextAudit.copyBody')} copiedLabel={t('contextAudit.copied')} className="ml-auto shrink-0 rounded border border-[var(--color-border)] px-1.5 py-0.5 hover:text-[var(--color-text-primary)]" />
               </div>
           <FormattedRequestView call={activeCall} text={currentBody.text} messageTimings={messageTimings} />
               <details className="mt-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
-                <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-secondary)]">原始 JSON（逐字保留）</summary>
-                <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words border-t border-[var(--color-border)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{currentBody.text || '(空请求体)'}</pre>
+                <summary className="cursor-pointer px-2 py-1.5 text-[10px] text-[var(--color-text-secondary)]">{t('contextAudit.rawJson')}</summary>
+                <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words border-t border-[var(--color-border)] p-2 font-mono text-[10px] leading-4 text-[var(--color-text-secondary)]">{currentBody.text || t('contextAudit.emptyBody')}</pre>
               </details>
             </div>
           </details>
 
           <details className="mt-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
-            <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">建立诊断会话</summary>
+            <summary className="cursor-pointer px-2.5 py-2 text-xs font-medium text-[var(--color-text-primary)]">{t('contextAudit.createDiagnostic')}</summary>
             <div className="space-y-2 border-t border-[var(--color-border)] p-2.5">
               <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">
-                将在本机审计目录的 diagnostics 下写入一份诊断包，并新开一个只读诊断会话；其中预填来源会话、这条上行和相邻上行的脱敏原文位置。不会自动发送给模型，方便你先检查再确认发送。
+                {t('contextAudit.diagnosticDescription')}
               </p>
               <textarea
                 value={diagnosticQuestion}
                 onChange={(event) => setDiagnosticQuestion(event.target.value)}
                 rows={3}
-                placeholder="例如：为什么没有执行 process.md 中的留痕要求？"
+                placeholder={t('contextAudit.diagnosticPlaceholder')}
                 className="w-full resize-y rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-2 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
               />
-              {!currentBody.isFull ? <p className="text-[10px] leading-4 text-[var(--color-warning)]">当前上行没有关联到可复盘的完整原文，因此不能创建诊断会话；上方仍可阅读已保存的请求副本。</p> : null}
+              {!currentBody.isFull ? <p className="text-[10px] leading-4 text-[var(--color-warning)]">{t('contextAudit.diagnosticUnavailable')}</p> : null}
               {diagnosticError ? <p role="alert" className="text-[10px] text-[var(--color-error)]">{diagnosticError}</p> : null}
               <button
                 type="button"
                 onClick={() => void createDiagnosticSession()}
                 disabled={creatingDiagnostic || !currentBody.isFull}
-                title={currentBody.isFull ? undefined : '当前上行未关联完整原文；诊断会话需要它作为可复盘证据'}
+                title={currentBody.isFull ? undefined : t('contextAudit.diagnosticNeedsFullBody')}
                 className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2 py-1 text-[11px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {creatingDiagnostic ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />}
-                创建诊断会话
+                {t('contextAudit.createDiagnostic')}
               </button>
             </div>
           </details>
@@ -439,9 +444,12 @@ export function buildMessageSizeVisuals(bytes: number[]): MessageSizeVisual[] {
 }
 
 function MessageSizeBar({ visual }: { visual: MessageSizeVisual }) {
+  const t = useTranslation()
   const isTopConsumer = visual.rank <= MOST_EXPENSIVE_MESSAGE_COUNT
   const percentage = Math.round(visual.share * 100)
-  const title = `占消息链 ${percentage}% · ${isTopConsumer ? `高耗第 ${visual.rank} 名` : '非前 7 高耗消息'}`
+  const title = isTopConsumer
+    ? t('contextAudit.messageShareRanked', { percentage, rank: visual.rank })
+    : t('contextAudit.messageShareUnranked', { percentage })
   const fillOpacity = isTopConsumer ? 0.22 + (visual.relativeWidth * 0.68) : 0.12
 
   return (
@@ -472,12 +480,17 @@ function CallMetricBar({
   unavailable?: boolean
   showRank?: boolean
 }) {
+  const t = useTranslation()
   const isTopConsumer = showRank && !unavailable && (visual?.rank ?? Infinity) <= MOST_EXPENSIVE_MESSAGE_COUNT
   const color = tone === 'info' ? 'var(--color-info)' : 'var(--color-warning)'
   const fillOpacity = showRank && isTopConsumer ? 0.22 + ((visual?.relativeWidth ?? 0) * 0.68) : 0.5
-  const suffix = unavailable ? '无耗时记录' : showRank
-    ? `${isTopConsumer ? `第 ${visual?.rank} 名，` : ''}占当前调用 ${Math.round((visual?.share ?? 0) * 100)}%`
-    : '本轮消息链共享耗时'
+  const suffix = unavailable
+    ? t('contextAudit.noTiming')
+    : showRank
+      ? isTopConsumer
+        ? t('contextAudit.callShareRanked', { rank: visual?.rank ?? 0, percentage: Math.round((visual?.share ?? 0) * 100) })
+        : t('contextAudit.callShare', { percentage: Math.round((visual?.share ?? 0) * 100) })
+      : t('contextAudit.sharedTurnTiming')
 
   return (
     <span className="flex items-center gap-1" title={`${title} ${suffix}`} aria-label={`${label} ${suffix}`}>
@@ -500,19 +513,20 @@ type ReadMaterial = {
   distanceFromTail: number
   fingerprint: string
   watched: boolean
-  state: '首次出现' | '连续保留' | '内容更新' | '相对上次换出'
+  state: 'first' | 'retained' | 'updated' | 'evicted'
 }
 
 function MessageFootprint({ messages }: { messages: MessageFootprint[] }) {
+  const t = useTranslation()
   if (messages.length === 0) return null
   return (
     <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
-      <summary className="cursor-pointer px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-primary)]">消息链子项大小（{messages.length}）</summary>
+      <summary className="cursor-pointer px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-primary)]">{t('contextAudit.messageFootprint', { count: messages.length })}</summary>
       <div className="max-h-48 overflow-y-auto border-t border-[var(--color-border)]">
         {messages.map((message) => (
           <div key={message.index} className="grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b border-[var(--color-border)]/60 px-2 py-1.5 text-[10px] last:border-b-0">
             <span className="font-mono text-[var(--color-text-tertiary)]">{message.index}.</span>
-            <span className="min-w-0 truncate text-[var(--color-text-secondary)]">{message.label} · {message.blocks} 块 · 距尾部 {message.distanceFromTail}</span>
+            <span className="min-w-0 truncate text-[var(--color-text-secondary)]">{t('contextAudit.messageFootprintRow', { label: message.label, blocks: message.blocks, distance: message.distanceFromTail })}</span>
             <span className="font-mono text-[var(--color-text-primary)]">{formatBytes(message.bytes)}</span>
           </div>
         ))}
@@ -522,19 +536,20 @@ function MessageFootprint({ messages }: { messages: MessageFootprint[] }) {
 }
 
 function MaterialWatch({ materials }: { materials: ReadMaterial[] }) {
+  const t = useTranslation()
   const watched = materials.filter((material) => material.watched)
-  if (watched.length === 0) return <p className="text-[10px] text-[var(--color-text-tertiary)]">本次上行未发现四件套或项目大脑核心文件的实际 Read 回包。</p>
+  if (watched.length === 0) return <p className="text-[10px] text-[var(--color-text-tertiary)]">{t('contextAudit.noWatchedMaterials')}</p>
   return (
     <div>
-      <p className="mb-1 text-[10px] font-medium text-[var(--color-text-primary)]">关键材料在场（来自实际 Read 回包）</p>
+      <p className="mb-1 text-[10px] font-medium text-[var(--color-text-primary)]">{t('contextAudit.watchedMaterials')}</p>
       <div className="max-h-48 overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
         {watched.map((material) => (
           <div key={`${material.path}:${material.state}`} className="border-b border-[var(--color-border)]/60 px-2 py-1.5 text-[10px] last:border-b-0">
             <div className="flex items-center gap-2">
-              <span className={`rounded px-1 py-0.5 ${material.state === '相对上次换出' ? 'bg-[var(--color-warning)]/10 text-[var(--color-warning)]' : 'bg-[var(--color-success)]/10 text-[var(--color-success)]'}`}>{material.state}</span>
+              <span className={`rounded px-1 py-0.5 ${material.state === 'evicted' ? 'bg-[var(--color-warning)]/10 text-[var(--color-warning)]' : 'bg-[var(--color-success)]/10 text-[var(--color-success)]'}`}>{t(`contextAudit.materialState.${material.state}` as TranslationKey)}</span>
               <span className="min-w-0 flex-1 truncate font-mono text-[var(--color-text-secondary)]" title={material.path}>{material.path}</span>
             </div>
-            <div className="mt-1 text-[var(--color-text-tertiary)]">{formatBytes(material.bytes)} · 消息 {material.messageIndex || '—'} · 距尾部 {material.distanceFromTail || '—'} · 版本 {material.fingerprint}</div>
+            <div className="mt-1 text-[var(--color-text-tertiary)]">{t('contextAudit.materialDetails', { bytes: formatBytes(material.bytes), message: material.messageIndex || '—', distance: material.distanceFromTail || '—', fingerprint: material.fingerprint })}</div>
           </div>
         ))}
       </div>
@@ -543,9 +558,10 @@ function MaterialWatch({ materials }: { materials: ReadMaterial[] }) {
 }
 
 function FormattedRequestView({ call, text, messageTimings }: { call: TraceCallRecord; text: string; messageTimings: MessageTimingVisual[] | null }) {
+  const t = useTranslation()
   const request = useMemo(() => parseTraceRequestBody(text, call.source), [call.source, text])
   if (!request) {
-    return <div className="rounded border border-dashed border-[var(--color-border)] p-2 text-[10px] text-[var(--color-text-tertiary)]">此请求不是可解析的 JSON；请在下方查看原始内容。</div>
+    return <div className="rounded border border-dashed border-[var(--color-border)] p-2 text-[10px] text-[var(--color-text-tertiary)]">{t('contextAudit.unparseableJson')}</div>
   }
 
   const toolCalls = collectToolCalls(request.messages)
@@ -557,21 +573,21 @@ function FormattedRequestView({ call, text, messageTimings }: { call: TraceCallR
     <div className="flex flex-col gap-2">
       {request.system !== undefined ? (
         <details className="rounded border border-[var(--color-border)]">
-          <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">系统提示</summary>
+          <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">{t('contextAudit.systemPrompt')}</summary>
           <div className="border-t border-[var(--color-border)] p-2"><ReadableContent value={request.system} /></div>
         </details>
       ) : null}
       <details open className="rounded border border-[var(--color-border)]">
-        <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">消息链（{request.messages.length}）</summary>
+        <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">{t('contextAudit.messageChain', { count: request.messages.length })}</summary>
         <div className="flex flex-col gap-1.5 border-t border-[var(--color-border)] p-2">
-          <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">蓝条为消息体积；黄条为关联的模型调用耗时（助手消息取生成它的上一轮响应，用户/工具回包取携带它的下一轮调用）。本地工具执行时间未被当前 trace 单独采集，会显示为 —。</p>
+          <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">{t('contextAudit.barExplanation')}</p>
           {request.messages.map((message, index) => <ContextMessageView key={index} message={message} index={index} toolCalls={toolCalls} sizeVisual={messageSizeVisuals[index]!} timing={messageTimings?.[index]} />)}
-          {request.messages.length === 0 ? <div className="text-[10px] text-[var(--color-text-tertiary)]">无消息</div> : null}
+          {request.messages.length === 0 ? <div className="text-[10px] text-[var(--color-text-tertiary)]">{t('contextAudit.noMessages')}</div> : null}
         </div>
       </details>
       {request.tools.length > 0 ? (
         <details className="rounded border border-[var(--color-border)]">
-          <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">工具定义（{request.tools.length}）</summary>
+          <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">{t('contextAudit.toolDefinitionsCount', { count: request.tools.length })}</summary>
           <div className="border-t border-[var(--color-border)] p-2">
             {request.tools.map((tool, index) => (
               <details key={index} className="border-b border-[var(--color-border)]/70 py-1 last:border-b-0">
@@ -583,34 +599,32 @@ function FormattedRequestView({ call, text, messageTimings }: { call: TraceCallR
         </details>
       ) : null}
       <details className="rounded border border-[var(--color-border)]">
-        <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">模型与参数</summary>
+        <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-[var(--color-text-primary)]">{t('contextAudit.modelAndParameters')}</summary>
         <div className="max-h-56 overflow-auto border-t border-[var(--color-border)] p-2"><JsonValueView value={request.params} /></div>
       </details>
     </div>
   )
 }
 
-const ROLE_LABELS: Record<NormalizedMessage['role'], string> = {
-  system: '系统',
-  user: '用户',
-  assistant: '助手',
-  tool: '工具',
+function roleLabel(role: NormalizedMessage['role'], t: Translate): string {
+  return t(`contextAudit.role.${role}` as TranslationKey)
 }
 
 function ContextMessageView({ message, index, toolCalls, sizeVisual, timing }: { message: NormalizedMessage; index: number; toolCalls: Map<string, ToolCallReference>; sizeVisual: MessageSizeVisual; timing: MessageTimingVisual | undefined }) {
+  const t = useTranslation()
   const contentBytes = message.content.reduce((total, block) => total + byteLength(blockText(block)), 0)
-  const summaryLabel = messageSummaryLabel(message, toolCalls)
-  const toolParameters = messageToolParameterSummary(message, toolCalls)
+  const summaryLabel = messageSummaryLabel(message, toolCalls, t)
+  const toolParameters = messageToolParameterSummary(message, toolCalls, t)
   return (
     <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
       <summary className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-[10px] text-[var(--color-text-primary)]">
         <span className="min-w-0 flex-1">
-          <span className="block truncate">{index + 1}. {summaryLabel} · 协议角色：{ROLE_LABELS[message.role]} · {message.content.length} 个内容块 · {formatBytes(contentBytes)}</span>
-          {toolParameters ? <span className="block truncate font-mono text-[9px] text-[var(--color-text-tertiary)]" title={toolParameters}>参数：{toolParameters}</span> : null}
+          <span className="block truncate">{t('contextAudit.messageSummary', { index: index + 1, summary: summaryLabel, role: roleLabel(message.role, t), blocks: message.content.length, bytes: formatBytes(contentBytes) })}</span>
+          {toolParameters ? <span className="block truncate font-mono text-[9px] text-[var(--color-text-tertiary)]" title={toolParameters}>{t('contextAudit.parameters', { parameters: toolParameters })}</span> : null}
         </span>
         <span className="flex shrink-0 items-center gap-2">
           <MessageSizeBar visual={sizeVisual} />
-          <CallMetricBar label="时" visual={timing?.visual} tone="warning" title={messageTimingTitle(timing)} unavailable={timing?.durationMs === undefined} />
+          <CallMetricBar label={t('contextAudit.durationShort')} visual={timing?.visual} tone="warning" title={messageTimingTitle(timing, t)} unavailable={timing?.durationMs === undefined} />
           <span className="w-9 font-mono text-right text-[9px] text-[var(--color-text-secondary)]">{formatDurationMs(timing?.durationMs)}</span>
         </span>
       </summary>
@@ -621,19 +635,19 @@ function ContextMessageView({ message, index, toolCalls, sizeVisual, timing }: {
   )
 }
 
-function messageSummaryLabel(message: NormalizedMessage, toolCalls: Map<string, ToolCallReference>): string {
+function messageSummaryLabel(message: NormalizedMessage, toolCalls: Map<string, ToolCallReference>, t: Translate): string {
   const toolResults = message.content.filter((block): block is Extract<NormalizedBlock, { type: 'tool_result' }> => block.type === 'tool_result')
   if (toolResults.length > 0) {
-    const toolLabels = toolResults.map((result) => result.toolUseId ? toolCalls.get(result.toolUseId)?.name ?? result.toolUseId : '未知工具')
-    const status = toolResults.every((result) => result.isError) ? '工具执行失败' : '工具执行回包'
-    return `${status} · ${toolLabels.join('、')}`
+    const toolLabels = toolResults.map((result) => result.toolUseId ? toolCalls.get(result.toolUseId)?.name ?? result.toolUseId : t('contextAudit.unknownTool'))
+    const status = toolResults.every((result) => result.isError) ? t('contextAudit.toolFailed') : t('contextAudit.toolResult')
+    return t('contextAudit.toolListSummary', { status, tools: toolLabels.join(t('contextAudit.listSeparator')) })
   }
   const toolUses = message.content.filter((block): block is Extract<NormalizedBlock, { type: 'tool_use' }> => block.type === 'tool_use')
-  if (toolUses.length > 0) return `工具调用 · ${toolUses.map((toolUse) => toolUse.name || '未命名工具').join('、')}`
-  return ROLE_LABELS[message.role]
+  if (toolUses.length > 0) return t('contextAudit.toolListSummary', { status: t('contextAudit.toolCall'), tools: toolUses.map((toolUse) => toolUse.name || t('contextAudit.unnamedTool')).join(t('contextAudit.listSeparator')) })
+  return roleLabel(message.role, t)
 }
 
-function messageToolParameterSummary(message: NormalizedMessage, toolCalls: Map<string, ToolCallReference>): string | null {
+function messageToolParameterSummary(message: NormalizedMessage, toolCalls: Map<string, ToolCallReference>, t: Translate): string | null {
   const references: ToolCallReference[] = []
   for (const block of message.content) {
     if (block.type === 'tool_use') references.push({ id: block.id ?? '', name: block.name ?? '', input: block.input })
@@ -643,11 +657,11 @@ function messageToolParameterSummary(message: NormalizedMessage, toolCalls: Map<
     }
   }
   if (references.length === 0) return null
-  return references.map(toolCallParameterSummary).join('；')
+  return references.map((reference) => toolCallParameterSummary(reference, t)).join(t('contextAudit.parameterSeparator'))
 }
 
-function toolCallParameterSummary(toolCall: ToolCallReference): string {
-  const name = toolCall.name || '未命名工具'
+function toolCallParameterSummary(toolCall: ToolCallReference, t: Translate): string {
+  const name = toolCall.name || t('contextAudit.unnamedTool')
   if (!isJsonRecord(toolCall.input)) return `${name}(${compactValue(toolCall.input)})`
   const input = toolCall.input
   const lowerName = name.toLowerCase()
@@ -660,11 +674,11 @@ function toolCallParameterSummary(toolCall: ToolCallReference): string {
     const pattern = compactValue(select('pattern', 'query'))
     const path = compactValue(select('path', 'directory', 'cwd'))
     const glob = compactValue(select('glob', 'include'))
-    return `${name}(${[pattern, path && `路径=${path}`, glob && `glob=${glob}`].filter(Boolean).join('，')})`
+    return `${name}(${[pattern, path && t('contextAudit.pathParameter', { path }), glob && `glob=${glob}`].filter(Boolean).join(t('contextAudit.argumentSeparator'))})`
   }
   if (lowerName === 'bash' || lowerName === 'shell') return `${name}(${compactValue(select('command', 'cmd', 'script'))})`
   const entries = Object.entries(input).slice(0, 2).map(([key, value]) => `${key}=${compactValue(value)}`)
-  return `${name}(${entries.join('，') || '无参数'})`
+  return `${name}(${entries.join(t('contextAudit.argumentSeparator')) || t('contextAudit.noParameters')})`
 }
 
 function compactValue(value: unknown): string {
@@ -674,35 +688,37 @@ function compactValue(value: unknown): string {
 }
 
 function ContextBlockView({ block, toolCalls }: { block: NormalizedBlock; toolCalls: Map<string, ToolCallReference> }) {
+  const t = useTranslation()
   switch (block.type) {
     case 'text':
-      return <ContentBlock label="文本 · Markdown / 表格 / Mermaid / 代码高亮"><ReadableContent value={block.text} /></ContentBlock>
+      return <ContentBlock label={t('contextAudit.textContent')}><ReadableContent value={block.text} /></ContentBlock>
     case 'thinking':
-      return <ContentBlock label="推理内容"><ReadableContent value={block.thinking} /></ContentBlock>
+      return <ContentBlock label={t('contextAudit.thinkingContent')}><ReadableContent value={block.thinking} /></ContentBlock>
     case 'tool_use':
-      return <ContentBlock label={`工具调用 · ${block.name || '未命名工具'}`} meta={block.id}><JsonValueView value={block.input} /></ContentBlock>
+      return <ContentBlock label={t('contextAudit.toolLabel', { tool: block.name || t('contextAudit.unnamedTool') })} meta={block.id}><JsonValueView value={block.input} /></ContentBlock>
     case 'tool_result': {
       const toolCall = block.toolUseId ? toolCalls.get(block.toolUseId) : undefined
       const toolName = toolCall?.name
-      return <ContentBlock label={`${block.isError ? '工具执行失败' : '工具执行回包'} · ${toolName ?? block.toolUseId ?? '未知工具'}`} meta={block.toolUseId}>
-        {toolCall ? <AssociatedToolCallView toolCall={toolCall} /> : <div className="mb-2 rounded border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/10 px-2 py-1 text-[10px] text-[var(--color-text-secondary)]">未在本次上行中找到与此回包匹配的工具调用参数。</div>}
+      return <ContentBlock label={t('contextAudit.toolListSummary', { status: block.isError ? t('contextAudit.toolFailed') : t('contextAudit.toolResult'), tools: toolName ?? block.toolUseId ?? t('contextAudit.unknownTool') })} meta={block.toolUseId}>
+        {toolCall ? <AssociatedToolCallView toolCall={toolCall} /> : <div className="mb-2 rounded border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/10 px-2 py-1 text-[10px] text-[var(--color-text-secondary)]">{t('contextAudit.missingToolCall')}</div>}
         <ReadableContent value={block.content} stripReadLineNumbers={toolName?.toLowerCase() === 'read'} />
       </ContentBlock>
     }
     case 'image':
-      return <ContentBlock label={`图像内容${block.mediaType ? ` · ${block.mediaType}` : ''}`} />
+      return <ContentBlock label={block.mediaType ? t('contextAudit.imageContentTyped', { mediaType: block.mediaType }) : t('contextAudit.imageContent')} />
   }
 }
 
 function AssociatedToolCallView({ toolCall }: { toolCall: ToolCallReference }) {
+  const t = useTranslation()
   return (
     <details open className="mb-2 rounded border border-[var(--color-info)]/30 bg-[var(--color-info)]/5 px-2 py-1.5">
       <summary className="cursor-pointer text-[10px] font-medium text-[var(--color-text-primary)]">
-        关联的工具调用 · {toolCall.name || '未命名工具'}
+        {t('contextAudit.associatedToolCall', { tool: toolCall.name || t('contextAudit.unnamedTool') })}
         <span className="ml-1 font-mono font-normal text-[var(--color-text-tertiary)]">{toolCall.id}</span>
       </summary>
       <div className="mt-1.5 border-t border-[var(--color-info)]/20 pt-1.5">
-        <div className="mb-1 text-[10px] text-[var(--color-text-secondary)]">调用参数</div>
+        <div className="mb-1 text-[10px] text-[var(--color-text-secondary)]">{t('contextAudit.callParameters')}</div>
         <JsonValueView value={toolCall.input} />
       </div>
     </details>
@@ -722,9 +738,10 @@ function ContentBlock({ label, meta, children }: { label: string; meta?: string;
 }
 
 function ReadableContent({ value, stripReadLineNumbers = false }: { value: unknown; stripReadLineNumbers?: boolean }) {
+  const t = useTranslation()
   const rawText = contentToText(value)
   const text = stripReadLineNumbers ? stripToolReadLineNumbers(rawText) : rawText
-  if (!text) return <span className="text-[10px] text-[var(--color-text-tertiary)]">（空）</span>
+  if (!text) return <span className="text-[10px] text-[var(--color-text-tertiary)]">{t('contextAudit.empty')}</span>
   const parsedJson = tryParseJsonText(extractJsonPayload(text))
   if (parsedJson !== null) return <JsonValueView value={parsedJson} />
   if (text.length > MAX_MARKDOWN_RENDER_CHARS) {
@@ -756,6 +773,7 @@ function stripToolReadLineNumbers(text: string): string {
 }
 
 function JsonValueView({ value, depth = 0 }: { value: unknown; depth?: number }) {
+  const t = useTranslation()
   if (value === null) return <code className="font-mono text-[10px] text-[var(--color-text-tertiary)]">null</code>
   if (typeof value === 'string') return <>
     <EncodingNotice text={value} />
@@ -771,7 +789,7 @@ function JsonValueView({ value, depth = 0 }: { value: unknown; depth?: number })
   return (
     <details open={depth < 1} className="rounded border border-[var(--color-border)]/70 bg-[var(--color-surface-container-low)] px-1.5 py-1">
       <summary className="cursor-pointer font-mono text-[10px] text-[var(--color-text-secondary)]">
-        {Array.isArray(value) ? '数组' : '对象'} · {entries.length} 项
+        {t(Array.isArray(value) ? 'contextAudit.arrayItems' : 'contextAudit.objectItems', { count: entries.length })}
       </summary>
       <div className="mt-1.5 space-y-1 border-t border-[var(--color-border)]/60 pt-1.5">
         {entries.map(([key, child]) => (
@@ -786,11 +804,12 @@ function JsonValueView({ value, depth = 0 }: { value: unknown; depth?: number })
 }
 
 function EncodingNotice({ text }: { text: string }) {
+  const t = useTranslation()
   const replacementCount = Array.from(text).filter((char) => char === '\ufffd').length
   if (replacementCount === 0) return null
   return (
     <div className="mb-2 rounded border border-[var(--color-warning)]/50 bg-[var(--color-warning)]/10 px-2 py-1.5 text-[10px] leading-4 text-[var(--color-text-secondary)]">
-      检测到 {replacementCount} 个 “�”。这说明工具回包在进入审计前已经按错误编码解码，原始字节未保留，不能可靠地自动还原为 GBK；请让产生该回包的命令以 UTF-8 输出。原始 JSON 仍可用于确认损坏发生的位置。
+      {t('contextAudit.encodingWarning', { count: replacementCount })}
     </div>
   )
 }
@@ -921,11 +940,11 @@ function messageSignature(message: NormalizedMessage): string {
   return `${message.role}:${JSON.stringify(message.content)}`
 }
 
-function messageTimingTitle(timing: MessageTimingVisual | undefined): string {
-  if (!timing?.durationMs) return '没有可关联的模型调用耗时：当前 trace 未记录逐工具本地执行耗时，或缺少该消息首次出现前后的请求。'
+function messageTimingTitle(timing: MessageTimingVisual | undefined, t: Translate): string {
+  if (!timing?.durationMs) return t('contextAudit.timingUnavailable')
   return timing.attribution === 'previous-response'
-    ? '该助手消息由上一轮模型响应生成；黄色条表示那一次完整模型调用耗时。'
-    : '该用户/工具回包随本次上行发起模型调用；黄色条表示这一次完整模型调用耗时。'
+    ? t('contextAudit.timingPreviousResponse')
+    : t('contextAudit.timingFollowingRequest')
 }
 
 function rawBodyToLoad(raw: TraceRawBody): BodyLoad {
@@ -938,7 +957,7 @@ function findPreviousCall(calls: TraceCallRecord[], call: TraceCallRecord): Trac
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
 }
 
-function analyzeRequest(call: TraceCallRecord, body: string, previousBody: string | null) {
+function analyzeRequest(call: TraceCallRecord, body: string, previousBody: string | null, t: Translate) {
   const parsed = parseTraceRequestBody(body, call.source)
   const system = parsed?.system ?? ''
   const messages = parsed?.messages ?? []
@@ -953,13 +972,19 @@ function analyzeRequest(call: TraceCallRecord, body: string, previousBody: strin
   const systemChanged = previousBody !== null && (priorParsed?.system ?? '') !== system
   const toolsChanged = previousBody !== null && JSON.stringify(priorParsed?.tools ?? []) !== JSON.stringify(parsed?.tools ?? [])
   const deltaLabel = previousBody === null
-    ? '无可比上行'
-    : `${newMessages} 新增 / ${omittedMessages} 未继续出现 / ${retainedMessages} 保留${systemChanged ? ' / 系统变更' : ''}${toolsChanged ? ' / 工具变更' : ''}`
+    ? t('contextAudit.noPreviousRequest')
+    : t('contextAudit.deltaSummary', {
+        added: newMessages,
+        omitted: omittedMessages,
+        retained: retainedMessages,
+        systemChange: systemChanged ? t('contextAudit.systemChangedSuffix') : '',
+        toolsChange: toolsChanged ? t('contextAudit.toolsChangedSuffix') : '',
+      })
   const text = [system, ...messages.map((message) => JSON.stringify(message.content))].join('\n')
   const messageFootprints = messages.map((message, index) => ({
     index: index + 1,
     role: message.role,
-    label: messageSummaryLabel(message, collectToolCalls(messages)),
+    label: messageSummaryLabel(message, collectToolCalls(messages), t),
     bytes: byteLength(JSON.stringify(message.content)),
     blocks: message.content.length,
     distanceFromTail: messages.length - index,
@@ -967,8 +992,8 @@ function analyzeRequest(call: TraceCallRecord, body: string, previousBody: strin
   const currentMaterials = extractReadMaterials(messages)
   const priorMaterials = extractReadMaterials(priorMessages)
   const materials = compareMaterials(currentMaterials, priorMaterials, messages.length)
-  const cachePrefix = getCandidateCachePrefix(parsed, priorParsed)
-  const compaction = getCompactionObservation(parsed, priorParsed, omittedMessages)
+  const cachePrefix = getCandidateCachePrefix(parsed, priorParsed, t)
+  const compaction = getCompactionObservation(parsed, priorParsed, omittedMessages, t)
 
   return {
     systemBytes: byteLength(system),
@@ -1041,8 +1066,8 @@ function compareMaterials(
     const item = currentByPath.get(path)
     const prior = previousByPath.get(path)
     const watched = isWatchedMaterial(path)
-    if (!item) return { path, bytes: 0, messageIndex: 0, distanceFromTail: 0, fingerprint: prior?.fingerprint ?? '—', watched, state: '相对上次换出' as const }
-    const state: ReadMaterial['state'] = !prior ? '首次出现' : prior.fingerprint === item.fingerprint ? '连续保留' : '内容更新'
+    if (!item) return { path, bytes: 0, messageIndex: 0, distanceFromTail: 0, fingerprint: prior?.fingerprint ?? '—', watched, state: 'evicted' as const }
+    const state: ReadMaterial['state'] = !prior ? 'first' : prior.fingerprint === item.fingerprint ? 'retained' : 'updated'
     return { ...item, distanceFromTail: messageCount - item.messageIndex + 1, watched, state }
   }).sort((left, right) => Number(right.watched) - Number(left.watched) || right.bytes - left.bytes)
 }
@@ -1063,35 +1088,37 @@ function shortFingerprint(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
-function getCandidateCachePrefix(current: ReturnType<typeof parseTraceRequestBody>, previous: ReturnType<typeof parseTraceRequestBody>) {
-  if (!current || !previous) return { bytes: 0, label: '无可比上行' }
+function getCandidateCachePrefix(current: ReturnType<typeof parseTraceRequestBody>, previous: ReturnType<typeof parseTraceRequestBody>, t: Translate) {
+  if (!current || !previous) return { bytes: 0, label: t('contextAudit.noPreviousRequest') }
   const segments = [
-    ['系统提示', current.system ?? '', previous.system ?? ''],
-    ['工具定义', safeJson(current.tools), safeJson(previous.tools)],
-    ...current.messages.map((message, index) => [`消息 ${index + 1}`, safeJson({ role: message.role, content: message.content }), previous.messages[index] ? safeJson({ role: previous.messages[index]!.role, content: previous.messages[index]!.content }) : undefined] as const),
+    ['system', current.system ?? '', previous.system ?? ''],
+    ['tools', safeJson(current.tools), safeJson(previous.tools)],
+    ...current.messages.map((message, index) => [`message-${index + 1}`, safeJson({ role: message.role, content: message.content }), previous.messages[index] ? safeJson({ role: previous.messages[index]!.role, content: previous.messages[index]!.content }) : undefined] as const),
   ] as const
   let bytes = 0
   let matchedMessages = 0
   let stableSystemAndTools = true
   for (const [label, currentValue, previousValue] of segments) {
     if (currentValue !== previousValue) {
-      if (label === '系统提示' || label === '工具定义') stableSystemAndTools = false
+      if (label === 'system' || label === 'tools') stableSystemAndTools = false
       break
     }
     bytes += byteLength(currentValue)
-    if (label.startsWith('消息')) matchedMessages += 1
+    if (label.startsWith('message-')) matchedMessages += 1
   }
-  const prefix = stableSystemAndTools ? `系统+工具+${matchedMessages} 条消息` : '系统或工具定义已变'
+  const prefix = stableSystemAndTools
+    ? t('contextAudit.stablePrefix', { count: matchedMessages })
+    : t('contextAudit.systemOrToolsChanged')
   return { bytes, label: prefix }
 }
 
-function getCompactionObservation(current: ReturnType<typeof parseTraceRequestBody>, previous: ReturnType<typeof parseTraceRequestBody>, omittedMessages: number) {
-  if (!previous) return { label: '无可比上行' }
+function getCompactionObservation(current: ReturnType<typeof parseTraceRequestBody>, previous: ReturnType<typeof parseTraceRequestBody>, omittedMessages: number, t: Translate) {
+  if (!previous) return { label: t('contextAudit.noPreviousRequest') }
   const text = (current?.messages ?? []).flatMap((message) => message.content).map(blockText).join('\n')
-  if (/session is being continued from a previous conversation|context for continuing work|上下文已压缩/i.test(text)) return { label: '检测到摘要压缩' }
-  if (isJsonRecord(current?.params?.context_management)) return { label: '请求启用 API 上下文编辑' }
-  if (omittedMessages > 0) return { label: `${omittedMessages} 条未继续出现` }
-  return { label: '未观察到换出' }
+  if (/session is being continued from a previous conversation|context for continuing work|上下文已压缩/i.test(text)) return { label: t('contextAudit.summaryCompactionDetected') }
+  if (isJsonRecord(current?.params?.context_management)) return { label: t('contextAudit.apiContextEditing') }
+  if (omittedMessages > 0) return { label: t('contextAudit.omittedCount', { count: omittedMessages }) }
+  return { label: t('contextAudit.noCompactionObserved') }
 }
 
 function extractExplicitFileHints(text: string): Array<{ path: string; contextBytes: number; kind: 'content' | 'marker' }> {
@@ -1121,12 +1148,12 @@ function extractExplicitFileHints(text: string): Array<{ path: string; contextBy
     .sort((left, right) => right.contextBytes - left.contextBytes)
 }
 
-function getRisks(call: TraceCallRecord, body: BodyLoad, analysis: ReturnType<typeof analyzeRequest>): string[] {
+function getRisks(call: TraceCallRecord, body: BodyLoad, analysis: ReturnType<typeof analyzeRequest>, t: Translate): string[] {
   const risks: string[] = []
-  if (!body.isFull && call.request.body.truncated) risks.push('正文已截断，不能完整复盘')
-  if (call.request.body.bytes >= LARGE_BODY_BYTES) risks.push('单次上行较大，注意力稀释风险')
-  if ((call.usage?.inputTokens ?? 0) >= HIGH_TOKEN_COUNT) risks.push('输入 token 很高，接近压缩/换出风险')
-  if (analysis.messages >= 40) risks.push('消息链较长，渐进披露可能失效')
+  if (!body.isFull && call.request.body.truncated) risks.push(t('contextAudit.risk.truncated'))
+  if (call.request.body.bytes >= LARGE_BODY_BYTES) risks.push(t('contextAudit.risk.largeRequest'))
+  if ((call.usage?.inputTokens ?? 0) >= HIGH_TOKEN_COUNT) risks.push(t('contextAudit.risk.highTokens'))
+  if (analysis.messages >= 40) risks.push(t('contextAudit.risk.longChain'))
   return risks
 }
 
@@ -1134,13 +1161,13 @@ function byteLength(value: string): number {
   return new TextEncoder().encode(value).length
 }
 
-function formatInputTokens(call: TraceCallRecord): string {
+function formatInputTokens(call: TraceCallRecord, t: Translate): string {
   const count = call.usage?.inputTokens
-  return typeof count === 'number' && count > 0 ? `${count.toLocaleString()} tokens` : 'tokens 未返回'
+  return typeof count === 'number' && count > 0 ? `${count.toLocaleString()} tokens` : t('contextAudit.tokensNotReturned')
 }
 
-function formatTokenMetric(value: number | undefined): string {
-  return typeof value === 'number' && value >= 0 ? `${value.toLocaleString()} tokens` : '提供商未返回'
+function formatTokenMetric(value: number | undefined, t: Translate): string {
+  return typeof value === 'number' && value >= 0 ? `${value.toLocaleString()} tokens` : t('contextAudit.providerDidNotReturn')
 }
 
 function formatDate(value: string): string {
@@ -1168,9 +1195,11 @@ function Status({ label, tone }: { label: string; tone: 'success' | 'warning' | 
 }
 
 function LoadingState() {
-  return <div className="flex items-center justify-center gap-2 p-8 text-xs text-[var(--color-text-tertiary)]"><Loader2 size={14} className="animate-spin" />读取实际请求…</div>
+  const t = useTranslation()
+  return <div className="flex items-center justify-center gap-2 p-8 text-xs text-[var(--color-text-tertiary)]"><Loader2 size={14} className="animate-spin" />{t('contextAudit.loading')}</div>
 }
 
 function EmptyState() {
-  return <div className="rounded-lg border border-dashed border-[var(--color-border)] p-5 text-center text-xs leading-5 text-[var(--color-text-tertiary)]">本会话尚未捕获上行请求。请确认 Trace 已开启，然后发送一条消息。</div>
+  const t = useTranslation()
+  return <div className="rounded-lg border border-dashed border-[var(--color-border)] p-5 text-center text-xs leading-5 text-[var(--color-text-tertiary)]">{t('contextAudit.emptyState')}</div>
 }

@@ -1,6 +1,8 @@
 import type { TranslationKey } from './en'
+import { contextAuditZh } from '../contextAuditTranslations'
 
 export const zh: Record<TranslationKey, string> = {
+  ...contextAuditZh,
   // ─── Common ──────────────────────────────────────
   'common.cancel': '取消',
   'common.save': '保存',
@@ -1328,6 +1330,21 @@ export const zh: Record<TranslationKey, string> = {
   'settings.plugins.capabilityLabel.hooks': 'Hooks',
   'settings.plugins.capabilityLabel.mcpServers': 'MCP 服务',
   'settings.plugins.capabilityLabel.lspServers': 'LSP 服务',
+
+  // Settings > KSCC
+  'settings.kscc.providerMissing': 'KSCC 服务商尚未创建，请重新登录。',
+  'settings.kscc.loggedInActive': 'KSCC 已登录，当前正在使用',
+  'settings.kscc.loggedInInactive': 'KSCC 已登录，可在下方服务商列表切换',
+  'settings.kscc.switching': '正在切换…',
+  'settings.kscc.switch': '切换为 KSCC',
+  'settings.kscc.loginAgain': '重新登录',
+  'settings.kscc.switchFailed': 'KSCC 切换失败：{error}',
+  'settings.kscc.description': '登录 KSCC。若本机 KSCC 已登录，会直接复用该登录态；否则打开登录页。',
+  'settings.kscc.connecting': '正在连接 KSCC…',
+  'settings.kscc.loginAndEnable': '登录并启用 KSCC',
+  'settings.kscc.copyLoginLink': '复制登录链接',
+  'settings.kscc.waitingForBrowser': '等待在浏览器中完成 KSCC 登录…',
+  'settings.kscc.loginFailed': 'KSCC 登录失败：{error}',
 
   // Settings > About
   'settings.tab.about': '关于',

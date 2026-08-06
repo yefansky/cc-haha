@@ -873,7 +873,12 @@ async function getSessionInspection(req: Request, sessionId: string, url: URL): 
     ? (await getTranscriptSnapshot())?.metadata ?? null
     : null
   const cachedSlashCommands = getSlashCommands(sessionId)
-  const skillSlashCommands = await listSkillSlashCommands(workDir)
+  // Context polling is latency-sensitive and does not consume slash-command
+  // metadata. In particular, the first poll of a prewarmed session can arrive
+  // before the init message; recursively discovering workspace skills here can
+  // dominate the request on large Windows worktrees and make an otherwise-ready
+  // control channel look unavailable.
+  const skillSlashCommands = contextOnly ? [] : await listSkillSlashCommands(workDir)
   const fallbackSlashCommands = cachedSlashCommands.length > 0
     ? mergeSessionSlashCommands(cachedSlashCommands, skillSlashCommands)
     : skillSlashCommands

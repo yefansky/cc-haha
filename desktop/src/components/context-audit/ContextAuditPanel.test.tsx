@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildMessageSizeVisuals, buildMessageTimingVisuals, buildRelativeMetricVisuals, ContextAuditPanel } from './ContextAuditPanel'
+import { useSettingsStore } from '../../stores/settingsStore'
 
 const auditApiMock = vi.hoisted(() => ({
   getTrace: vi.fn(),
@@ -9,6 +10,19 @@ const auditApiMock = vi.hoisted(() => ({
   getTraceRawBody: vi.fn(),
   createTraceDiagnosticBundle: vi.fn(),
   rename: vi.fn(),
+}))
+
+const traceApiMock = vi.hoisted(() => ({
+  exportSession: vi.fn(),
+  getSettings: vi.fn(),
+}))
+
+const desktopHostMock = vi.hoisted(() => ({
+  capabilities: { shell: true },
+  shell: {
+    open: vi.fn(),
+    openPath: vi.fn(),
+  },
 }))
 
 const testRequest = JSON.stringify({
@@ -55,13 +69,19 @@ vi.mock('../../api/sessions', () => ({
 }))
 
 vi.mock('../../api/traces', () => ({
-  tracesApi: {
-    exportSession: vi.fn(),
-    getSettings: vi.fn(),
-  },
+  tracesApi: traceApiMock,
+}))
+
+vi.mock('../../lib/desktopHost', () => ({
+  getDesktopHost: () => desktopHostMock,
 }))
 
 describe('ContextAuditPanel tool result correlation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useSettingsStore.setState({ locale: 'zh' })
+  })
+
   it('shows each matching tool call and its parameters beside a multi-tool result message', async () => {
     auditApiMock.getTrace.mockResolvedValue({
       sessionId: 'session-1',
@@ -92,6 +112,51 @@ describe('ContextAuditPanel tool result correlation', () => {
     expect(await screen.findByText(/关联的工具调用.*Read/)).toBeInTheDocument()
     expect(screen.getAllByText('**/*.md').length).toBeGreaterThan(0)
     expect(screen.getAllByText('docs/process.md').length).toBeGreaterThan(0)
+  })
+
+  it('exports the complete audit payload through a downloaded JSON blob', async () => {
+    auditApiMock.getTrace.mockResolvedValue({
+      sessionId: 'session-1',
+      summary: { apiCalls: 1, failedCalls: 0, totalDurationMs: 1, totalInputTokens: 0, totalOutputTokens: 0, models: [], updatedAt: null },
+      calls: [testCall],
+    })
+    traceApiMock.exportSession.mockResolvedValue({ sessionId: 'session-1', calls: [testCall] })
+    const createObjectUrl = vi.fn(() => 'blob:context-audit')
+    const revokeObjectUrl = vi.fn()
+    Object.defineProperties(URL, {
+      createObjectURL: { configurable: true, value: createObjectUrl },
+      revokeObjectURL: { configurable: true, value: revokeObjectUrl },
+    })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const { container } = render(<ContextAuditPanel sessionId="session-1" />)
+
+    await waitFor(() => expect(auditApiMock.getTrace).toHaveBeenCalledWith('session-1'))
+    const exportButton = container.querySelectorAll('header button')[1]
+    expect(exportButton).toBeDefined()
+    fireEvent.click(exportButton!)
+
+    await waitFor(() => expect(traceApiMock.exportSession).toHaveBeenCalledWith('session-1'))
+    expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob))
+    expect(click).toHaveBeenCalledOnce()
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:context-audit')
+    click.mockRestore()
+  })
+
+  it('opens the configured trace directory through the desktop host', async () => {
+    auditApiMock.getTrace.mockResolvedValue({
+      sessionId: 'session-1',
+      summary: { apiCalls: 1, failedCalls: 0, totalDurationMs: 1, totalInputTokens: 0, totalOutputTokens: 0, models: [], updatedAt: null },
+      calls: [testCall],
+    })
+    traceApiMock.getSettings.mockResolvedValue({ storageDir: 'C:\\traces' })
+    const { container } = render(<ContextAuditPanel sessionId="session-1" />)
+
+    await waitFor(() => expect(auditApiMock.getTrace).toHaveBeenCalledWith('session-1'))
+    const openFolderButton = container.querySelectorAll('header button')[2]
+    expect(openFolderButton).toBeDefined()
+    fireEvent.click(openFolderButton!)
+
+    await waitFor(() => expect(desktopHostMock.shell.openPath).toHaveBeenCalledWith('C:\\traces'))
   })
 })
 

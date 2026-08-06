@@ -452,7 +452,10 @@ async function runCommand(command: string[], cwd: string, logPath: string) {
   const started = Date.now()
   const sandboxHome = mkdtempSync(join(tmpdir(), 'cc-haha-coverage-test-'))
   try {
-    const proc = Bun.spawn(command, {
+    const executableCommand = command[0] === 'bun'
+      ? [process.execPath, ...command.slice(1)]
+      : command
+    const proc = Bun.spawn(executableCommand, {
       cwd,
       env: createSandboxedTestEnvironment(sandboxHome),
       stdout: 'pipe',
@@ -471,7 +474,7 @@ async function runCommand(command: string[], cwd: string, logPath: string) {
       output: `${stdout}${stderr}`,
     }
   } finally {
-    rmSync(sandboxHome, { recursive: true, force: true })
+    rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 }
 
