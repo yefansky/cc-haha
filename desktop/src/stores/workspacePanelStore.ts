@@ -100,6 +100,7 @@ type WorkspacePanelStore = {
   treeBySessionPath: Record<string, Record<string, WorkspaceTreeResult | undefined> | undefined>
   previewTabsBySession: Record<string, WorkspacePreviewTab[] | undefined>
   activePreviewTabIdBySession: Record<string, string | null | undefined>
+  previewOpenNonceBySession: Record<string, number | undefined>
   originBySession: Record<string, WorkspacePanelOrigin | undefined>
   mountedRoots: WorkspaceMountedRoot[]
   loading: WorkspacePanelLoadingState
@@ -296,6 +297,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
   treeBySessionPath: {},
   previewTabsBySession: {},
   activePreviewTabIdBySession: {},
+  previewOpenNonceBySession: {},
   originBySession: {},
   mountedRoots: readMountedRoots(),
   loading: {
@@ -618,6 +620,12 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     // unified workbench into file ("workspace") mode.
     get().openPanel(sessionId)
     get().setMode(sessionId, 'workspace')
+    set((state) => ({
+      previewOpenNonceBySession: {
+        ...(state.previewOpenNonceBySession ?? {}),
+        [sessionId]: (state.previewOpenNonceBySession?.[sessionId] ?? 0) + 1,
+      },
+    }))
     if (origin) {
       set((state) => ({
         originBySession: {
@@ -971,6 +979,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
       treeBySessionPath: removeRecordKey(state.treeBySessionPath, sessionId),
       previewTabsBySession: removeRecordKey(state.previewTabsBySession, sessionId),
       activePreviewTabIdBySession: removeRecordKey(state.activePreviewTabIdBySession, sessionId),
+      previewOpenNonceBySession: removeRecordKey(state.previewOpenNonceBySession, sessionId),
       originBySession: removeRecordKey(state.originBySession, sessionId),
       loading: {
         statusBySession: removeRecordKey(state.loading.statusBySession, sessionId),

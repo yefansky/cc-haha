@@ -1367,6 +1367,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const treeByPath = useWorkspacePanelStore((state) => state.treeBySessionPath[sessionId] ?? EMPTY_TREE_BY_PATH)
   const previewTabs = useWorkspacePanelStore((state) => state.previewTabsBySession[sessionId] ?? EMPTY_PREVIEW_TABS)
   const activePreviewTabId = useWorkspacePanelStore((state) => state.activePreviewTabIdBySession[sessionId] ?? null)
+  const previewOpenNonce = useWorkspacePanelStore((state) => state.previewOpenNonceBySession?.[sessionId] ?? 0)
   const expandedPaths = useWorkspacePanelStore((state) => state.expandedPathsBySession[sessionId] ?? EMPTY_EXPANDED_PATHS)
   const statusLoading = useWorkspacePanelStore((state) => state.loading.statusBySession[sessionId] ?? false)
   const treeLoadingByPath = useWorkspacePanelStore(
@@ -1597,6 +1598,13 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       setIsViewMenuOpen(false)
     }
   }, [isNavigatorVisible])
+
+  // `openPreview` can be initiated from a chat change card, where the navigator
+  // is not involved. Always land on "查看文件" when that happens instead of
+  // leaving the user on the visually unrelated file-tree tab.
+  useEffect(() => {
+    if (shouldRender && previewOpenNonce > 0) setIsNavigatorOpen(false)
+  }, [previewOpenNonce, shouldRender])
 
   if (!shouldRender) return null
 
