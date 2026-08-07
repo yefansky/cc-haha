@@ -5655,6 +5655,51 @@ describe('WebSocket Chat Integration', () => {
     })
   }, 10_000)
 
+  it('should reject a model selected from a different saved provider', async () => {
+    const providerService = new ProviderService()
+    const provider = await providerService.addProvider({
+      presetId: 'custom',
+      name: 'KSCC-like provider',
+      apiKey: 'key-kscc',
+      baseUrl: 'http://127.0.0.1:1/anthropic',
+      apiFormat: 'anthropic',
+      models: { main: 'glm-5', haiku: 'glm-5', sonnet: 'glm-5', opus: 'glm-5' },
+    })
+    const sessionId = `chat-cross-provider-model-${crypto.randomUUID()}`
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
+        const timeout = setTimeout(() => {
+          ws.close()
+          reject(new Error('Timed out waiting for cross-provider model rejection'))
+        }, 5_000)
+
+        ws.onmessage = (event) => {
+          const message = JSON.parse(event.data as string)
+          if (message.type === 'connected') {
+            ws.send(JSON.stringify({
+              type: 'set_runtime_config',
+              providerId: provider.id,
+              modelId: 'deepseek-v4-flash',
+            }))
+          } else if (message.type === 'error') {
+            clearTimeout(timeout)
+            expect(message).toMatchObject({
+              code: 'RUNTIME_CONFIG_INVALID',
+              message: 'The selected model is not configured for this provider.',
+            })
+            ws.close()
+            resolve()
+          }
+        }
+        ws.onerror = () => reject(new Error('WebSocket failed for cross-provider model rejection'))
+      })
+    } finally {
+      await providerService.deleteProvider(provider.id)
+    }
+  }, 10_000)
+
   it('should resume streaming to a reconnected client during an active turn', async () => {
     await withMockStreamDelay(150, async () => {
       const sessionId = `chat-reconnect-${crypto.randomUUID()}`

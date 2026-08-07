@@ -52,6 +52,7 @@ import {
   type TitleConversationTurn,
 } from '../services/titleService.js'
 import { parseSlashCommand } from '../../utils/slashCommandParsing.js'
+import { normalizeModelStringForAPI } from '../../utils/model/model.js'
 import { archiveRemoteSession } from '../../utils/teleport/api.js'
 import { shouldCreateWorktreeForSessionLaunch } from '../services/repositoryLaunchService.js'
 import { getDisconnectGraceMs } from './disconnectGraceConfig.js'
@@ -1445,6 +1446,17 @@ async function handleSetRuntimeConfig(
     let modelId = requestedModelId
     if (isGrokOfficialProviderId(message.providerId)) {
       modelId = (await getGrokReasoningEfforts(modelId)).modelId
+    }
+    if (typeof message.providerId === 'string') {
+      const provider = await providerService.getProvider(message.providerId).catch(() => null)
+      if (!provider || !providerSupportsRuntimeModel(provider, modelId)) {
+        sendMessage(ws, {
+          type: 'error',
+          message: 'The selected model is not configured for this provider.',
+          code: 'RUNTIME_CONFIG_INVALID',
+        })
+        return
+      }
     }
     const effortResolution = requestedEffort === undefined
       ? { valid: true, effort: undefined }
@@ -4029,6 +4041,18 @@ function isKnownRuntimeProviderId(
   )
 }
 
+function providerSupportsRuntimeModel(
+  provider: { models: Record<string, string>; modelCatalog?: Array<{ id: string }> },
+  modelId: string,
+): boolean {
+  const normalizedModelId = normalizeModelStringForAPI(modelId).toLowerCase()
+  return Object.values(provider.models).some(
+    (model) => normalizeModelStringForAPI(model).toLowerCase() === normalizedModelId,
+  ) || provider.modelCatalog?.some(
+    (model) => normalizeModelStringForAPI(model.id).toLowerCase() === normalizedModelId,
+  ) === true
+}
+
 async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> {
   const launchInfo = sessionId
     ? await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
@@ -4044,7 +4068,7 @@ async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> 
           ...(launchInfo.effortLevel ? { effort: launchInfo.effortLevel } : {}),
         }
       : undefined
-  const runtimeOverride = sessionId
+  let runtimeOverride = sessionId
     ? runtimeOverrides.get(sessionId) ?? persistedRuntimeOverride
     : undefined
   if (runtimeOverride) {
@@ -4060,6 +4084,35 @@ async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> 
         return {
           ...defaults,
           permissionMode: sessionPermissionMode ?? defaults.permissionMode,
+        }
+      }
+    }
+
+    if (typeof runtimeOverride.providerId === 'string') {
+      const { providers } = await providerService.listProviders()
+      const selectedProvider = providers.find((provider) => provider.id === runtimeOverride.providerId)
+      if (selectedProvider && !providerSupportsRuntimeModel(selectedProvider, runtimeOverride.modelId)) {
+        const matchingProviders = providers.filter(
+          (provider) => providerSupportsRuntimeModel(provider, runtimeOverride!.modelId),
+        )
+        if (matchingProviders.length === 1) {
+          const correctedRuntime = { ...runtimeOverride, providerId: matchingProviders[0].id }
+          console.warn(
+            `[WS] Corrected mismatched runtime provider for ${sessionId}: ${selectedProvider.id} -> ${correctedRuntime.providerId}`,
+          )
+          runtimeOverride = correctedRuntime
+          runtimeOverrides.set(sessionId!, correctedRuntime)
+          await persistSessionRuntimeConfig(sessionId!, correctedRuntime)
+        } else {
+          console.warn(
+            `[WS] Ignoring mismatched runtime model for ${sessionId}: ${runtimeOverride.modelId} is not configured for ${selectedProvider.id}`,
+          )
+          runtimeOverrides.delete(sessionId!)
+          const defaults = await getDefaultRuntimeSettings()
+          return {
+            ...defaults,
+            permissionMode: sessionPermissionMode ?? defaults.permissionMode,
+          }
         }
       }
     }
