@@ -1688,6 +1688,11 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   const ignoreProgrammaticScrollTopRef = useRef<number | null>(null)
   const userScrollIntentUntilRef = useRef(0)
   const lastSessionIdRef = useRef<string | null | undefined>(undefined)
+  const initialHistoryPositionedSessionRef = useRef<string | null>(null)
+  const previousHistoryPositionInputRef = useRef({
+    sessionId: resolvedSessionId,
+    messageCount: messages.length,
+  })
   const lastTailMessageIdBySessionRef = useRef(new Map<string, string | null>())
   const lastLiveFollowInputRef = useRef({
     sessionId: resolvedSessionId,
@@ -2008,6 +2013,56 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
       }
     }
   }, [resolvedSessionId, scrollToBottom])
+
+  // A restored session mounts once with an empty scroll container, then its
+  // complete history arrives in one store update. The old passive follow path
+  // could observe that update after the browser had already decided the empty
+  // container was at the top: virtual items were selected for the tail while
+  // the native viewport still showed the leading spacer. Position both layers
+  // in the history batch's layout phase, before that transient frame can paint.
+  useLayoutEffect(() => {
+    if (!resolvedSessionId) return
+    const previousInput = previousHistoryPositionInputRef.current
+    previousHistoryPositionInputRef.current = {
+      sessionId: resolvedSessionId,
+      messageCount: messages.length,
+    }
+    if (messages.length === 0) {
+      if (initialHistoryPositionedSessionRef.current === resolvedSessionId) {
+        initialHistoryPositionedSessionRef.current = null
+      }
+      return
+    }
+    const isInitialHistoryBatch =
+      previousInput.sessionId === resolvedSessionId &&
+      previousInput.messageCount === 0
+    if (!isInitialHistoryBatch) return
+    if (initialHistoryPositionedSessionRef.current === resolvedSessionId) return
+
+    const snapshot = sessionScrollSnapshots.get(resolvedSessionId)
+    if (snapshot && !snapshot.wasAtBottom) {
+      initialHistoryPositionedSessionRef.current = resolvedSessionId
+      return
+    }
+
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    initialHistoryPositionedSessionRef.current = resolvedSessionId
+    shouldAutoScrollRef.current = true
+    isProgrammaticScrollingRef.current = true
+    ignoreProgrammaticScrollUntilRef.current = performance.now() + 250
+    setScrollToBottomWithoutLayoutRead(container)
+    ignoreProgrammaticScrollTopRef.current = container.scrollTop
+    setVirtualViewport((current) => ({
+      scrollTop: container.scrollTop,
+      viewportHeight: container.clientHeight || current.viewportHeight || VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
+    }))
+    setIsAwayFromLatest(false)
+    requestAnimationFrame(() => {
+      isProgrammaticScrollingRef.current = false
+    })
+  }, [messages.length, resolvedSessionId])
 
   const tailMessage = messages[messages.length - 1] ?? null
   const tailMessageId = tailMessage?.id ?? null
