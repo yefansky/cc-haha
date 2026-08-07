@@ -354,6 +354,38 @@ describe('MessageList nested tool calls', () => {
     }
   })
 
+  it('positions the native viewport when an empty session receives a virtualized history batch', () => {
+    const { container } = render(<MessageList />)
+    const scroller = container.querySelector('.chat-scroll-area') as HTMLElement
+    let scrollTop = 0
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 })
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 16_000 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = Math.max(0, Math.min(value, 15_500)) },
+    })
+
+    act(() => {
+      useChatStore.setState({
+        sessions: {
+          [ACTIVE_TAB]: makeSessionState({
+            messages: Array.from({ length: 220 }, (_, index) => ({
+              id: `history-assistant-${index}`,
+              type: 'assistant_text',
+              content: `history batch line ${index}`,
+              timestamp: index,
+            })),
+          }),
+        },
+      })
+    })
+
+    expect(scrollTop).toBe(15_500)
+    expect(screen.queryByText('history batch line 0')).toBeNull()
+    expect(container.querySelector('[data-virtual-message-item]')).not.toBeNull()
+  })
+
   it('finds, mounts, navigates, and highlights matches outside a 120-item virtual window', async () => {
     const highlights = new Map<string, { ranges: Range[]; priority?: number }>()
     class TestHighlight {
