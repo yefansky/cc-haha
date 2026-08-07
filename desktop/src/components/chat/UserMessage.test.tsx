@@ -48,6 +48,31 @@ describe('UserMessage', () => {
     expect(screen.getByRole('button', { name: '复制提示词' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Copy prompt' })).toBeNull()
   })
+
+  it('expands the edit composer to the original prompt bubble width', () => {
+    const { container } = render(
+      <UserMessage
+        content="原始提示词"
+        editComposer={{
+          value: '修改后的提示词',
+          submitLabel: 'Send',
+          cancelLabel: 'Cancel',
+          onChange: vi.fn(),
+          onSubmit: vi.fn(),
+          onCancel: vi.fn(),
+        }}
+      />,
+    )
+
+    const shell = container.querySelector<HTMLElement>('[data-message-shell="user"]')
+    const editor = container.querySelector<HTMLElement>('[data-message-editor]')
+
+    expect(shell?.className).toContain('max-w-[82%]')
+    expect(shell?.className).toContain('lg:max-w-[640px]')
+    expect(shell?.className).toMatch(/(^|\s)w-full(\s|$)/)
+    expect(editor?.className).toMatch(/(^|\s)w-full(\s|$)/)
+    expect(screen.getByRole('textbox', { name: 'Edit prompt' }).className).toMatch(/(^|\s)w-full(\s|$)/)
+  })
 })
 
 // #1145. The prompt bubble rendered raw text, so a URL the user typed (or pasted

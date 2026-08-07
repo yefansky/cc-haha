@@ -6031,7 +6031,12 @@ describe('MessageList nested tool calls', () => {
     render(<MessageList />)
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit this prompt' }))[0]!)
     const editor = await screen.findByRole('textbox', { name: 'Edit prompt' })
+    const editShell = editor.closest<HTMLElement>('[data-message-shell="user"]')
+
     expect((editor as HTMLTextAreaElement).value).toBe('first prompt')
+    expect(editShell?.className).toMatch(/(^|\s)w-full(\s|$)/)
+    expect(editShell?.className).toContain('lg:max-w-[640px]')
+    expect(editor.parentElement?.className).toMatch(/(^|\s)w-full(\s|$)/)
     expect(screen.getByText('second prompt')).toBeTruthy()
     expect(sessionsApi.rewind).not.toHaveBeenCalled()
 
