@@ -22,6 +22,7 @@ import { H5AccessSettings } from './settings/H5AccessSettings'
 import { GeneralSettings } from './settings/GeneralSettings'
 import { AboutSettings } from './settings/AboutSettings'
 import { ProviderSettings } from './settings/ProviderSettings'
+import { LayoutSettings } from './settings/LayoutSettings'
 
 export function Settings() {
   const activeTab = useUIStore((s) => s.activeSettingsTab)
@@ -62,6 +63,7 @@ export function Settings() {
           <div className="flex-1 flex flex-col gap-0.5">
             <TabButton icon="dns" label={t('settings.tab.providers')} active={activeTab === 'providers'} onClick={() => setActiveTab('providers')} />
             <TabButton icon="tune" label={t('settings.tab.general')} active={activeTab === 'general'} onClick={() => setActiveTab('general')} />
+            <TabButton icon="view_quilt" label={t('settings.tab.layout')} active={activeTab === 'layout'} onClick={() => setActiveTab('layout')} />
             <TabButton icon="qr_code_2" label={t('settings.tab.h5Access')} active={activeTab === 'h5Access'} onClick={() => setActiveTab('h5Access')} />
             <TabButton icon="chat" label={t('settings.tab.adapters')} active={activeTab === 'adapters'} onClick={() => setActiveTab('adapters')} />
             <TabButton icon="terminal" label={t('settings.tab.terminal')} active={activeTab === 'terminal'} onClick={() => setActiveTab('terminal')} />
@@ -86,6 +88,7 @@ export function Settings() {
           {activeTab === 'providers' && <ProviderSettings />}
           {activeTab === 'activity' && <ActivitySettings />}
           {activeTab === 'general' && <GeneralSettings />}
+          {activeTab === 'layout' && <LayoutSettings />}
           {activeTab === 'h5Access' && <H5AccessSettings />}
           {activeTab === 'adapters' && <AdapterSettings />}
           {activeTab === 'terminal' && <TerminalSettings showPreferences />}

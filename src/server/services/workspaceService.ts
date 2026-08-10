@@ -17,7 +17,7 @@ const MAX_PREVIEW_BYTES = 1024 * 1024
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
-const AUTO_ENCODING_SAMPLE_BYTES = 300
+const AUTO_ENCODING_SAMPLE_BYTES = 16 * 1024
 // `svn status --xml --no-ignore` emits one XML element for every changed or
 // unversioned path. Large legacy workspaces can legitimately exceed the Git
 // command buffer even though SVN completed successfully.
@@ -43,12 +43,18 @@ function decodeWorkspaceText(buffer: Buffer, requestedEncoding: WorkspaceTextEnc
   }
 }
 
+function decodeCommandOutput(value: string | Buffer | undefined): string {
+  if (typeof value === 'string') return value
+  return value ? decodeWorkspaceText(value, 'auto').content : ''
+}
+
 function detectWorkspaceTextEncoding(buffer: Buffer): WorkspaceTextEncoding {
-  // A small sample is enough to reject malformed UTF-8 while keeping auto-detect
-  // instantaneous. 300 bytes covers roughly the first 100 Chinese characters.
+  // Inspect enough of legacy source files to get past long ASCII headers. When
+  // the sample stops in the middle of a UTF-8 character, streaming validation
+  // keeps that incomplete trailing sequence from becoming a false GBK signal.
   const sample = buffer.subarray(0, AUTO_ENCODING_SAMPLE_BYTES)
   try {
-    new TextDecoder('utf-8', { fatal: true }).decode(sample)
+    new TextDecoder('utf-8', { fatal: true }).decode(sample, { stream: sample.length < buffer.length })
     return 'utf8'
   } catch {
     return 'gbk'
@@ -1935,7 +1941,7 @@ export class WorkspaceService {
         ? { kind: 'ok' as const, additions: 0, deletions: 0 }
         : entry.status === 'untracked'
         ? await this.getUntrackedStats(entry.absolutePath)
-        : await this.getSvnDiffStats(svnRoot, entry.repoPath)
+        : await this.getSvnDiffStatsForCanonicalPath(entry.absolutePath)
       if (stats.kind === 'error') throw new Error(stats.message)
       return {
         path: entry.path,
@@ -2134,6 +2140,7 @@ export class WorkspaceService {
     }
 
     const targetName = path.basename(canonicalTargetPath)
+    const lossyWindowsTargetName = targetName.replace(/[^\x00-\x7f]/g, '?')
     const blocks = result.stdout.split(/(?=^Index: )/m)
     const indexedBlocks = blocks.filter((block) => /^Index: /m.test(block))
     const matchingBlock = indexedBlocks.find((block) => {
@@ -2142,11 +2149,12 @@ export class WorkspaceService {
       const indexName = path.basename(indexPath)
       return process.platform === 'win32'
         ? indexName.toLowerCase() === targetName.toLowerCase()
+          || indexName.toLowerCase() === lossyWindowsTargetName.toLowerCase()
         : indexName === targetName
     })
-    // Some Windows SVN builds emit non-ASCII Index paths through the active
-    // code page even though diff content is UTF-8. A file-parent directory with
-    // exactly one changed target is still unambiguous.
+    // Some Windows SVN builds replace every non-ASCII character in Index paths
+    // with '?'. Match that deterministic lossy name before falling back to the
+    // only changed target in a file-parent directory.
     return { kind: 'ok', diff: matchingBlock ?? (indexedBlocks.length === 1 ? indexedBlocks[0]! : '') }
   }
 
@@ -2430,17 +2438,6 @@ export class WorkspaceService {
     }
   }
 
-  private async getSvnDiffStats(workspaceRoot: string, relativePath: string): Promise<DiffStatsResult> {
-    const result = await this.runSvn(workspaceRoot, ['diff', '--', relativePath])
-    if (result.code !== 0) {
-      return {
-        kind: 'error',
-        message: this.formatSvnError('Failed to read SVN diff stats', ['diff', '--', relativePath], workspaceRoot, result),
-      }
-    }
-    return { kind: 'ok', ...this.countSvnDiffStats(result.stdout) }
-  }
-
   private async getSvnDiffStatsForCanonicalPath(canonicalTargetPath: string): Promise<DiffStatsResult> {
     const result = await this.runSvnDiffForCanonicalPath(canonicalTargetPath)
     if (result.kind === 'error') return result
@@ -2523,9 +2520,13 @@ export class WorkspaceService {
         cwd: workDir,
         timeout: GIT_TIMEOUT_MS,
         maxBuffer,
-        encoding: 'utf8',
+        encoding: 'buffer',
       })
-      return { stdout: result.stdout, stderr: result.stderr, code: 0 }
+      return {
+        stdout: decodeCommandOutput(result.stdout),
+        stderr: decodeCommandOutput(result.stderr),
+        code: 0,
+      }
     } catch (error) {
       const err = error as NodeJS.ErrnoException & {
         stdout?: string | Buffer
@@ -2533,8 +2534,8 @@ export class WorkspaceService {
         code?: number | string
       }
       return {
-        stdout: typeof err.stdout === 'string' ? err.stdout : Buffer.isBuffer(err.stdout) ? err.stdout.toString('utf8') : '',
-        stderr: typeof err.stderr === 'string' ? err.stderr : Buffer.isBuffer(err.stderr) ? err.stderr.toString('utf8') : '',
+        stdout: decodeCommandOutput(err.stdout),
+        stderr: decodeCommandOutput(err.stderr),
         code: typeof err.code === 'number' ? err.code : 1,
       }
     }

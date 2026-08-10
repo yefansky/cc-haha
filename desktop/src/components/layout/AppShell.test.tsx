@@ -177,7 +177,7 @@ describe('AppShell boot flow', () => {
     mocks.tabState.activeTabId = null
     mocks.tabState.tabs = []
     useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useUIStore.setState({ sidebarOpen: true })
+    useUIStore.setState({ sidebarOpen: true, layoutStyle: 'classic', sessionSidebarPlacement: 'left' })
     Reflect.deleteProperty(window, 'desktopHost')
     window.history.pushState({}, '', '/')
   })
@@ -191,6 +191,20 @@ describe('AppShell boot flow', () => {
     expect(screen.getByText('tabs loaded')).toBeInTheDocument()
     expect(screen.getByText('content loaded')).toBeInTheDocument()
     expect(screen.getByText('updates loaded')).toBeInTheDocument()
+  })
+
+  it('moves the unchanged session sidebar to the far right from the layout preference', async () => {
+    useUIStore.setState({ layoutStyle: 'vscode', sessionSidebarPlacement: 'right' })
+
+    render(<AppShell />)
+
+    const sidebar = await screen.findByTestId('sidebar-shell')
+    expect(sidebar).toHaveClass('order-last')
+    expect(sidebar).toHaveAttribute('data-placement', 'right')
+    expect(sidebar.parentElement).toHaveAttribute('data-layout-style', 'vscode')
+    expect(sidebar.parentElement).toHaveAttribute('data-sidebar-placement', 'right')
+    expect(screen.getByText('sidebar loaded')).toBeInTheDocument()
+    expect(screen.getByText('content loaded')).toBeInTheDocument()
   })
 
   it('keeps the last real session as Settings project context', async () => {

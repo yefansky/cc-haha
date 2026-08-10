@@ -70,7 +70,7 @@ describe('workspacePanelStore', () => {
     const store = useWorkspacePanelStore.getState()
 
     expect(store.isPanelOpen('session-a')).toBe(false)
-    expect(store.getActiveView('session-a')).toBe('changed')
+    expect(store.getActiveView('session-a')).toBe('all')
     expect(store.width).toBe(WORKSPACE_PANEL_DEFAULT_WIDTH)
 
     store.openPanel('session-a')
@@ -79,7 +79,7 @@ describe('workspacePanelStore', () => {
     expect(useWorkspacePanelStore.getState().isPanelOpen('session-a')).toBe(true)
     expect(useWorkspacePanelStore.getState().getActiveView('session-a')).toBe('all')
     expect(useWorkspacePanelStore.getState().isPanelOpen('session-b')).toBe(false)
-    expect(useWorkspacePanelStore.getState().getActiveView('session-b')).toBe('changed')
+    expect(useWorkspacePanelStore.getState().getActiveView('session-b')).toBe('all')
 
     store.togglePanel('session-b')
     expect(useWorkspacePanelStore.getState().isPanelOpen('session-b')).toBe(true)
@@ -91,7 +91,7 @@ describe('workspacePanelStore', () => {
 
     store.setWidth(120)
     expect(useWorkspacePanelStore.getState().width).toBe(WORKSPACE_PANEL_MIN_WIDTH)
-    store.setWidth(1200)
+    store.setWidth(5000)
     expect(useWorkspacePanelStore.getState().width).toBe(WORKSPACE_PANEL_MAX_WIDTH)
   })
 
@@ -186,7 +186,7 @@ describe('workspacePanelStore', () => {
     expect(mocks.getWorkspaceStatusMock).toHaveBeenCalledTimes(2)
   })
 
-  it('defaults an empty changed-files status to the all-files view', async () => {
+  it('defaults new sessions to the all-files view', async () => {
     mocks.getWorkspaceStatusMock.mockResolvedValue({
       state: 'ok',
       workDir: '/repo',
@@ -197,7 +197,7 @@ describe('workspacePanelStore', () => {
     })
 
     useWorkspacePanelStore.getState().openPanel('session-empty-changes')
-    expect(useWorkspacePanelStore.getState().getActiveView('session-empty-changes')).toBe('changed')
+    expect(useWorkspacePanelStore.getState().getActiveView('session-empty-changes')).toBe('all')
 
     await useWorkspacePanelStore.getState().loadStatus('session-empty-changes')
 
@@ -205,7 +205,7 @@ describe('workspacePanelStore', () => {
     expect(useWorkspacePanelStore.getState().getActiveView('session-empty-changes')).toBe('all')
   })
 
-  it('keeps the changed-files view when status contains changes', async () => {
+  it('keeps the default all-files view when status contains changes', async () => {
     mocks.getWorkspaceStatusMock.mockResolvedValue({
       state: 'ok',
       workDir: '/repo',
@@ -225,10 +225,10 @@ describe('workspacePanelStore', () => {
     useWorkspacePanelStore.getState().openPanel('session-has-changes')
     await useWorkspacePanelStore.getState().loadStatus('session-has-changes')
 
-    expect(useWorkspacePanelStore.getState().getActiveView('session-has-changes')).toBe('changed')
+    expect(useWorkspacePanelStore.getState().getActiveView('session-has-changes')).toBe('all')
   })
 
-  it('returns to changed-files when a refreshed default all-files view now has changes', async () => {
+  it('keeps the default all-files view when refreshed status gains changes', async () => {
     mocks.getWorkspaceStatusMock
       .mockResolvedValueOnce({
         state: 'ok',
@@ -260,7 +260,7 @@ describe('workspacePanelStore', () => {
 
     await useWorkspacePanelStore.getState().loadStatus('session-refresh-changes')
 
-    expect(useWorkspacePanelStore.getState().getActiveView('session-refresh-changes')).toBe('changed')
+    expect(useWorkspacePanelStore.getState().getActiveView('session-refresh-changes')).toBe('all')
   })
 
   it('does not override an explicit all-files selection when refreshed status has changes', async () => {

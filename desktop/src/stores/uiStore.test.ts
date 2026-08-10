@@ -413,3 +413,40 @@ describe('uiStore settings tab persistence', () => {
     expect(useUIStore.getState().activeSettingsTab).toBe('providers')
   })
 })
+
+describe('uiStore desktop layout persistence', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    window.localStorage.clear()
+  })
+
+  it('keeps classic layout and a left session list as backward-compatible defaults', async () => {
+    const { useUIStore } = await import('./uiStore')
+
+    expect(useUIStore.getState().layoutStyle).toBe('classic')
+    expect(useUIStore.getState().sessionSidebarPlacement).toBe('left')
+  })
+
+  it('restores VS Code layout and right session-list placement after the store is recreated', async () => {
+    const first = await import('./uiStore')
+
+    first.useUIStore.getState().setLayoutStyle('vscode')
+    first.useUIStore.getState().setSessionSidebarPlacement('right')
+
+    vi.resetModules()
+    const recreated = await import('./uiStore')
+
+    expect(recreated.useUIStore.getState().layoutStyle).toBe('vscode')
+    expect(recreated.useUIStore.getState().sessionSidebarPlacement).toBe('right')
+  })
+
+  it('normalizes unknown values from older or corrupted storage', async () => {
+    window.localStorage.setItem('cc-haha-layout-style', 'editor')
+    window.localStorage.setItem('cc-haha-session-sidebar-placement', 'floating')
+
+    const { useUIStore } = await import('./uiStore')
+
+    expect(useUIStore.getState().layoutStyle).toBe('classic')
+    expect(useUIStore.getState().sessionSidebarPlacement).toBe('left')
+  })
+})

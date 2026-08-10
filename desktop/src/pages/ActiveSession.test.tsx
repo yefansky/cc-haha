@@ -24,8 +24,8 @@ vi.mock('../components/chat/ChatInput', () => ({
 }))
 
 vi.mock('../components/workbench/WorkbenchPanel', () => ({
-  WorkbenchPanel: ({ sessionId }: { sessionId: string }) => (
-    <div data-testid="workspace-panel">workspace:{sessionId}</div>
+  WorkbenchPanel: ({ sessionId, layout }: { sessionId: string; layout?: string }) => (
+    <div data-testid="workspace-panel" data-layout={layout}>workspace:{sessionId}</div>
   ),
 }))
 
@@ -80,6 +80,7 @@ import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
 import { WORKSPACE_PANEL_DEFAULT_WIDTH } from '../stores/workspacePanelStore'
 import { useTerminalPanelStore } from '../stores/terminalPanelStore'
 import { useActivityPanelStore } from '../stores/activityPanelStore'
+import { useUIStore } from '../stores/uiStore'
 import {
   TERMINAL_PANEL_DEFAULT_HEIGHT,
   TERMINAL_PANEL_MAX_HEIGHT,
@@ -100,6 +101,7 @@ afterEach(() => {
   useTerminalPanelStore.setState(useTerminalPanelStore.getInitialState(), true)
   useActivityPanelStore.setState(useActivityPanelStore.getInitialState(), true)
   useCLITaskStore.setState(useCLITaskStore.getInitialState(), true)
+  useUIStore.setState({ layoutStyle: 'classic', sessionSidebarPlacement: 'left' })
 })
 
 describe('ActiveSession task polling', () => {
@@ -1576,6 +1578,76 @@ describe('ActiveSession task polling', () => {
     })
 
     expect(useWorkspacePanelStore.getState().width).toBe(526)
+  })
+
+  it('keeps the VS Code workspace open to the left of a usable chat column', () => {
+    const sessionId = 'vscode-layout-session'
+    useUIStore.setState({ layoutStyle: 'vscode' })
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'VS Code Layout',
+        createdAt: '2026-08-10T00:00:00.000Z',
+        modifiedAt: '2026-08-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/repo',
+        workDir: '/repo',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'VS Code Layout', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-vscode', type: 'assistant_text', content: 'ready', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    const contentRow = screen.getByTestId('active-session-content-row')
+    const workbenchPanel = screen.getByTestId('workbench-panel')
+    const chatColumn = screen.getByTestId('active-session-chat-column')
+    const resizeHandle = screen.getByTestId('workspace-resize-handle')
+
+    expect(workbenchPanel).toHaveAttribute('data-layout', 'vscode')
+    expect(within(workbenchPanel).getByTestId('workspace-panel')).toHaveAttribute('data-layout', 'vscode')
+    expect(workbenchPanel).toHaveClass('order-first')
+    expect(chatColumn).toHaveClass('order-last')
+    expect(chatColumn).toHaveClass('flex-1')
+    expect(chatColumn).not.toHaveClass('shrink-0')
+    expect(chatColumn).not.toHaveClass('w-[min(40%,520px)]')
+    expect(within(chatColumn).getByTestId('chat-input')).toHaveAttribute('data-compact', 'true')
+    expect(contentRow).toContainElement(workbenchPanel)
+    expect(contentRow).toContainElement(chatColumn)
+
+    act(() => {
+      fireEvent.keyDown(resizeHandle, { key: 'ArrowRight' })
+    })
+    expect(useWorkspacePanelStore.getState().width).toBe(WORKSPACE_PANEL_DEFAULT_WIDTH + 32)
   })
 
   it('does not render the workspace panel when closed or for member sessions', () => {

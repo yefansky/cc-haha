@@ -43,6 +43,7 @@ import {
   hasRunningBackgroundTasks as hasAnyRunningBackgroundTasks,
 } from '../lib/backgroundTasks'
 import { useActivityPanelStore } from '../stores/activityPanelStore'
+import { useUIStore } from '../stores/uiStore'
 import { getSessionBrowsablePath, getSessionWorkspaceState } from '../lib/sessionWorkspace'
 import type { AgentTaskNotification, UIMessage } from '../types/chat'
 
@@ -149,7 +150,13 @@ function getRenderedWorkspacePanelWidth(panelRef: RefObject<HTMLElement>, fallba
     : fallbackWidth
 }
 
-function WorkspaceResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement> }) {
+function WorkspaceResizeHandle({
+  panelRef,
+  placement = 'right',
+}: {
+  panelRef: RefObject<HTMLElement>
+  placement?: 'left' | 'right'
+}) {
   const t = useTranslation()
   const width = useWorkspacePanelStore((state) => state.width)
   const setWidth = useWorkspacePanelStore((state) => state.setWidth)
@@ -166,7 +173,8 @@ function WorkspaceResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement> 
     const handlePointerMove = (event: PointerEvent) => {
       const current = dragStateRef.current
       if (!current) return
-      setWidth(current.startWidth + current.startX - event.clientX)
+      const delta = event.clientX - current.startX
+      setWidth(current.startWidth + (placement === 'left' ? delta : -delta))
     }
 
     const handlePointerUp = () => {
@@ -186,7 +194,7 @@ function WorkspaceResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement> 
       window.removeEventListener('pointerup', handlePointerUp)
       window.removeEventListener('pointercancel', handlePointerUp)
     }
-  }, [dragState, setWidth])
+  }, [dragState, placement, setWidth])
 
   return (
     <div
@@ -203,11 +211,13 @@ function WorkspaceResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement> 
       }}
       onKeyDown={(event) => {
         const renderedWidth = getRenderedWorkspacePanelWidth(panelRef, width)
-        if (event.key === 'ArrowLeft') {
+        const growKey = placement === 'left' ? 'ArrowRight' : 'ArrowLeft'
+        const shrinkKey = placement === 'left' ? 'ArrowLeft' : 'ArrowRight'
+        if (event.key === growKey) {
           event.preventDefault()
           setWidth(renderedWidth + WORKSPACE_RESIZE_STEP)
         }
-        if (event.key === 'ArrowRight') {
+        if (event.key === shrinkKey) {
           event.preventDefault()
           setWidth(renderedWidth - WORKSPACE_RESIZE_STEP)
         }
@@ -301,6 +311,7 @@ function TerminalResizeHandle() {
 
 export function ActiveSession() {
   const isMobileLayout = useMobileViewport() && !isDesktopRuntime()
+  const layoutStyle = useUIStore((state) => state.layoutStyle)
   const workbenchPanelRef = useRef<HTMLElement>(null)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const activeTabType = useTabStore((s) => s.tabs.find((tab) => tab.sessionId === s.activeTabId)?.type ?? null)
@@ -333,9 +344,12 @@ export function ActiveSession() {
   const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
   const activeTeam = useTeamStore((s) => s.activeTeam)
   const isMemberSession = !!memberInfo
+  const isVscodeLayout = layoutStyle === 'vscode' && Boolean(
+    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout,
+  )
   const showWorkbench = useWorkspacePanelStore((state) =>
     activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
-      ? state.isPanelOpen(activeTabId)
+      ? isVscodeLayout || state.isPanelOpen(activeTabId)
       : false,
   )
   const showRightPanel = showWorkbench
@@ -554,7 +568,11 @@ export function ActiveSession() {
             'transition-[padding] duration-200 ease-out motion-reduce:transition-none',
             // 340px panel + 20px right inset leaves the 8px gap the handoff draws.
             isActivityRailOpen ? 'pr-[352px]' : '',
-            showRightPanel ? CHAT_COLUMN_WITH_WORKSPACE_CLASS : isMobileLayout ? 'flex-1' : 'min-w-[360px] flex-1',
+            isVscodeLayout
+              ? 'order-last min-w-[300px] flex-1 border-l border-[var(--color-border)] bg-[var(--color-surface)]'
+              : showRightPanel
+                ? CHAT_COLUMN_WITH_WORKSPACE_CLASS
+                : isMobileLayout ? 'flex-1' : 'min-w-[360px] flex-1',
           ].filter(Boolean).join(' ')}
         >
           {isMemberSession && (
@@ -803,14 +821,17 @@ export function ActiveSession() {
 
         {showWorkbench ? (
           <>
-            <WorkspaceResizeHandle panelRef={workbenchPanelRef} />
+            <WorkspaceResizeHandle panelRef={workbenchPanelRef} placement={isVscodeLayout ? 'left' : 'right'} />
             <aside
               ref={workbenchPanelRef}
               data-testid="workbench-panel"
-              className="flex h-full shrink-0 flex-col bg-[var(--color-surface)]"
-              style={{ width: rightPanelWidth, maxWidth: '62%', minWidth: 'min(420px, 54%)' }}
+              data-layout={isVscodeLayout ? 'vscode' : 'standard'}
+              className={`flex h-full shrink-0 flex-col bg-[var(--color-surface)]${isVscodeLayout ? ' order-first' : ''}`}
+              style={isVscodeLayout
+                ? { width: rightPanelWidth, maxWidth: 'calc(100% - 300px)', minWidth: 'min(420px, 55%)' }
+                : { width: rightPanelWidth, maxWidth: '62%', minWidth: 'min(420px, 54%)' }}
             >
-              <WorkbenchPanel sessionId={activeTabId} />
+              <WorkbenchPanel sessionId={activeTabId} layout={isVscodeLayout ? 'vscode' : 'standard'} />
             </aside>
           </>
         ) : null}

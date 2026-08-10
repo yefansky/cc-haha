@@ -26,6 +26,11 @@ import {
 
 const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'cc-haha-active-settings-tab'
 const SIDEBAR_WIDTH_STORAGE_KEY = 'cc-haha-sidebar-width'
+const LAYOUT_STYLE_STORAGE_KEY = 'cc-haha-layout-style'
+const SESSION_SIDEBAR_PLACEMENT_STORAGE_KEY = 'cc-haha-session-sidebar-placement'
+
+export type LayoutStyle = 'classic' | 'vscode'
+export type SessionSidebarPlacement = 'left' | 'right'
 
 export const SIDEBAR_MIN_WIDTH = 240
 export const SIDEBAR_MAX_WIDTH = 480
@@ -43,9 +48,24 @@ function getStoredSidebarWidth(): number {
   return SIDEBAR_DEFAULT_WIDTH
 }
 
+function getStoredLayoutStyle(): LayoutStyle {
+  try {
+    return localStorage.getItem(LAYOUT_STYLE_STORAGE_KEY) === 'vscode' ? 'vscode' : 'classic'
+  } catch { /* localStorage unavailable */ }
+  return 'classic'
+}
+
+function getStoredSessionSidebarPlacement(): SessionSidebarPlacement {
+  try {
+    return localStorage.getItem(SESSION_SIDEBAR_PLACEMENT_STORAGE_KEY) === 'right' ? 'right' : 'left'
+  } catch { /* localStorage unavailable */ }
+  return 'left'
+}
+
 const SETTINGS_TABS = [
   'providers',
   'activity',
+  'layout',
   'general',
   'h5Access',
   'adapters',
@@ -233,6 +253,7 @@ export type Toast = {
 export type SettingsTab =
   | 'providers'
   | 'activity'
+  | 'layout'
   | 'general'
   | 'h5Access'
   | 'adapters'
@@ -262,6 +283,10 @@ type UIStore = {
   sidebarOpen: boolean
   /** Expanded-state sidebar width in px, user-resizable within the clamp range. */
   sidebarWidth: number
+  /** Overall desktop arrangement. VS Code keeps the workspace beside chat. */
+  layoutStyle: LayoutStyle
+  /** Which outer edge owns the project/session list on desktop. */
+  sessionSidebarPlacement: SessionSidebarPlacement
   activeView: ActiveView
   activeSettingsTab: SettingsTab
   pendingSettingsTab: SettingsTab | null
@@ -275,6 +300,8 @@ type UIStore = {
   toggleSidebar: () => void
   setSidebarOpen: (open: boolean) => void
   setSidebarWidth: (width: number) => void
+  setLayoutStyle: (style: LayoutStyle) => void
+  setSessionSidebarPlacement: (placement: SessionSidebarPlacement) => void
   setActiveView: (view: ActiveView) => void
   setActiveSettingsTab: (tab: SettingsTab) => void
   setPendingSettingsTab: (tab: SettingsTab | null) => void
@@ -294,6 +321,8 @@ export const useUIStore = create<UIStore>((set) => ({
   darkTheme: readStoredDarkTheme(),
   sidebarOpen: true,
   sidebarWidth: getStoredSidebarWidth(),
+  layoutStyle: getStoredLayoutStyle(),
+  sessionSidebarPlacement: getStoredSessionSidebarPlacement(),
   activeView: 'code',
   activeSettingsTab: getStoredSettingsTab(),
   pendingSettingsTab: null,
@@ -363,6 +392,14 @@ export const useUIStore = create<UIStore>((set) => ({
     const clamped = clampSidebarWidth(width)
     persist(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped))
     set({ sidebarWidth: clamped })
+  },
+  setLayoutStyle: (style) => {
+    persist(LAYOUT_STYLE_STORAGE_KEY, style)
+    set({ layoutStyle: style })
+  },
+  setSessionSidebarPlacement: (placement) => {
+    persist(SESSION_SIDEBAR_PLACEMENT_STORAGE_KEY, placement)
+    set({ sessionSidebarPlacement: placement })
   },
   setActiveView: (view) => set({ activeView: view }),
   setActiveSettingsTab: (tab) => {

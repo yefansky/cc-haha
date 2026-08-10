@@ -5,6 +5,7 @@ import {
   clampSidebarWidth,
   useUIStore,
 } from '../stores/uiStore'
+import type { SessionSidebarPlacement } from '../stores/uiStore'
 
 // Dragging left past the minimum keeps the sidebar pinned at that minimum until
 // the pointer crosses COLLAPSE_AT, which drops it to the rail; dragging back out
@@ -26,7 +27,7 @@ const RESIZING_CLASS = 'sidebar-shell--resizing'
  * and a drag that ends in a collapse leaves the remembered width alone so
  * re-opening restores the size the user had chosen.
  */
-export function useSidebarResize(enabled: boolean) {
+export function useSidebarResize(enabled: boolean, placement: SessionSidebarPlacement = 'left') {
   const sidebarWidth = useUIStore((s) => s.sidebarWidth)
   const draggingRef = useRef(false)
   // A callback ref, not a plain one: the shell is behind the startup gate, so
@@ -65,11 +66,12 @@ export function useSidebarResize(enabled: boolean) {
 
   const trackPointer = useCallback((clientX: number) => {
     if (!shell) return
-    // The sidebar is flush against the window's left edge, so the pointer's
-    // clientX is the requested width outright — no grab-offset to drift.
+    // The sidebar is flush against one window edge, so the pointer's distance
+    // from that edge is the requested width outright — no grab-offset to drift.
+    const requestedWidth = placement === 'right' ? window.innerWidth - clientX : clientX
     const { sidebarOpen, sidebarWidth: storedWidth, setSidebarOpen } = useUIStore.getState()
 
-    if (sidebarOpen && clientX < COLLAPSE_AT) {
+    if (sidebarOpen && requestedWidth < COLLAPSE_AT) {
       // Restore the remembered width before collapsing: the rail ignores this
       // variable, and leaving the abandoned mid-drag value behind would shrink
       // the sidebar the next time it is opened from the toggle button.
@@ -79,12 +81,12 @@ export function useSidebarResize(enabled: boolean) {
       return
     }
 
-    if (!sidebarOpen && clientX <= EXPAND_AT) return
+    if (!sidebarOpen && requestedWidth <= EXPAND_AT) return
 
     shell.classList.add(RESIZING_CLASS)
-    applyWidth(clientX)
+    applyWidth(requestedWidth)
     if (!sidebarOpen) setSidebarOpen(true)
-  }, [applyWidth, shell])
+  }, [applyWidth, placement, shell])
 
   // Listening on the window rather than capturing on the handle keeps the drag
   // alive when the pointer runs past the window edge, which is exactly where a
@@ -117,19 +119,21 @@ export function useSidebarResize(enabled: boolean) {
     if (!enabled) return
     const { sidebarOpen, sidebarWidth: current, setSidebarOpen, setSidebarWidth } = useUIStore.getState()
 
-    if (event.key === 'ArrowLeft') {
+    const shrinkKey = placement === 'right' ? 'ArrowRight' : 'ArrowLeft'
+    const growKey = placement === 'right' ? 'ArrowLeft' : 'ArrowRight'
+    if (event.key === shrinkKey) {
       event.preventDefault()
       if (!sidebarOpen) return
       if (current <= SIDEBAR_MIN_WIDTH) setSidebarOpen(false)
       else setSidebarWidth(current - RESIZE_STEP)
       return
     }
-    if (event.key === 'ArrowRight') {
+    if (event.key === growKey) {
       event.preventDefault()
       if (sidebarOpen) setSidebarWidth(current + RESIZE_STEP)
       else setSidebarOpen(true)
     }
-  }, [enabled])
+  }, [enabled, placement])
 
   const onDoubleClick = useCallback(() => {
     if (!enabled || !shell) return

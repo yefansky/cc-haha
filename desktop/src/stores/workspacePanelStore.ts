@@ -10,7 +10,7 @@ import {
 
 export const WORKSPACE_PANEL_DEFAULT_WIDTH = 860
 export const WORKSPACE_PANEL_MIN_WIDTH = 420
-export const WORKSPACE_PANEL_MAX_WIDTH = 1120
+export const WORKSPACE_PANEL_MAX_WIDTH = 3200
 
 export type WorkspacePanelView = 'changed' | 'all'
 export type WorkbenchMode = 'workspace' | 'browser' | 'context-audit' | 'review'
@@ -141,7 +141,7 @@ type WorkspacePanelStore = {
 
 const DEFAULT_PANEL_STATE: WorkspacePanelSessionState = {
   isOpen: false,
-  activeView: 'changed',
+  activeView: 'all',
 }
 
 const DEFAULT_WORKBENCH_MODE: WorkbenchMode = 'workspace'
@@ -448,18 +448,12 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
 
       set((state) => {
         const panel = getSessionPanelState(state.panelBySession, sessionId)
-        const nextActiveView =
-          !panel.hasUserSelectedView && result.state === 'ok'
-            ? result.changedFiles.length > 0 ? 'changed' : 'all'
-            : panel.activeView
-
         const workDirKey = getWorkDirCacheKey(result.workDir)
         return {
           panelBySession: {
             ...state.panelBySession,
             [sessionId]: {
               ...panel,
-              activeView: nextActiveView,
             },
           },
           statusBySession: {

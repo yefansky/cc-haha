@@ -60,8 +60,11 @@ export function AppShell() {
     : null
   const wasMobileShellRef = useRef(false)
   const sidebarWidth = useUIStore((s) => s.sidebarWidth)
+  const layoutStyle = useUIStore((s) => s.layoutStyle)
+  const sessionSidebarPlacement = useUIStore((s) => s.sessionSidebarPlacement)
+  const effectiveSidebarPlacement = isMobileShell ? 'left' : sessionSidebarPlacement
   const effectiveSidebarOpen = isMobileShell ? mobileSidebarOpen : sidebarOpen
-  const sidebarResize = useSidebarResize(!isMobileShell)
+  const sidebarResize = useSidebarResize(!isMobileShell, effectiveSidebarPlacement)
   const activeTab = tabs.find((tab) => tab.sessionId === activeTabId)
   const isActiveChatTab = isChatTab(activeTab)
   const mobileSessionTitle = activeSession?.title || activeTab?.title || t('session.untitled')
@@ -288,7 +291,11 @@ export function AppShell() {
   }
 
   return (
-    <div className={`app-shell app-shell-viewport flex overflow-hidden bg-[var(--color-surface)]${isMobileShell ? ' app-shell--mobile' : ''}`}>
+    <div
+      data-layout-style={layoutStyle}
+      data-sidebar-placement={effectiveSidebarPlacement}
+      className={`app-shell app-shell-viewport flex overflow-hidden bg-[var(--color-surface)]${isMobileShell ? ' app-shell--mobile' : ''}`}
+    >
       {isMobileShell && effectiveSidebarOpen ? (
         <button
           type="button"
@@ -304,7 +311,8 @@ export function AppShell() {
         data-testid="sidebar-shell"
         data-state={effectiveSidebarOpen ? 'open' : 'closed'}
         data-mobile={isMobileShell ? 'true' : 'false'}
-        className={`sidebar-shell${isMobileShell ? ' sidebar-shell--mobile' : ''}`}
+        data-placement={effectiveSidebarPlacement}
+        className={`sidebar-shell${isMobileShell ? ' sidebar-shell--mobile' : ''}${effectiveSidebarPlacement === 'right' ? ' order-last' : ''}`}
         {...sidebarHiddenProps}
       >
         {!isMobileShell || effectiveSidebarOpen ? (

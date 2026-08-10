@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { ArrowLeft, ClipboardCheck, FolderOpen, Globe, Maximize2, ShieldCheck, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
@@ -16,6 +17,7 @@ import { ChangeReviewPanel } from '../change-review/ChangeReviewPanel'
 type WorkbenchPanelProps = {
   sessionId: string
   variant?: 'panel' | 'tab'
+  layout?: 'standard' | 'vscode'
   onClose?: () => void
 }
 
@@ -36,13 +38,18 @@ const MODE_ITEMS: ReadonlyArray<{
  * browser surface behind a single per-session mode switch (file ↔ browser),
  * sharing the panel's open state and width via {@link useWorkspacePanelStore}.
  */
-export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: WorkbenchPanelProps) {
+export function WorkbenchPanel({ sessionId, variant = 'panel', layout = 'standard', onClose }: WorkbenchPanelProps) {
   const t = useTranslation()
   const mode = useWorkspacePanelStore((state) => state.getMode(sessionId))
   const setMode = useWorkspacePanelStore((state) => state.setMode)
   const closePanel = useWorkspacePanelStore((state) => state.closePanel)
   const ensureBlankBrowser = useBrowserPanelStore((state) => state.ensureBlank)
   const isTabVariant = variant === 'tab'
+  const isVscodeLayout = layout === 'vscode'
+
+  useEffect(() => {
+    if (isVscodeLayout) setMode(sessionId, 'workspace')
+  }, [isVscodeLayout, sessionId, setMode])
 
   const handleModeSelect = (nextMode: WorkbenchMode) => {
     if (nextMode === 'browser') {
@@ -123,7 +130,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
         </div>
 
         <div className="ml-auto flex shrink-0 items-center gap-1">
-          {!isTabVariant && (
+          {!isTabVariant && !isVscodeLayout && (
             <IconButton
               icon={<Maximize2 size={15} strokeWidth={2} aria-hidden="true" />}
               label={t('workbench.expand')}
@@ -132,14 +139,16 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
               tone="muted"
             />
           )}
-          <IconButton
-            icon={<X size={16} strokeWidth={2} aria-hidden="true" />}
-            label={t('workbench.close')}
-            onClick={handleClose}
-            size="sm"
-            tone="muted"
-            showTooltip={false}
-          />
+          {!isVscodeLayout && (
+            <IconButton
+              icon={<X size={16} strokeWidth={2} aria-hidden="true" />}
+              label={t('workbench.close')}
+              onClick={handleClose}
+              size="sm"
+              tone="muted"
+              showTooltip={false}
+            />
+          )}
         </div>
       </header>
 
@@ -151,7 +160,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
         ) : mode === 'review' ? (
           <ChangeReviewPanel sessionId={sessionId} />
         ) : (
-          <WorkspacePanel sessionId={sessionId} embedded forceVisible={isTabVariant} />
+          <WorkspacePanel sessionId={sessionId} embedded forceVisible={isTabVariant || isVscodeLayout} layout={layout} />
         )}
       </div>
     </div>

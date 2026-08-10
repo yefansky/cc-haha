@@ -5,11 +5,12 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../workspace/WorkspacePanel', () => ({
-  WorkspacePanel: ({ sessionId, embedded, forceVisible }: { sessionId: string; embedded?: boolean; forceVisible?: boolean }) => (
+  WorkspacePanel: ({ sessionId, embedded, forceVisible, layout }: { sessionId: string; embedded?: boolean; forceVisible?: boolean; layout?: string }) => (
     <div
       data-testid="workspace-panel"
       data-embedded={embedded ? 'true' : 'false'}
       data-force-visible={forceVisible ? 'true' : 'false'}
+      data-layout={layout}
     >
       workspace:{sessionId}
     </div>
@@ -59,6 +60,18 @@ describe('WorkbenchPanel', () => {
     expect(workspace).toHaveTextContent(`workspace:${SESSION_ID}`)
     expect(workspace).toHaveAttribute('data-embedded', 'true')
     expect(screen.queryByTestId('browser-surface')).not.toBeInTheDocument()
+  })
+
+  it('enters the workspace and removes ineffective panel actions in VS Code layout', () => {
+    useWorkspacePanelStore.getState().setMode(SESSION_ID, 'browser')
+
+    render(<WorkbenchPanel sessionId={SESSION_ID} layout="vscode" />)
+
+    expect(useWorkspacePanelStore.getState().getMode(SESSION_ID)).toBe('workspace')
+    expect(screen.getByTestId('workspace-panel')).toHaveAttribute('data-layout', 'vscode')
+    expect(screen.getByTestId('workspace-panel')).toHaveAttribute('data-force-visible', 'true')
+    expect(screen.queryByRole('button', { name: 'Expand panel' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()
   })
 
   it('renders the native BrowserSurface in browser mode', () => {

@@ -45,9 +45,13 @@ async function createSvnWorkspace(): Promise<string> {
   execFileSync('svnadmin', ['create', repositoryDir])
   svn(workspaceDir, 'checkout', svnFileUrl(repositoryDir), workspaceDir)
   await fs.writeFile(path.join(workspaceDir, 'tracked.txt'), 'before\n')
-  svn(workspaceDir, 'add', 'tracked.txt')
+  await fs.writeFile(path.join(workspaceDir, '编译说明.md'), '# 编译说明\n旧内容\n')
+  // Some Windows SVN builds corrupt non-ASCII command arguments through the
+  // active code page. Add from the working directory without passing the name.
+  svn(workspaceDir, 'add', '--force', '.')
   svn(workspaceDir, 'commit', '-m', 'initial')
   await fs.writeFile(path.join(workspaceDir, 'tracked.txt'), 'before\nafter\n')
+  await fs.writeFile(path.join(workspaceDir, '编译说明.md'), '# 编译说明\n旧内容\n新增内容\n')
   await fs.writeFile(path.join(workspaceDir, 'new.txt'), 'new file\n')
   svn(workspaceDir, 'add', 'new.txt')
   return workspaceDir
@@ -178,6 +182,7 @@ describe('WorkspaceService', () => {
       isGitRepo: false,
       changedFiles: expect.arrayContaining([
         expect.objectContaining({ path: 'tracked.txt', status: 'modified', additions: 1, deletions: 0 }),
+        expect.objectContaining({ path: '编译说明.md', status: 'modified', additions: 1, deletions: 0 }),
         expect.objectContaining({ path: 'new.txt', status: 'added', additions: 1, deletions: 0 }),
       ]),
     })
@@ -185,6 +190,11 @@ describe('WorkspaceService', () => {
       state: 'ok',
       path: 'tracked.txt',
       diff: expect.stringContaining('+after'),
+    })
+    await expect(service.getDiff('session-1', '编译说明.md')).resolves.toMatchObject({
+      state: 'ok',
+      path: '编译说明.md',
+      diff: expect.stringContaining('+新增内容'),
     })
   })
 
@@ -551,6 +561,14 @@ describe('WorkspaceService', () => {
 
     await fs.writeFile(path.join(workDir, 'note.ts'), 'export const answer = 42\n')
     await fs.writeFile(path.join(workDir, 'legacy.txt'), Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0xb2, 0xe2, 0xca, 0xd4]))
+    await fs.writeFile(path.join(workDir, 'late-legacy.txt'), Buffer.concat([
+      Buffer.alloc(1024, 'a'),
+      Buffer.from([0xd6, 0xd0, 0xce, 0xc4]),
+    ]))
+    await fs.writeFile(path.join(workDir, 'utf8-boundary.txt'), Buffer.concat([
+      Buffer.alloc(16 * 1024 - 1, 'a'),
+      Buffer.from('中文'),
+    ]))
     await fs.writeFile(path.join(workDir, 'binary.bin'), Buffer.from([0, 1, 2, 3]))
     await fs.writeFile(path.join(workDir, 'image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]))
     await fs.writeFile(
@@ -573,6 +591,14 @@ describe('WorkspaceService', () => {
       encoding: 'gbk',
     })
     await expect(service.readFile('session-1', 'legacy.txt', 'utf8')).resolves.toMatchObject({
+      state: 'ok',
+      encoding: 'utf8',
+    })
+    await expect(service.readFile('session-1', 'late-legacy.txt')).resolves.toMatchObject({
+      state: 'ok',
+      encoding: 'gbk',
+    })
+    await expect(service.readFile('session-1', 'utf8-boundary.txt')).resolves.toMatchObject({
       state: 'ok',
       encoding: 'utf8',
     })

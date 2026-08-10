@@ -86,7 +86,7 @@ async function flushReactWork() {
 
 async function renderPanel(
   sessionId: string,
-  props: { embedded?: boolean; forceVisible?: boolean } = {},
+  props: { embedded?: boolean; forceVisible?: boolean; layout?: 'standard' | 'vscode' } = {},
 ) {
   let view!: ReturnType<typeof render>
   await act(async () => {
@@ -1416,6 +1416,86 @@ describe('WorkspacePanel', () => {
     expect(view.getAllByText('b.ts').length).toBeGreaterThanOrEqual(1)
   })
 
+  it('shows the file tree beside multiple switchable previews in VS Code layout', async () => {
+    const sessionId = 'session-vscode-workspace'
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: {
+        ...state.panelBySession,
+        [sessionId]: { isOpen: false, activeView: 'all', hasUserSelectedView: true },
+      },
+      statusBySession: {
+        ...state.statusBySession,
+        [sessionId]: {
+          state: 'ok',
+          workDir: '/repo',
+          repoName: 'repo',
+          branch: 'main',
+          isGitRepo: true,
+          changedFiles: [],
+        },
+      },
+      treeBySessionPath: {
+        ...state.treeBySessionPath,
+        [sessionId]: {
+          '': {
+            state: 'ok',
+            path: '',
+            entries: [
+              { name: 'README.md', path: 'README.md', isDirectory: false },
+              { name: 'app.ts', path: 'src/app.ts', isDirectory: false },
+            ],
+          },
+        },
+      },
+      previewTabsBySession: {
+        ...state.previewTabsBySession,
+        [sessionId]: [
+          {
+            id: 'file:README.md',
+            path: 'README.md',
+            kind: 'file',
+            title: 'README.md',
+            language: 'markdown',
+            content: '# Plan',
+            state: 'ok',
+            size: 6,
+          },
+          {
+            id: 'file:src/app.ts',
+            path: 'src/app.ts',
+            kind: 'file',
+            title: 'app.ts',
+            language: 'typescript',
+            content: 'export const ready = true',
+            state: 'ok',
+            size: 25,
+          },
+        ],
+      },
+      activePreviewTabIdBySession: {
+        ...state.activePreviewTabIdBySession,
+        [sessionId]: 'file:README.md',
+      },
+    }))
+
+    const view = await renderPanel(sessionId, { embedded: true, forceVisible: true, layout: 'vscode' })
+
+    expect(view.getByTestId('workspace-review-layout').getAttribute('data-layout')).toBe('vscode')
+    expect(view.getByTestId('workspace-review-layout').className).toContain('flex-row')
+    expect(view.getByTestId('workspace-file-navigator').className).toContain('flex')
+    expect(view.getByTestId('workspace-preview-column').className).toContain('flex')
+    expect(view.getAllByText('README.md').length).toBeGreaterThan(0)
+    expect(view.getAllByText('app.ts').length).toBeGreaterThan(0)
+    expect(view.queryByRole('tablist', { name: 'Workspace views' })).toBeNull()
+
+    await clickElement(view.getByRole('tab', { name: /app\.ts/ }))
+    await waitFor(() => {
+      expect(view.getByTestId('workspace-code').textContent).toContain('export const ready = true')
+    })
+    expect(view.getByTestId('workspace-file-navigator').className).toContain('flex')
+  })
+
   it('keeps a close control available for the last preview tab', async () => {
     await setWorkspaceState((state) => ({
       ...state,
@@ -2002,7 +2082,7 @@ describe('WorkspacePanel', () => {
     expect(image.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=')
   })
 
-  it('renders markdown file previews as formatted documents', async () => {
+  it('switches markdown files between rendered preview and source like VS Code', async () => {
     await setWorkspaceState((state) => ({
       ...state,
       panelBySession: {
@@ -2047,6 +2127,14 @@ describe('WorkspacePanel', () => {
     expect(view.getByRole('heading', { name: 'Project Notes', level: 1 })).toBeTruthy()
     expect(view.getByText('Done')).toBeTruthy()
     expect(view.container.textContent).toContain('export const ok = true')
+    expect(view.queryByTestId('workspace-code')).toBeNull()
+
+    await clickElement(view.getByRole('button', { name: 'Open Markdown source' }))
+    expect(view.getByTestId('workspace-code').textContent).toContain('# Project Notes')
+    expect(view.queryByRole('heading', { name: 'Project Notes', level: 1 })).toBeNull()
+
+    await clickElement(view.getByRole('button', { name: 'Open Markdown preview' }))
+    expect(view.getByRole('heading', { name: 'Project Notes', level: 1 })).toBeTruthy()
     expect(view.queryByTestId('workspace-code')).toBeNull()
   })
 

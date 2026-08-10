@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type RefObject } from 'react'
-import { CircleAlert, FileText, FolderOpen, FolderPlus, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X } from 'lucide-react'
+import { CircleAlert, Code2, Eye, FileText, FolderOpen, FolderPlus, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X } from 'lucide-react'
 import { Highlight } from 'prism-react-renderer'
 import {
   sessionsApi,
@@ -44,6 +44,8 @@ import type { WorkspaceDiffHighlightToken } from './workspaceDiffHighlighter'
 
 type WorkspacePanelProps = {
   sessionId: string
+  /** Keep the explorer and editor visible side by side, like VS Code. */
+  layout?: 'standard' | 'vscode'
   /**
    * When hosted inside the unified WorkbenchPanel, the close action lives in the
    * shared workbench mode strip. Set this to drop WorkspacePanel's own close
@@ -1341,7 +1343,7 @@ function TreeNode({
   )
 }
 
-export function WorkspacePanel({ sessionId, embedded = false, forceVisible = false }: WorkspacePanelProps) {
+export function WorkspacePanel({ sessionId, embedded = false, forceVisible = false, layout = 'standard' }: WorkspacePanelProps) {
   const t = useTranslation()
   const addToast = useUIStore((state) => state.addToast)
   const [filterQuery, setFilterQuery] = useState('')
@@ -1356,6 +1358,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   // The navigator and preview are separate views so narrow workbench tabs do
   // not squeeze either the tree or the code surface.
   const [isNavigatorOpen, setIsNavigatorOpen] = useState(true)
+  const [markdownSourceByTab, setMarkdownSourceByTab] = useState<Record<string, boolean>>({})
+  const isVscodeLayout = layout === 'vscode'
   const [previewTabContextMenu, setPreviewTabContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null)
   const previewTabContextMenuRef = useRef<HTMLDivElement>(null)
@@ -1407,6 +1411,9 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const normalizedFilterQuery = normalizeFilterQuery(filterQuery)
   const activePreviewTab =
     previewTabs.find((tab) => tab.id === activePreviewTabId) ?? previewTabs[previewTabs.length - 1] ?? null
+  const activeMarkdownView = activePreviewTab && isMarkdownPreview(activePreviewTab)
+    ? (markdownSourceByTab[activePreviewTab.id] ? 'source' : 'preview')
+    : null
   const hasPreviewTabs = previewTabs.length > 0
   const isNavigatorVisible = isNavigatorOpen
   const navigatorView = activeView
@@ -1603,8 +1610,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   // is not involved. Always land on "查看文件" when that happens instead of
   // leaving the user on the visually unrelated file-tree tab.
   useEffect(() => {
-    if (shouldRender && previewOpenNonce > 0) setIsNavigatorOpen(false)
-  }, [previewOpenNonce, shouldRender])
+    if (shouldRender && previewOpenNonce > 0 && !isVscodeLayout) setIsNavigatorOpen(false)
+  }, [isVscodeLayout, previewOpenNonce, shouldRender])
 
   if (!shouldRender) return null
 
@@ -1651,13 +1658,13 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   }
 
   const handleOpenDiff = (path: string) => {
-    setIsNavigatorOpen(false)
+    if (!isVscodeLayout) setIsNavigatorOpen(false)
     void openPreview(sessionId, path, 'diff')
     focusPreviewAfterOpen()
   }
 
   const handleOpenFile = (path: string) => {
-    setIsNavigatorOpen(false)
+    if (!isVscodeLayout) setIsNavigatorOpen(false)
     void openPreview(sessionId, path, 'file')
     focusPreviewAfterOpen()
   }
@@ -2041,6 +2048,23 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             </span>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {activeMarkdownView && (
+              <IconButton
+                icon={activeMarkdownView === 'preview'
+                  ? <Code2 size={16} strokeWidth={1.9} aria-hidden="true" />
+                  : <Eye size={16} strokeWidth={1.9} aria-hidden="true" />}
+                label={activeMarkdownView === 'preview'
+                  ? t('workspace.openMarkdownSource')
+                  : t('workspace.openMarkdownPreview')}
+                onClick={() => setMarkdownSourceByTab((current) => ({
+                  ...current,
+                  [activePreviewTab.id]: activeMarkdownView === 'preview',
+                }))}
+                size="md"
+                tone="muted"
+                showTooltip={false}
+              />
+            )}
             {activePreviewTab.previewType !== 'image' && (
               <label className="hidden items-center gap-1 text-[10px] text-[var(--color-text-secondary)] min-[720px]:inline-flex">
                 <span>{t('workspace.encoding')}</span>
@@ -2084,21 +2108,23 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               tone="muted"
               showTooltip={false}
             />
-            <IconButton
-              icon={isNavigatorVisible
-                ? <PanelRightClose size={16} strokeWidth={1.9} aria-hidden="true" />
-                : <PanelRightOpen size={16} strokeWidth={1.9} aria-hidden="true" />}
-              label={isNavigatorVisible ? t('workspace.hideNavigator') : t('workspace.showNavigator')}
-              onClick={() => setIsNavigatorOpen((open) => {
-                const nextOpen = !open
-                if (nextOpen) window.requestAnimationFrame(() => filterInputRef.current?.focus())
-                return nextOpen
-              })}
-              size="md"
-              tone="muted"
-              pressed={isNavigatorVisible}
-              showTooltip={false}
-            />
+            {!isVscodeLayout && (
+              <IconButton
+                icon={isNavigatorVisible
+                  ? <PanelRightClose size={16} strokeWidth={1.9} aria-hidden="true" />
+                  : <PanelRightOpen size={16} strokeWidth={1.9} aria-hidden="true" />}
+                label={isNavigatorVisible ? t('workspace.hideNavigator') : t('workspace.showNavigator')}
+                onClick={() => setIsNavigatorOpen((open) => {
+                  const nextOpen = !open
+                  if (nextOpen) window.requestAnimationFrame(() => filterInputRef.current?.focus())
+                  return nextOpen
+                })}
+                size="md"
+                tone="muted"
+                pressed={isNavigatorVisible}
+                showTooltip={false}
+              />
+            )}
             {!embedded && (
               <IconButton
                 icon={<X size={16} strokeWidth={1.9} aria-hidden="true" />}
@@ -2150,7 +2176,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             hideSingleFileHeader
             onAddComment={(selection, note) => addDiffCommentToChat(activePreviewTab.path, selection, note)}
           />
-        ) : state === 'ok' && isMarkdownPreview(activePreviewTab) ? (
+        ) : state === 'ok' && activeMarkdownView === 'preview' ? (
           <MarkdownSurface
             value={activePreviewTab.content ?? ''}
             path={activePreviewTab.path}
@@ -2308,9 +2334,10 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     >
       <div
         data-testid="workspace-review-layout"
-        className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+        data-layout={layout}
+        className={`relative flex min-h-0 flex-1 overflow-hidden ${isVscodeLayout ? 'flex-row' : 'flex-col'}`}
       >
-        <div role="tablist" aria-label={t('workspace.viewTabs')} className="flex h-10 shrink-0 items-end gap-4 border-b border-[var(--color-border)] px-3">
+        {!isVscodeLayout && <div role="tablist" aria-label={t('workspace.viewTabs')} className="flex h-10 shrink-0 items-end gap-4 border-b border-[var(--color-border)] px-3">
           <button
             type="button"
             role="tab"
@@ -2325,16 +2352,16 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             onClick={() => setIsNavigatorOpen(false)}
             className={`relative h-10 px-1 text-[12px] font-medium ${!isNavigatorVisible ? 'text-[var(--color-text-primary)] after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--color-info)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
           >{t('workspace.viewFiles')}{hasPreviewTabs ? ` (${previewTabs.length})` : ''}</button>
-        </div>
+        </div>}
 
-        {hasPreviewTabs && <div data-testid="workspace-preview-column" className={`${isNavigatorVisible ? 'hidden' : 'flex'} min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-surface)]`}>
+        {(hasPreviewTabs || isVscodeLayout) && <div data-testid="workspace-preview-column" className={`${isVscodeLayout || !isNavigatorVisible ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-surface)]`}>
             {renderPreviewTabs()}
             {renderPreviewContent()}
         </div>}
 
         <div
             data-testid="workspace-file-navigator"
-            className={`${isNavigatorVisible ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col bg-[var(--color-surface)]`}
+            className={`${isVscodeLayout || isNavigatorVisible ? 'flex' : 'hidden'} min-h-0 flex-col bg-[var(--color-surface)] ${isVscodeLayout ? 'order-first w-[min(32%,320px)] min-w-[220px] shrink-0 border-r border-[var(--color-border)]' : 'flex-1'}`}
           >
             <header
               data-testid="workspace-file-navigator-header"
@@ -2393,7 +2420,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                   showTooltip={false}
                 />
               )}
-              {!hasPreviewTabs && (
+              {(!hasPreviewTabs || isVscodeLayout) && (
                 <div className="ml-auto flex shrink-0 items-center gap-0.5">
                   <IconButton
                     icon={<RefreshCw size={16} strokeWidth={1.9} aria-hidden="true" />}

@@ -1610,6 +1610,21 @@ button, input, textarea, select, a, [role="button"] {
   touch-action: none;
 }
 
+.sidebar-shell[data-placement="right"] .sidebar-resize-handle {
+  right: auto;
+  left: 0;
+}
+
+.sidebar-shell[data-placement="right"] .sidebar-resize-handle::after {
+  right: auto;
+  left: 0;
+}
+
+.sidebar-shell[data-placement="right"] .sidebar-panel {
+  border-right-width: 0;
+  border-left-width: 1px;
+}
+
 .sidebar-resize-handle::after {
   content: "";
   position: absolute;
