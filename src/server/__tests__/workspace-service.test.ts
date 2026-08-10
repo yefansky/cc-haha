@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { WorkspaceService } from '../services/workspaceService.js'
+import { resolveSvnExecutableCandidates, WorkspaceService } from '../services/workspaceService.js'
 import {
   clearFilesystemAccessRootsForTests,
   registerFilesystemAccessRoot,
@@ -173,9 +173,44 @@ describe('WorkspaceService outside-workspace preview', () => {
 })
 
 describe('WorkspaceService', () => {
+  it('discovers common Windows SVN installations when the desktop PATH omits svn', () => {
+    expect(resolveSvnExecutableCandidates({
+      SVN_EXECUTABLE: 'D:\\PortableSVN\\svn.exe',
+      ProgramFiles: 'C:\\Program Files',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local',
+    }, 'win32')).toEqual([
+      'D:\\PortableSVN\\svn.exe',
+      'svn',
+      'C:\\Program Files\\TortoiseSVN\\bin\\svn.exe',
+      'C:\\Program Files\\Subversion\\bin\\svn.exe',
+      'C:\\Program Files (x86)\\TortoiseSVN\\bin\\svn.exe',
+      'C:\\Program Files (x86)\\Subversion\\bin\\svn.exe',
+      'C:\\Users\\tester\\AppData\\Local\\Programs\\TortoiseSVN\\bin\\svn.exe',
+    ])
+  })
+
   it('uses SVN status and diff when the workspace is not a git repository', async () => {
     const workspaceDir = await createSvnWorkspace()
-    const service = new WorkspaceService(async () => workspaceDir)
+    const service = new WorkspaceService(
+      async () => workspaceDir,
+      undefined,
+      undefined,
+      () => ['cc-haha-definitely-missing-svn', 'svn'],
+    ) as WorkspaceService & {
+      runSvn: (workDir: string, args: string[], maxBuffer?: number) => Promise<{
+        stdout: string
+        stderr: string
+        code: number
+        failure?: string
+      }>
+    }
+    const runSvn = service.runSvn.bind(service)
+    const svnCalls: Array<{ workDir: string; args: string[] }> = []
+    service.runSvn = async (workDir, args, maxBuffer) => {
+      svnCalls.push({ workDir, args })
+      return await runSvn(workDir, args, maxBuffer)
+    }
 
     await expect(service.getStatus('session-1')).resolves.toMatchObject({
       state: 'ok',
@@ -196,6 +231,15 @@ describe('WorkspaceService', () => {
       path: '编译说明.md',
       diff: expect.stringContaining('+新增内容'),
     })
+    expect(svnCalls).toContainEqual({
+      workDir: workspaceDir,
+      args: ['diff', '--', 'tracked.txt'],
+    })
+    expect(svnCalls).toContainEqual({
+      workDir: workspaceDir,
+      args: ['diff', '--depth', 'files'],
+    })
+    expect(svnCalls.some((call) => call.args.includes('编译说明.md'))).toBe(false)
   })
 
   it('writes review edits only when the displayed file content is still current', async () => {
@@ -560,6 +604,19 @@ describe('WorkspaceService', () => {
     const service = new WorkspaceService(async () => workDir)
 
     await fs.writeFile(path.join(workDir, 'note.ts'), 'export const answer = 42\n')
+    await fs.writeFile(path.join(workDir, 'engine.cpp'), 'class Engine {};\n')
+    await fs.writeFile(path.join(workDir, 'engine.hpp'), 'class Engine;\n')
+    await fs.writeFile(path.join(workDir, 'bootstrap.lua'), 'local ready = true\n')
+    await Promise.all([
+      ['app.js', 'const ready = true\n'],
+      ['run.sh', '#!/bin/bash\necho ready\n'],
+      ['run.bash', '#!/bin/bash\necho ready\n'],
+      ['build.bat', '@echo off\r\necho ready\r\n'],
+      ['Program.cs', 'public class Program {}\n'],
+      ['Game.sln', 'Microsoft Visual Studio Solution File\n'],
+      ['Game.vcproj', '<VisualStudioProject />\n'],
+      ['Game.vcxproj', '<Project />\n'],
+    ].map(([name, content]) => fs.writeFile(path.join(workDir, name!), content!)))
     await fs.writeFile(path.join(workDir, 'legacy.txt'), Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0xb2, 0xe2, 0xca, 0xd4]))
     await fs.writeFile(path.join(workDir, 'late-legacy.txt'), Buffer.concat([
       Buffer.alloc(1024, 'a'),
@@ -594,6 +651,30 @@ describe('WorkspaceService', () => {
       state: 'ok',
       encoding: 'utf8',
     })
+    await expect(service.readFile('session-1', 'engine.cpp')).resolves.toMatchObject({
+      state: 'ok',
+      language: 'cpp',
+    })
+    await expect(service.readFile('session-1', 'engine.hpp')).resolves.toMatchObject({
+      state: 'ok',
+      language: 'cpp',
+    })
+    await expect(service.readFile('session-1', 'bootstrap.lua')).resolves.toMatchObject({
+      state: 'ok',
+      language: 'lua',
+    })
+    for (const [file, language] of [
+      ['app.js', 'javascript'],
+      ['run.sh', 'bash'],
+      ['run.bash', 'bash'],
+      ['build.bat', 'bat'],
+      ['Program.cs', 'csharp'],
+      ['Game.sln', 'ini'],
+      ['Game.vcproj', 'xml'],
+      ['Game.vcxproj', 'xml'],
+    ]) {
+      await expect(service.readFile('session-1', file!)).resolves.toMatchObject({ state: 'ok', language })
+    }
     await expect(service.readFile('session-1', 'late-legacy.txt')).resolves.toMatchObject({
       state: 'ok',
       encoding: 'gbk',
@@ -753,6 +834,7 @@ describe('WorkspaceService', () => {
         stdout: string
         stderr: string
         code: number
+        failure?: string
       }) => string
     }
 
@@ -765,6 +847,13 @@ describe('WorkspaceService', () => {
 
     expect(message).toContain('SVN returned XML status output but the command did not complete.')
     expect(message).not.toContain('<entry')
+
+    expect(service.formatSvnError(
+      'Failed to read SVN diff',
+      ['diff', '--', 'large.cpp'],
+      'F:\\Head\\Source',
+      { stdout: '', stderr: '', code: 1, failure: 'SVN command timed out after 5000 ms.' },
+    )).toContain('SVN command timed out after 5000 ms.')
   })
 
   it('reads SVN diffs through a directory symlink inside a Git workspace', async () => {

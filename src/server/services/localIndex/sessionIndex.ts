@@ -19,6 +19,7 @@ export type IndexedSessionRow = {
   title: string
   createdAt: string
   modifiedAt: string
+  lastUserMessageAt?: string | null
   messageCount: number
   projectPath: string
   workDir: string | null
@@ -127,6 +128,7 @@ type SessionRow = {
   created_at: string
   modified_at: string
   modified_at_ms: number
+  last_user_message_at?: string | null
   message_count: number
   work_dir: string | null
   permission_mode: string | null
@@ -190,6 +192,7 @@ function sessionFromRow(row: SessionRow): IndexedSessionRow {
     title: row.title,
     createdAt: row.created_at,
     modifiedAt: row.modified_at,
+    lastUserMessageAt: row.last_user_message_at ?? null,
     messageCount: row.message_count,
     projectPath: row.project_path,
     workDir: row.work_dir,
@@ -274,23 +277,33 @@ export function createSessionIndex(database: LocalIndexDatabase): SessionIndex {
         const rows = project === undefined
           ? operation.all<SessionRow>(`
               SELECT transcript_path, session_id, project_path, title, created_at,
-                modified_at, message_count, work_dir, permission_mode,
+                modified_at,
+                (SELECT timestamp FROM session_entries
+                  WHERE transcript_path = sessions.transcript_path
+                    AND entry_type = 'user' AND role = 'user' AND timestamp IS NOT NULL
+                  ORDER BY timestamp DESC, ordinal DESC LIMIT 1) AS last_user_message_at,
+                message_count, work_dir, permission_mode,
                 runtime_provider_id, runtime_provider_present,
                 runtime_model_id, effort_level,
                 repository_json, worktree_session_json
               FROM sessions
-              ORDER BY modified_at_ms DESC, session_id ASC, transcript_path ASC
+              ORDER BY COALESCE(unixepoch(last_user_message_at), unixepoch(created_at)) DESC, session_id ASC, transcript_path ASC
               LIMIT ? OFFSET ?
             `, limit, offset)
           : operation.all<SessionRow>(`
               SELECT transcript_path, session_id, project_path, title, created_at,
-                modified_at, message_count, work_dir, permission_mode,
+                modified_at,
+                (SELECT timestamp FROM session_entries
+                  WHERE transcript_path = sessions.transcript_path
+                    AND entry_type = 'user' AND role = 'user' AND timestamp IS NOT NULL
+                  ORDER BY timestamp DESC, ordinal DESC LIMIT 1) AS last_user_message_at,
+                message_count, work_dir, permission_mode,
                 runtime_provider_id, runtime_provider_present,
                 runtime_model_id, effort_level,
                 repository_json, worktree_session_json
               FROM sessions
               WHERE project_path = ?
-              ORDER BY modified_at_ms DESC, session_id ASC, transcript_path ASC
+              ORDER BY COALESCE(unixepoch(last_user_message_at), unixepoch(created_at)) DESC, session_id ASC, transcript_path ASC
               LIMIT ? OFFSET ?
             `, project, limit, offset)
 
@@ -391,6 +404,10 @@ export function createSessionIndex(database: LocalIndexDatabase): SessionIndex {
           SELECT sessions.transcript_path, sessions.session_id,
             sessions.project_path, sessions.title, sessions.created_at,
             sessions.modified_at, sessions.modified_at_ms,
+            (SELECT timestamp FROM session_entries
+              WHERE transcript_path = sessions.transcript_path
+                AND entry_type = 'user' AND role = 'user' AND timestamp IS NOT NULL
+              ORDER BY timestamp DESC, ordinal DESC LIMIT 1) AS last_user_message_at,
             sessions.message_count, sessions.work_dir,
             sessions.permission_mode, sessions.runtime_provider_id,
             sessions.runtime_provider_present,
@@ -415,6 +432,7 @@ export function createSessionIndex(database: LocalIndexDatabase): SessionIndex {
             title: row.title,
             createdAt: row.created_at,
             modifiedAt: row.modified_at,
+            lastUserMessageAt: row.last_user_message_at ?? null,
             messageCount: row.message_count,
             workDir: row.work_dir,
             ...(row.permission_mode ? { permissionMode: row.permission_mode } : {}),

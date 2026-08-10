@@ -66,7 +66,7 @@ describe('DesktopUiPreferencesService', () => {
 
     expect(result.exists).toBe(false)
     expect(result.preferences).toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
       profile: {
         displayName: 'cc-haha',
         subtitle: 'github.com/NanmiCoder/cc-haha',
@@ -77,6 +77,7 @@ describe('DesktopUiPreferencesService', () => {
       sidebar: {
         projectOrder: [],
         pinnedProjects: [],
+        pinnedSessions: [],
         hiddenProjects: [],
         projectOrganization: 'recentProject',
         projectSortBy: 'updatedAt',
@@ -89,7 +90,7 @@ describe('DesktopUiPreferencesService', () => {
     await fs.writeFile(
       path.join(tmpDir, 'cc-haha', 'desktop-ui.json'),
       JSON.stringify({
-        schemaVersion: 2,
+        schemaVersion: 4,
         futureField: { keep: true },
         sidebar: {
           projectOrder: ['/workspace/alpha', 42, '/workspace/alpha', '/workspace/beta'],
@@ -105,12 +106,13 @@ describe('DesktopUiPreferencesService', () => {
     const after = await service.updateSidebarPreferences({
       projectOrder: ['/workspace/gamma'],
       pinnedProjects: [],
+      pinnedSessions: ['session-alpha', 'session-alpha', 42],
       hiddenProjects: ['/workspace/beta'],
     })
 
     expect(before.exists).toBe(true)
     expect(before.preferences).toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
       futureField: { keep: true },
       profile: {
         displayName: 'cc-haha',
@@ -122,13 +124,14 @@ describe('DesktopUiPreferencesService', () => {
       sidebar: {
         projectOrder: ['/workspace/alpha', '/workspace/beta'],
         pinnedProjects: ['/workspace/beta'],
+        pinnedSessions: [],
         hiddenProjects: ['/workspace/gamma'],
         projectOrganization: 'recentProject',
         projectSortBy: 'updatedAt',
       },
     })
     expect(after).toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
       futureField: { keep: true },
       profile: {
         displayName: 'cc-haha',
@@ -140,6 +143,7 @@ describe('DesktopUiPreferencesService', () => {
       sidebar: {
         projectOrder: ['/workspace/gamma'],
         pinnedProjects: [],
+        pinnedSessions: ['session-alpha'],
         hiddenProjects: ['/workspace/beta'],
         projectOrganization: 'recentProject',
         projectSortBy: 'updatedAt',
@@ -221,7 +225,7 @@ describe('DesktopUiPreferencesService', () => {
     })
 
     expect(after).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       futureField: { keep: true },
       profile: {
         displayName: 'Local Operator',
@@ -230,6 +234,7 @@ describe('DesktopUiPreferencesService', () => {
       sidebar: {
         projectOrder: ['/workspace/alpha'],
         pinnedProjects: ['/workspace/alpha'],
+        pinnedSessions: [],
         projectOrganization: 'project',
         projectSortBy: 'createdAt',
       },
@@ -300,7 +305,7 @@ describe('DesktopUiPreferencesService', () => {
     const after = await new DesktopUiPreferencesService().updatePetPreferences({ enabled: true })
 
     expect(after).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       futureField: { keep: true },
       pet: {
         futurePetField: { keep: 'pet-too' },
@@ -389,7 +394,7 @@ describe('DesktopUiPreferencesService', () => {
     })
 
     expect(after).toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
       profile: {
         displayName: 'Claude Captain',
         subtitle: 'local.example/profile',
@@ -400,6 +405,7 @@ describe('DesktopUiPreferencesService', () => {
       sidebar: {
         projectOrder: [],
         pinnedProjects: [],
+        pinnedSessions: [],
         hiddenProjects: [],
         projectOrganization: 'recentProject',
         projectSortBy: 'updatedAt',
@@ -469,6 +475,7 @@ describe('desktop UI preferences API', () => {
     const putReq = makeRequest('PUT', '/api/desktop-ui/preferences/sidebar', {
       projectOrder: ['/workspace/beta', '/workspace/alpha'],
       pinnedProjects: ['/workspace/beta'],
+      pinnedSessions: ['session-alpha'],
       hiddenProjects: ['/workspace/old'],
       projectOrganization: 'project',
       projectSortBy: 'createdAt',
@@ -481,7 +488,7 @@ describe('desktop UI preferences API', () => {
     expect(putBody).toEqual({
       ok: true,
       preferences: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         profile: {
           displayName: 'cc-haha',
           subtitle: 'github.com/NanmiCoder/cc-haha',
@@ -492,6 +499,7 @@ describe('desktop UI preferences API', () => {
         sidebar: {
           projectOrder: ['/workspace/beta', '/workspace/alpha'],
           pinnedProjects: ['/workspace/beta'],
+          pinnedSessions: ['session-alpha'],
           hiddenProjects: ['/workspace/old'],
           projectOrganization: 'project',
           projectSortBy: 'createdAt',
@@ -507,7 +515,7 @@ describe('desktop UI preferences API', () => {
     expect(getBody).toEqual({
       exists: true,
       preferences: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         profile: {
           displayName: 'cc-haha',
           subtitle: 'github.com/NanmiCoder/cc-haha',
@@ -518,6 +526,7 @@ describe('desktop UI preferences API', () => {
         sidebar: {
           projectOrder: ['/workspace/beta', '/workspace/alpha'],
           pinnedProjects: ['/workspace/beta'],
+          pinnedSessions: ['session-alpha'],
           hiddenProjects: ['/workspace/old'],
           projectOrganization: 'project',
           projectSortBy: 'createdAt',
@@ -543,7 +552,7 @@ describe('desktop UI preferences API', () => {
     await expect(putRes.json()).resolves.toMatchObject({
       ok: true,
       preferences: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         pet: {
           enabled: true,
           selectedPetId: 'seedy',

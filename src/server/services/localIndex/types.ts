@@ -40,6 +40,7 @@ export type SessionListSummary = {
   title: string
   createdAt: string
   modifiedAt: string
+  lastUserMessageAt?: string | null
   messageCount: number
   workDir: string | null
   permissionMode?: string

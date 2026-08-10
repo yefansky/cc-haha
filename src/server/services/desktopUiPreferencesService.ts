@@ -6,7 +6,7 @@ import { ApiError } from '../middleware/errorHandler.js'
 import { readRecoverableJsonFile } from './recoverableJsonFile.js'
 import { ensurePersistentStorageUpgraded } from './persistentStorageMigrations.js'
 
-const CURRENT_DESKTOP_UI_PREFERENCES_SCHEMA_VERSION = 4
+const CURRENT_DESKTOP_UI_PREFERENCES_SCHEMA_VERSION = 5
 const MAX_PROJECT_PREFERENCE_ENTRIES = 2_000
 const MAX_PROFILE_DISPLAY_NAME_LENGTH = 80
 const MAX_PROFILE_SUBTITLE_LENGTH = 160
@@ -28,6 +28,7 @@ const AVATAR_CONTENT_TYPES = {
 export type SidebarProjectPreferences = {
   projectOrder: string[]
   pinnedProjects: string[]
+  pinnedSessions: string[]
   hiddenProjects: string[]
   projectOrganization: 'project' | 'recentProject' | 'time'
   projectSortBy: 'createdAt' | 'updatedAt'
@@ -66,6 +67,7 @@ export type DesktopUiPreferencesReadResult = {
 const DEFAULT_SIDEBAR_PROJECT_PREFERENCES: SidebarProjectPreferences = {
   projectOrder: [],
   pinnedProjects: [],
+  pinnedSessions: [],
   hiddenProjects: [],
   projectOrganization: 'recentProject',
   projectSortBy: 'updatedAt',
@@ -122,6 +124,7 @@ export function normalizeSidebarProjectPreferences(value: unknown): SidebarProje
     ...record,
     projectOrder: normalizeStringArray(record.projectOrder),
     pinnedProjects: normalizeStringArray(record.pinnedProjects),
+    pinnedSessions: normalizeStringArray(record.pinnedSessions),
     hiddenProjects: normalizeStringArray(record.hiddenProjects),
     projectOrganization: normalizeProjectOrganization(record.projectOrganization),
     projectSortBy: normalizeProjectSortBy(record.projectSortBy),

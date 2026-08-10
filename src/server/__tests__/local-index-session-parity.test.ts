@@ -399,6 +399,7 @@ describe('SessionService local-index routing parity', () => {
       title: fileSession.title,
       createdAt: fileSession.createdAt,
       modifiedAt: fileSession.modifiedAt,
+      lastUserMessageAt: fileSession.lastUserMessageAt,
       messageCount: fileSession.messageCount,
       projectPath: fileSession.projectPath,
       workDir: fileSession.workDir,

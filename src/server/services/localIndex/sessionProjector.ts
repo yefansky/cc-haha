@@ -195,6 +195,7 @@ function initialProjection(candidate: SessionSourceCandidate): TranscriptProject
       title: 'Untitled Session',
       createdAt: candidate.fallbackCreatedAt,
       modifiedAt: candidate.fallbackModifiedAt,
+      lastUserMessageAt: null,
       messageCount: 0,
       workDir: candidate.fallbackWorkDir,
     },

@@ -160,6 +160,10 @@ const sessionDisconnectWatchers = new Map<string, () => void>()
  * reviving the renderer and suppresses the CLI_ERROR produced by the interrupt.
  */
 const sessionStopRequested = new Set<string>()
+// A replacement after Stop must not inherit a request that the SDK ignored the
+// interrupt for. Give the old process a brief chance to exit, then force-kill
+// it before a fresh runtime accepts the replacement.
+const STOPPED_TURN_RESTART_SHUTDOWN_TIMEOUT_MS = 250
 
 /**
  * Track user message count and title state per session for auto-title generation.
@@ -775,6 +779,22 @@ async function handleUserMessage(
   activeTurn.replacementAfterStop =
     sessionStopRequested.has(sessionId) || agentStopRequestedSessions.has(sessionId)
   activeUserTurns.set(sessionId, activeTurn)
+
+  // The renderer intentionally becomes editable as soon as Stop is clicked.
+  // If the SDK does not honour its interrupt control message, sending that
+  // replacement to the same process merely queues it behind the stuck upstream
+  // request. Start the replacement on a clean runtime instead, so retry is
+  // bounded by a short process restart rather than the upstream timeout.
+  if (activeTurn.replacementAfterStop && conversationService.hasSession(sessionId)) {
+    console.log(`[WS] Restarting stopped CLI runtime before replacement turn: ${sessionId}`)
+    pendingInterruptedTurnResults.delete(sessionId)
+    runtimeExitStoppedSessions.add(sessionId)
+    await conversationService.stopSessionAndWait(
+      sessionId,
+      STOPPED_TURN_RESTART_SHUTDOWN_TIMEOUT_MS,
+    )
+    if (activeUserTurns.get(sessionId) !== activeTurn || activeTurn.cancelled) return
+  }
 
   const initialRuntimeTransition = await waitForRuntimeTransitionBeforeUserTurn(ws, sessionId)
   if (
@@ -2699,7 +2719,7 @@ async function ensureCliSessionStarted(
     const workDir = await resolveSessionWorkDir(sessionId)
     lastResolvedStartupWorkDirs.set(sessionId, workDir)
     const runtimeSettings = await getRuntimeSettings(sessionId)
-    const startupSettings = reason === 'prewarm_session'
+    const startupSettings = reason === 'prewarm_session' || sessionStopRequested.has(sessionId)
       ? { ...runtimeSettings, resumeInterruptedTurn: false }
       : runtimeSettings
     const sdkUrl = buildSdkWebSocketUrl(ws, sessionId)

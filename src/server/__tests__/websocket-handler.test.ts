@@ -2780,6 +2780,34 @@ describe('WebSocket handler session isolation', () => {
     expect(stopSession).not.toHaveBeenCalled()
   })
 
+  it('restarts a stopped runtime before sending a replacement turn', async () => {
+    const sessionId = `stop-retry-fresh-runtime-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'stopSessionAndWait').mockResolvedValue()
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('Existing title')
+
+    handleWebSocket.open(ws)
+    __markActiveTurnForTests(sessionId)
+    handleWebSocket.message(ws, JSON.stringify({ type: 'stop_generation' }))
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: 'Send this immediately after stop',
+    }))
+    await flushMicrotasks(30)
+
+    expect(conversationService.stopSessionAndWait).toHaveBeenCalledWith(sessionId, 250)
+    expect(conversationService.sendMessage).toHaveBeenCalledWith(
+      sessionId,
+      'Send this immediately after stop',
+      undefined,
+      expect.objectContaining({ canSend: expect.any(Function) }),
+    )
+  })
+
   it('releases the Agent stop latch only after the replacement replay is attributed', async () => {
     const sessionId = `stop-agent-successful-message-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)

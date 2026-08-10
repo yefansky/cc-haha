@@ -30,6 +30,7 @@ const SESSION_LIST_AUTO_REFRESH_MS = 30_000
 const SESSION_LIST_FOCUS_REFRESH_MIN_MS = 5_000
 const PROJECT_ORDER_STORAGE_KEY = 'cc-haha-sidebar-project-order'
 const PROJECT_PINNED_STORAGE_KEY = 'cc-haha-sidebar-pinned-projects'
+const SESSION_PINNED_STORAGE_KEY = 'cc-haha-sidebar-pinned-sessions'
 const PROJECT_HIDDEN_STORAGE_KEY = 'cc-haha-sidebar-hidden-projects'
 const PROJECT_ORGANIZATION_STORAGE_KEY = 'cc-haha-sidebar-project-organization'
 const PROJECT_SORT_STORAGE_KEY = 'cc-haha-sidebar-project-sort'
@@ -46,6 +47,7 @@ type ProjectGroup = {
   subtitle: string | null
   workDir: string | undefined
   sessions: SessionListItem[]
+  sortSession: SessionListItem
 }
 
 type SidebarProps = {
@@ -101,6 +103,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   const [collapsedProjectKeys, setCollapsedProjectKeys] = useState<Set<string>>(new Set())
   const [projectOrder, setProjectOrder] = useState<string[]>(() => readStoredProjectOrder())
   const [pinnedProjectKeys, setPinnedProjectKeys] = useState<Set<string>>(() => readStoredProjectPins())
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => readStoredSessionPins())
   const [hiddenProjectKeys, setHiddenProjectKeys] = useState<Set<string>>(() => readStoredProjectHidden())
   const [projectOrganization, setProjectOrganizationState] = useState<SidebarProjectOrganization>(() => readStoredProjectOrganization())
   const [projectSortBy, setProjectSortByState] = useState<SidebarProjectSortBy>(() => readStoredProjectSortBy())
@@ -178,7 +181,17 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   // Title filtering moved into the global search modal (Cmd+K); the list shows all sessions.
   const filteredSessions = sessions
 
-  const projectGroups = useMemo(() => groupByProject(filteredSessions, projectSortBy), [filteredSessions, projectSortBy])
+  const pinnedSessions = useMemo(
+    () => filteredSessions
+      .filter((session) => pinnedSessionIds.has(session.id))
+      .sort(compareSessionsByLastUserInput),
+    [filteredSessions, pinnedSessionIds],
+  )
+  const unpinnedSessions = useMemo(
+    () => filteredSessions.filter((session) => !pinnedSessionIds.has(session.id)),
+    [filteredSessions, pinnedSessionIds],
+  )
+  const projectGroups = useMemo(() => groupByProject(unpinnedSessions, projectSortBy), [unpinnedSessions, projectSortBy])
   const orderedProjectGroups = useMemo(
     () => applyProjectOrder(projectGroups, projectOrder, pinnedProjectKeys, projectOrganization, projectSortBy),
     [projectGroups, projectOrder, pinnedProjectKeys, projectOrganization, projectSortBy],
@@ -229,6 +242,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   const applySidebarProjectPreferences = useCallback((preferences: SidebarProjectPreferences) => {
     setProjectOrder(preferences.projectOrder)
     setPinnedProjectKeys(new Set(preferences.pinnedProjects))
+    setPinnedSessionIds(new Set(preferences.pinnedSessions))
     setHiddenProjectKeys(new Set(preferences.hiddenProjects))
     setProjectOrganizationState(preferences.projectOrganization)
     setProjectSortByState(preferences.projectSortBy)
@@ -249,13 +263,14 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
       persistSidebarProjectPreferences(buildSidebarProjectPreferences(
         projectOrder,
         pinnedProjectKeys,
+        pinnedSessionIds,
         next,
         projectOrganization,
         projectSortBy,
       ))
       return next
     })
-  }, [persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectOrganization, projectSortBy])
+  }, [persistSidebarProjectPreferences, pinnedProjectKeys, pinnedSessionIds, projectOrder, projectOrganization, projectSortBy])
 
   useEffect(() => {
     let cancelled = false
@@ -341,9 +356,9 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
       dropPosition,
     )
     setProjectOrder(nextOrder)
-    persistSidebarProjectPreferences(buildSidebarProjectPreferences(nextOrder, pinnedProjectKeys, hiddenProjectKeys, projectOrganization, projectSortBy))
+    persistSidebarProjectPreferences(buildSidebarProjectPreferences(nextOrder, pinnedProjectKeys, pinnedSessionIds, hiddenProjectKeys, projectOrganization, projectSortBy))
     clearProjectDragState()
-  }, [clearProjectDragState, draggingProjectKey, hiddenProjectKeys, orderedProjectGroups, persistSidebarProjectPreferences, pinnedProjectKeys, projectDropTarget, projectOrganization, projectSortBy])
+  }, [clearProjectDragState, draggingProjectKey, hiddenProjectKeys, orderedProjectGroups, persistSidebarProjectPreferences, pinnedProjectKeys, pinnedSessionIds, projectDropTarget, projectOrganization, projectSortBy])
 
   const createSessionForWorkDir = useCallback(async (workDir?: string) => {
     try {
@@ -394,11 +409,12 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
     persistSidebarProjectPreferences(buildSidebarProjectPreferences(
       nextOrder,
       pinnedProjectKeys,
+      pinnedSessionIds,
       hiddenProjectKeys,
       organization,
       projectSortBy,
     ))
-  }, [hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectSortBy])
+  }, [hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, pinnedSessionIds, projectOrder, projectSortBy])
 
   const updateProjectSortBy = useCallback((sortBy: SidebarProjectSortBy) => {
     setProjectHeaderMenu(null)
@@ -409,11 +425,12 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
     persistSidebarProjectPreferences(buildSidebarProjectPreferences(
       nextOrder,
       pinnedProjectKeys,
+      pinnedSessionIds,
       hiddenProjectKeys,
       projectOrganization,
       sortBy,
     ))
-  }, [hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, projectOrganization])
+  }, [hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, pinnedSessionIds, projectOrganization])
 
   const createSessionFromExistingFolder = useCallback(async () => {
     setProjectHeaderMenu(null)
@@ -451,10 +468,31 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
       } else {
         next.add(projectKey)
       }
-      persistSidebarProjectPreferences(buildSidebarProjectPreferences(projectOrder, next, hiddenProjectKeys, projectOrganization, projectSortBy))
+      persistSidebarProjectPreferences(buildSidebarProjectPreferences(projectOrder, next, pinnedSessionIds, hiddenProjectKeys, projectOrganization, projectSortBy))
       return next
     })
-  }, [hiddenProjectKeys, persistSidebarProjectPreferences, projectOrder, projectOrganization, projectSortBy])
+  }, [hiddenProjectKeys, persistSidebarProjectPreferences, pinnedSessionIds, projectOrder, projectOrganization, projectSortBy])
+
+  const togglePinnedSession = useCallback((sessionId: string) => {
+    setContextMenu(null)
+    setPinnedSessionIds((current) => {
+      const next = new Set(current)
+      if (next.has(sessionId)) {
+        next.delete(sessionId)
+      } else {
+        next.add(sessionId)
+      }
+      persistSidebarProjectPreferences(buildSidebarProjectPreferences(
+        projectOrder,
+        pinnedProjectKeys,
+        next,
+        hiddenProjectKeys,
+        projectOrganization,
+        projectSortBy,
+      ))
+      return next
+    })
+  }, [hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectOrganization, projectSortBy])
 
   const restoreAllHiddenProjects = useCallback(() => {
     setProjectHeaderMenu(null)
@@ -465,13 +503,14 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
       persistSidebarProjectPreferences(buildSidebarProjectPreferences(
         projectOrder,
         pinnedProjectKeys,
+        pinnedSessionIds,
         next,
         projectOrganization,
         projectSortBy,
       ))
       return next
     })
-  }, [persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectOrganization, projectSortBy])
+  }, [persistSidebarProjectPreferences, pinnedProjectKeys, pinnedSessionIds, projectOrder, projectOrganization, projectSortBy])
 
   const toggleHiddenProject = useCallback((project: ProjectGroup) => {
     const wasHidden = hiddenProjectKeys.has(project.key)
@@ -483,7 +522,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
       } else {
         next.add(project.key)
       }
-      persistSidebarProjectPreferences(buildSidebarProjectPreferences(projectOrder, pinnedProjectKeys, next, projectOrganization, projectSortBy))
+      persistSidebarProjectPreferences(buildSidebarProjectPreferences(projectOrder, pinnedProjectKeys, pinnedSessionIds, next, projectOrganization, projectSortBy))
       return next
     })
     if (!wasHidden) {
@@ -492,7 +531,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
         message: t('sidebar.projectHidden', { project: project.title }),
       })
     }
-  }, [addToast, hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectOrganization, projectSortBy, t])
+  }, [addToast, hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, pinnedSessionIds, projectOrder, projectOrganization, projectSortBy, t])
 
   const openProjectInFinder = useCallback(async (project: ProjectGroup) => {
     setProjectContextMenu(null)
@@ -928,6 +967,38 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                   <EmptyState variant="inline" title={t('sidebar.noSessions')} />
                 </div>
               )}
+              {pinnedSessions.length > 0 && (
+                <section data-testid="sidebar-pinned-sessions" className="mb-3.5">
+                  <div className="flex items-center gap-2 px-1.5 py-2 text-[13px] font-semibold text-[var(--color-text-primary)]">
+                    <Pin className="h-[18px] w-[18px] text-[var(--color-text-secondary)]" strokeWidth={1.9} aria-hidden="true" />
+                    <span>{t('sidebar.pinnedSessions')}</span>
+                  </div>
+                  <div className="pl-5">
+                    {pinnedSessions.map((session) => (
+                      <PinnedSessionRow
+                        key={session.id}
+                        session={session}
+                        project={projectTitle(session.projectRoot || session.workDir || getSessionProjectKey(session))}
+                        isBatchMode={isBatchMode}
+                        isSelected={selectedSessionIds.has(session.id)}
+                        isActive={session.id === activeTabId}
+                        isRunning={runningSessionIds.has(session.id)}
+                        t={t}
+                        onClick={(event) => {
+                          if (isBatchMode) {
+                            handleBatchSessionClick(event, session.id)
+                            return
+                          }
+                          useTabStore.getState().openTab(session.id, session.title)
+                          useChatStore.getState().connectToSession(session.id)
+                          closeMobileDrawer()
+                        }}
+                        onContextMenu={(event) => handleContextMenu(event, session.id)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
               {orderedProjectGroups.length > 0 && (
                 <ProjectHeaderActions
                   title={t('sidebar.projects')}
@@ -1145,7 +1216,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                                     <SessionRowMeta
                                       isRunning={runningSessionIds.has(session.id)}
                                       isWorktree={isWorktreeSession(session)}
-                                      modifiedAt={session.modifiedAt}
+                                      modifiedAt={session.lastUserMessageAt ?? session.createdAt}
                                       t={t}
                                     />
                                   </span>
@@ -1210,6 +1281,12 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
           className="fixed z-[var(--z-dropdown)] min-w-[180px] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-2 shadow-[var(--shadow-dropdown)]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
+          <button
+            onClick={() => togglePinnedSession(contextMenu.id)}
+            className="w-full px-4 py-2 text-left text-[13px] text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+          >
+            {t(pinnedSessionIds.has(contextMenu.id) ? 'sidebar.unpinSession' : 'sidebar.pinSession')}
+          </button>
           <button
             onClick={() => void handleCopy(contextMenu.id)}
             className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
@@ -1652,8 +1729,9 @@ function groupByProject(sessions: SessionListItem[], sortBy: SidebarProjectSortB
   }
 
   const groups = [...groupsByKey.entries()].map(([key, items]) => {
-    const sortedSessions = [...items].sort((a, b) => compareSessionsByTimestamp(a, b, sortBy))
-    const newest = sortedSessions[0]
+    const sortedSessions = [...items].sort(compareSessionsByLastUserInput)
+    const newest = sortedSessions[0]!
+    const sortSession = [...items].sort((a, b) => compareSessionsByTimestamp(a, b, sortBy))[0]!
     const projectRoot = newest?.projectRoot || newest?.workDir || key
     return {
       key,
@@ -1661,10 +1739,11 @@ function groupByProject(sessions: SessionListItem[], sortBy: SidebarProjectSortB
       subtitle: projectSubtitle(projectRoot, key),
       workDir: projectRoot || newest?.workDir || undefined,
       sessions: sortedSessions,
+      sortSession,
     }
   })
 
-  return groups.sort((a, b) => compareSessionsByTimestamp(a.sessions[0], b.sessions[0], sortBy))
+  return groups.sort((a, b) => compareSessionsByTimestamp(a.sortSession, b.sortSession, sortBy))
 }
 
 function applyProjectOrder(
@@ -1685,7 +1764,7 @@ function applyProjectOrder(
     if (aIndex !== undefined && bIndex !== undefined) return aIndex - bIndex
     if (aIndex !== undefined) return -1
     if (bIndex !== undefined) return 1
-    return compareSessionsByTimestamp(a.sessions[0], b.sessions[0], sortBy)
+    return compareSessionsByTimestamp(a.sortSession, b.sortSession, sortBy)
   })
 }
 
@@ -1740,10 +1819,29 @@ function readStoredProjectPins(): Set<string> {
   }
 }
 
+function readStoredSessionPins(): Set<string> {
+  if (typeof localStorage === 'undefined') return new Set()
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SESSION_PINNED_STORAGE_KEY) ?? '[]')
+    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
 function writeStoredProjectPins(projectKeys: Set<string>): void {
   if (typeof localStorage === 'undefined') return
   try {
     localStorage.setItem(PROJECT_PINNED_STORAGE_KEY, JSON.stringify([...projectKeys]))
+  } catch {
+    // Sidebar pinning is a UI preference; ignore storage failures.
+  }
+}
+
+function writeStoredSessionPins(sessionIds: Set<string>): void {
+  if (typeof localStorage === 'undefined') return
+  try {
+    localStorage.setItem(SESSION_PINNED_STORAGE_KEY, JSON.stringify([...sessionIds]))
   } catch {
     // Sidebar pinning is a UI preference; ignore storage failures.
   }
@@ -1799,6 +1897,7 @@ function writeStoredProjectSortBy(sortBy: SidebarProjectSortBy): void {
 function buildSidebarProjectPreferences(
   projectOrder: string[],
   pinnedProjectKeys: Set<string>,
+  pinnedSessionIds: Set<string>,
   hiddenProjectKeys: Set<string>,
   projectOrganization: SidebarProjectOrganization,
   projectSortBy: SidebarProjectSortBy,
@@ -1806,6 +1905,7 @@ function buildSidebarProjectPreferences(
   return normalizeSidebarProjectPreferences({
     projectOrder,
     pinnedProjects: [...pinnedProjectKeys],
+    pinnedSessions: [...pinnedSessionIds],
     hiddenProjects: [...hiddenProjectKeys],
     projectOrganization,
     projectSortBy,
@@ -1816,6 +1916,7 @@ function readCachedSidebarProjectPreferences(): SidebarProjectPreferences {
   return {
     projectOrder: readStoredProjectOrder(),
     pinnedProjects: [...readStoredProjectPins()],
+    pinnedSessions: [...readStoredSessionPins()],
     hiddenProjects: [...readStoredProjectHidden()],
     projectOrganization: readStoredProjectOrganization(),
     projectSortBy: readStoredProjectSortBy(),
@@ -1826,6 +1927,7 @@ function writeCachedSidebarProjectPreferences(preferences: SidebarProjectPrefere
   const normalized = normalizeSidebarProjectPreferences(preferences)
   writeStoredProjectOrder(normalized.projectOrder)
   writeStoredProjectPins(new Set(normalized.pinnedProjects))
+  writeStoredSessionPins(new Set(normalized.pinnedSessions))
   writeStoredProjectHidden(new Set(normalized.hiddenProjects))
   writeStoredProjectOrganization(normalized.projectOrganization)
   writeStoredProjectSortBy(normalized.projectSortBy)
@@ -1835,6 +1937,7 @@ function normalizeSidebarProjectPreferences(preferences: Partial<SidebarProjectP
   return {
     projectOrder: normalizeProjectKeyList(preferences?.projectOrder),
     pinnedProjects: normalizeProjectKeyList(preferences?.pinnedProjects),
+    pinnedSessions: normalizeProjectKeyList(preferences?.pinnedSessions),
     hiddenProjects: normalizeProjectKeyList(preferences?.hiddenProjects),
     projectOrganization: normalizeProjectOrganization(preferences?.projectOrganization),
     projectSortBy: normalizeProjectSortBy(preferences?.projectSortBy),
@@ -1876,6 +1979,7 @@ function projectPathMatches(projectKey: string, workDir: string): boolean {
 function hasSidebarProjectPreferences(preferences: SidebarProjectPreferences): boolean {
   return preferences.projectOrder.length > 0
     || preferences.pinnedProjects.length > 0
+    || preferences.pinnedSessions.length > 0
     || preferences.hiddenProjects.length > 0
     || preferences.projectOrganization !== 'recentProject'
     || preferences.projectSortBy !== 'updatedAt'
@@ -1916,7 +2020,9 @@ function compareSessionsByTimestamp(
 }
 
 function getSessionTimestamp(session: SessionListItem | undefined, sortBy: SidebarProjectSortBy): number {
-  const value = sortBy === 'createdAt' ? session?.createdAt : session?.modifiedAt
+  const value = sortBy === 'createdAt'
+    ? session?.createdAt
+    : session?.lastUserMessageAt ?? session?.createdAt
   const timestamp = new Date(value ?? 0).getTime()
   return Number.isFinite(timestamp) ? timestamp : 0
 }
@@ -2004,6 +2110,81 @@ function ProjectMenuItem({
       <span className="min-w-0 truncate">{children}</span>
     </button>
   )
+}
+
+function PinnedSessionRow({
+  session,
+  project,
+  isBatchMode,
+  isSelected,
+  isActive,
+  isRunning,
+  t,
+  onClick,
+  onContextMenu,
+}: {
+  session: SessionListItem
+  project: string
+  isBatchMode: boolean
+  isSelected: boolean
+  isActive: boolean
+  isRunning: boolean
+  t: ReturnType<typeof useTranslation>
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void
+  onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => void
+}) {
+  return (
+    <div data-sidebar-session-id={session.id} className="relative mb-0.5 last:mb-0">
+      <button
+        type="button"
+        onClick={onClick}
+        onContextMenu={onContextMenu}
+        className={`
+          group/session w-full rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[13px] transition-[background,filter,color,box-shadow] duration-200
+          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-surface-sidebar)]
+          ${isSelected
+            ? 'sidebar-session-row--selected bg-[var(--color-sidebar-item-active)] text-[var(--color-text-primary)] shadow-[var(--shadow-card)]'
+            : isActive
+              ? 'sidebar-session-row--active bg-[var(--color-sidebar-item-active)] text-[var(--color-text-primary)] shadow-[var(--shadow-card)]'
+              : 'sidebar-session-row--idle text-[var(--color-text-secondary)] hover:bg-[var(--color-sidebar-item-hover)] hover:text-[var(--color-text-primary)]'
+          }
+        `}
+        aria-pressed={isBatchMode ? isSelected : undefined}
+        title={session.title || 'Untitled'}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          {isBatchMode ? (
+            <span
+              className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[5px] border transition-colors ${
+                isSelected
+                  ? 'border-[var(--color-brand)] bg-[var(--color-brand)] text-[var(--color-on-primary)]'
+                  : 'border-[var(--color-border-strong)] bg-[var(--color-surface)]'
+              }`}
+              aria-hidden="true"
+            >
+              {isSelected && <span className="material-symbols-outlined text-[12px]">check</span>}
+            </span>
+          ) : null}
+          <Pin className="h-3.5 w-3.5 flex-shrink-0 text-[var(--color-text-tertiary)]" strokeWidth={1.8} aria-hidden="true" />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate font-medium tracking-normal">{session.title || 'Untitled'}</span>
+            <span className="truncate text-[11px] font-normal text-[var(--color-text-tertiary)]">{project}</span>
+          </span>
+          <SessionRowMeta
+            isRunning={isRunning}
+            isWorktree={isWorktreeSession(session)}
+            modifiedAt={session.lastUserMessageAt ?? session.createdAt}
+            t={t}
+          />
+        </span>
+      </button>
+    </div>
+  )
+}
+
+function compareSessionsByLastUserInput(a: SessionListItem, b: SessionListItem): number {
+  const timestampDifference = getSessionTimestamp(b, 'updatedAt') - getSessionTimestamp(a, 'updatedAt')
+  return timestampDifference || a.id.localeCompare(b.id)
 }
 
 function SessionRowMeta({

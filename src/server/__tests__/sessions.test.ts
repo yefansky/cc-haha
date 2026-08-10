@@ -719,6 +719,30 @@ describe('SessionService', () => {
       .toBe('2026-07-01T02:05:00.000Z')
   })
 
+  it('sorts sessions by the most recent user input instead of later assistant output', async () => {
+    const assistantActiveSessionId = '10000010-aaaa-bbbb-cccc-eeeeeeeeeeee'
+    const recentUserSessionId = '10000011-aaaa-bbbb-cccc-eeeeeeeeeeee'
+    await writeSessionFile('-tmp-user-input-order', assistantActiveSessionId, [
+      { ...makeUserEntry('Earlier user input'), timestamp: '2026-07-01T01:00:00.000Z' },
+      { ...makeAssistantEntry('Assistant is still working'), timestamp: '2026-07-03T01:00:00.000Z' },
+    ])
+    await writeSessionFile('-tmp-user-input-order', recentUserSessionId, [
+      { ...makeUserEntry('Most recent user input'), timestamp: '2026-07-02T01:00:00.000Z' },
+      { ...makeAssistantEntry('Earlier assistant reply'), timestamp: '2026-07-02T01:01:00.000Z' },
+    ])
+
+    const result = await service.listSessions({ project: '/tmp/user-input-order', limit: 2 })
+
+    expect(result.sessions.map((session) => session.id)).toEqual([
+      recentUserSessionId,
+      assistantActiveSessionId,
+    ])
+    expect(result.sessions.map((session) => session.lastUserMessageAt)).toEqual([
+      '2026-07-02T01:00:00.000Z',
+      '2026-07-01T01:00:00.000Z',
+    ])
+  })
+
   it('should leave an incomplete final JSON line out of the session summary', async () => {
     const sessionId = '10000002-aaaa-bbbb-cccc-eeeeeeeeeeee'
     const projectDir = '-tmp-incomplete-summary'
@@ -843,6 +867,7 @@ describe('SessionService', () => {
         title: 'Untitled Session',
         createdAt: stat.birthtime.toISOString(),
         modifiedAt: stat.mtime.toISOString(),
+        lastUserMessageAt: null,
         messageCount: 0,
         workDir: service.desanitizePath(projectDir),
       },
@@ -857,6 +882,7 @@ describe('SessionService', () => {
       title: 'Canonical parity title',
       createdAt: '2026-07-01T01:00:00.000Z',
       modifiedAt: '2026-07-01T02:05:00.000Z',
+      lastUserMessageAt: '2026-07-01T02:00:00.000Z',
       messageCount: 3,
       workDir: '/repo/.claude/worktrees/parity-latest',
       permissionMode: 'acceptEdits',

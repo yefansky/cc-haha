@@ -3,6 +3,7 @@ import { ApiError, api, getApiUrl, getAuthToken } from './client'
 export type SidebarProjectPreferences = {
   projectOrder: string[]
   pinnedProjects: string[]
+  pinnedSessions: string[]
   hiddenProjects: string[]
   projectOrganization: 'project' | 'recentProject' | 'time'
   projectSortBy: 'createdAt' | 'updatedAt'

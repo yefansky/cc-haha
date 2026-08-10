@@ -119,6 +119,7 @@ describe('reduceTranscript', () => {
       title: 'Pinned title',
       createdAt: '2026-01-01T00:00:00.000Z',
       modifiedAt: '2026-01-01T00:02:00.000Z',
+      lastUserMessageAt: '2026-01-01T00:01:00.000Z',
       messageCount: 2,
       workDir: 'D:\\workspace\\repo',
       permissionMode: 'acceptEdits',
@@ -383,6 +384,7 @@ describe('reduceTranscript', () => {
       title: 'Untitled Session',
       createdAt: birthtime,
       modifiedAt: mtime,
+      lastUserMessageAt: null,
       messageCount: 0,
       workDir: '/fallback/project',
     })

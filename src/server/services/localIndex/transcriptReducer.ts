@@ -78,6 +78,7 @@ type ReducerState = {
   createdAt: string
   hasCreatedAt: boolean
   semanticModifiedAt: string | null
+  lastUserMessageAt: string | null
   messageCount: number
   firstUserTitle: string | null
   goalTitle: string | null
@@ -237,6 +238,7 @@ function createInitialState(
     createdAt: summary?.createdAt ?? '',
     hasCreatedAt: false,
     semanticModifiedAt: null,
+    lastUserMessageAt: summary?.lastUserMessageAt ?? null,
     messageCount: 0,
     firstUserTitle: null,
     goalTitle: null,
@@ -522,6 +524,9 @@ function applyEntry(state: ReducerState, entry: ReducerEntry): void {
         state.semanticModifiedAt,
         entry.timestamp,
       )
+      if (entry.type === 'user' && entry.message.role === 'user') {
+        state.lastUserMessageAt = latestTimestamp(state.lastUserMessageAt, entry.timestamp)
+      }
     }
   }
 
@@ -604,6 +609,7 @@ function summaryFromState(state: ReducerState): SessionListSummary {
       'Untitled Session',
     createdAt: state.hasCreatedAt ? state.createdAt : state.fallbackCreatedAt,
     modifiedAt: state.semanticModifiedAt ?? state.fallbackModifiedAt,
+    lastUserMessageAt: state.lastUserMessageAt,
     messageCount: state.messageCount,
     workDir: state.latestWorkDir || state.latestCwd || state.fallbackWorkDir,
     ...(state.permissionMode ? { permissionMode: state.permissionMode } : {}),

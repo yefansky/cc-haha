@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
 import { CircleAlert, Code2, Eye, FileText, FolderOpen, FolderPlus, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X } from 'lucide-react'
 import { Highlight } from 'prism-react-renderer'
 import {
@@ -39,8 +39,10 @@ import {
   type WorkspaceDiffCommentSelection,
 } from './WorkspaceCodeSurface'
 import { WorkspaceFileOpenWith } from './WorkspaceFileOpenWith'
+import { WorkspaceTableSurface } from './WorkspaceTableSurface'
 import { getWorkspaceStatusLabel } from './fileIdentity'
 import type { WorkspaceDiffHighlightToken } from './workspaceDiffHighlighter'
+import { isWorkspaceTablePath } from './workspaceTablePreview'
 
 type WorkspacePanelProps = {
   sessionId: string
@@ -71,7 +73,7 @@ type TreeNodeProps = {
   filterQuery: string
   onToggle: (path: string) => void
   onOpenFile: (path: string) => void
-  onFileContextMenu: (event: MouseEvent, path: string, isDirectory: boolean) => void
+  onFileContextMenu: (event: ReactMouseEvent, path: string, isDirectory: boolean) => void
   activePath: string | null
   variant?: 'tree' | 'changed'
 }
@@ -125,15 +127,43 @@ const SELECTION_MENU_OFFSET = 10
 const SELECTION_MENU_WIDTH = 158
 const SELECTION_MENU_HEIGHT = 44
 const WORKSPACE_SEARCH_DEBOUNCE_MS = 250
+const WORKSPACE_NAVIGATOR_WIDTH_STORAGE_KEY = 'workspace.navigatorWidth'
+const WORKSPACE_NAVIGATOR_DEFAULT_WIDTH = 320
+const WORKSPACE_NAVIGATOR_MIN_WIDTH = 220
+const WORKSPACE_NAVIGATOR_MAX_WIDTH = 720
+const WORKSPACE_PREVIEW_MIN_WIDTH = 240
 const PLAINTEXT_FILE_EXTENSIONS = new Set([
-  'asm', 'bat', 'c', 'cc', 'cfg', 'cmake', 'conf', 'cpp', 'cs', 'css', 'csv',
+  'asm', 'bash', 'bat', 'c', 'cc', 'cfg', 'cjs', 'cmake', 'cmd', 'conf', 'cpp', 'cs', 'css', 'csv', 'cts',
   'def', 'go', 'h', 'hh', 'hpp', 'html', 'i', 'ini', 'inl', 'java', 'js', 'json',
   'jsx', 'lh', 'li', 'log', 'lua', 'm', 'md', 'mjs', 'mm', 'ps1', 'py', 'rc',
-  'rs', 'sh', 'sln', 'sql', 'svg', 'tab', 'targets', 'toml', 'ts', 'tsx', 'tsv',
-  'txt', 'vcxproj', 'xml', 'yaml', 'yml',
+  'mts', 'rs', 'sh', 'shell', 'sln', 'sql', 'svg', 'tab', 'targets', 'toml', 'ts', 'tsx', 'tsv',
+  'txt', 'vcproj', 'vcxproj', 'xml', 'yaml', 'yml', 'zsh',
 ])
 const PLAINTEXT_FILE_NAMES = new Set(['cmakelists.txt', 'dockerfile', 'makefile', 'readme', 'license'])
 type ChangedVersionFilter = 'all' | 'versioned' | 'untracked'
+
+function clampWorkspaceNavigatorWidth(width: number, availableMaximum = WORKSPACE_NAVIGATOR_MAX_WIDTH) {
+  const maximum = Math.max(WORKSPACE_NAVIGATOR_MIN_WIDTH, Math.min(WORKSPACE_NAVIGATOR_MAX_WIDTH, availableMaximum))
+  return Math.min(maximum, Math.max(WORKSPACE_NAVIGATOR_MIN_WIDTH, Math.round(width)))
+}
+
+function readWorkspaceNavigatorWidth() {
+  try {
+    const stored = window.localStorage.getItem(WORKSPACE_NAVIGATOR_WIDTH_STORAGE_KEY)
+    const parsed = stored === null ? Number.NaN : Number.parseInt(stored, 10)
+    return Number.isFinite(parsed) ? clampWorkspaceNavigatorWidth(parsed) : WORKSPACE_NAVIGATOR_DEFAULT_WIDTH
+  } catch {
+    return WORKSPACE_NAVIGATOR_DEFAULT_WIDTH
+  }
+}
+
+function persistWorkspaceNavigatorWidth(width: number) {
+  try {
+    window.localStorage.setItem(WORKSPACE_NAVIGATOR_WIDTH_STORAGE_KEY, String(width))
+  } catch {
+    // localStorage may be unavailable; the in-memory width still remains usable.
+  }
+}
 const FILE_BADGE_META: Record<string, { label: string; className: string }> = {
   ts: { label: 'TS', className: 'bg-[var(--color-info-container)] text-[var(--color-on-info-container)]' },
   tsx: { label: 'TSX', className: 'bg-[var(--color-info-container)] text-[var(--color-on-info-container)]' },
@@ -198,6 +228,10 @@ function isMarkdownPreview(tab: WorkspacePreviewTab) {
   const language = (tab.language ?? '').toLowerCase()
   const extension = getFileExtension(tab.path)
   return language === 'markdown' || language === 'md' || extension === 'md' || extension === 'markdown'
+}
+
+function isTablePreview(tab: WorkspacePreviewTab) {
+  return tab.kind === 'file' && isWorkspaceTablePath(tab.path)
 }
 
 function FileTypeBadge({ name, subtle = false }: { name: string; subtle?: boolean }) {
@@ -737,7 +771,7 @@ function CodeSurface({
     setCommentDraft('')
   }
 
-  const handleSelectionMouseUp = (event: MouseEvent<HTMLDivElement>) => {
+  const handleSelectionMouseUp = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.ctrlKey) {
       setSelectionMenu(null)
       return
@@ -1033,7 +1067,7 @@ function MarkdownSurface({
     onDismiss: dismissSelectionMenu,
   })
 
-  const handleSelectionMouseUp = (event: MouseEvent<HTMLDivElement>) => {
+  const handleSelectionMouseUp = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.ctrlKey) {
       setSelectionMenu(null)
       return
@@ -1134,7 +1168,7 @@ function WorkspaceSearchResultRow({
   entry: WorkspaceTreeEntry
   active: boolean
   onOpen: () => void
-  onContextMenu: (event: MouseEvent, path: string, isDirectory: boolean) => void
+  onContextMenu: (event: ReactMouseEvent, path: string, isDirectory: boolean) => void
   onClearSearch: () => void
 }) {
   const normalizedPath = entry.path.replace(/\\/g, '/')
@@ -1355,10 +1389,12 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const [workspaceSearchError, setWorkspaceSearchError] = useState<string | null>(null)
   const [workspaceSearchRevision, setWorkspaceSearchRevision] = useState(0)
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false)
+  const [navigatorWidth, setNavigatorWidth] = useState(readWorkspaceNavigatorWidth)
   // The navigator and preview are separate views so narrow workbench tabs do
   // not squeeze either the tree or the code surface.
   const [isNavigatorOpen, setIsNavigatorOpen] = useState(true)
   const [markdownSourceByTab, setMarkdownSourceByTab] = useState<Record<string, boolean>>({})
+  const [tableSourceByTab, setTableSourceByTab] = useState<Record<string, boolean>>({})
   const isVscodeLayout = layout === 'vscode'
   const [previewTabContextMenu, setPreviewTabContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null)
@@ -1403,6 +1439,11 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const workspaceSearchRequestIdRef = useRef(0)
   const filterInputRef = useRef<HTMLInputElement>(null)
   const previewHeaderRef = useRef<HTMLDivElement>(null)
+  const workspaceLayoutRef = useRef<HTMLDivElement>(null)
+  const navigatorRef = useRef<HTMLDivElement>(null)
+  const navigatorDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const navigatorWidthRef = useRef(navigatorWidth)
+  navigatorWidthRef.current = navigatorWidth
 
   const rootTree = treeByPath['']
   const rootTreeKey = makeTreeStateKey(sessionId, '')
@@ -1413,6 +1454,9 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     previewTabs.find((tab) => tab.id === activePreviewTabId) ?? previewTabs[previewTabs.length - 1] ?? null
   const activeMarkdownView = activePreviewTab && isMarkdownPreview(activePreviewTab)
     ? (markdownSourceByTab[activePreviewTab.id] ? 'source' : 'preview')
+    : null
+  const activeTableView = activePreviewTab && isTablePreview(activePreviewTab)
+    ? (tableSourceByTab[activePreviewTab.id] ? 'source' : 'preview')
     : null
   const hasPreviewTabs = previewTabs.length > 0
   const isNavigatorVisible = isNavigatorOpen
@@ -1613,6 +1657,75 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     if (shouldRender && previewOpenNonce > 0 && !isVscodeLayout) setIsNavigatorOpen(false)
   }, [isVscodeLayout, previewOpenNonce, shouldRender])
 
+  const getNavigatorMaximumWidth = useCallback(() => {
+    const layoutWidth = workspaceLayoutRef.current?.getBoundingClientRect().width ?? 0
+    if (layoutWidth <= 0) return WORKSPACE_NAVIGATOR_MAX_WIDTH
+    return Math.max(WORKSPACE_NAVIGATOR_MIN_WIDTH, layoutWidth - WORKSPACE_PREVIEW_MIN_WIDTH)
+  }, [])
+
+  const handleNavigatorResizeMove = useCallback((event: globalThis.MouseEvent) => {
+    const drag = navigatorDragRef.current
+    if (!drag) return
+    const nextWidth = clampWorkspaceNavigatorWidth(
+      drag.startWidth + event.clientX - drag.startX,
+      getNavigatorMaximumWidth(),
+    )
+    navigatorWidthRef.current = nextWidth
+    setNavigatorWidth(nextWidth)
+  }, [getNavigatorMaximumWidth])
+
+  const handleNavigatorResizeEnd = useCallback(() => {
+    if (!navigatorDragRef.current) return
+    navigatorDragRef.current = null
+    persistWorkspaceNavigatorWidth(navigatorWidthRef.current)
+    document.body.style.removeProperty('cursor')
+    document.body.style.removeProperty('user-select')
+    window.removeEventListener('mousemove', handleNavigatorResizeMove)
+    window.removeEventListener('mouseup', handleNavigatorResizeEnd)
+  }, [handleNavigatorResizeMove])
+
+  const handleNavigatorResizeStart = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const measuredWidth = navigatorRef.current?.getBoundingClientRect().width ?? 0
+    navigatorDragRef.current = {
+      startX: event.clientX,
+      startWidth: measuredWidth > 0 ? measuredWidth : navigatorWidthRef.current,
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', handleNavigatorResizeMove)
+    window.addEventListener('mouseup', handleNavigatorResizeEnd)
+  }, [handleNavigatorResizeEnd, handleNavigatorResizeMove])
+
+  const resetNavigatorWidth = useCallback(() => {
+    const nextWidth = clampWorkspaceNavigatorWidth(WORKSPACE_NAVIGATOR_DEFAULT_WIDTH, getNavigatorMaximumWidth())
+    navigatorWidthRef.current = nextWidth
+    setNavigatorWidth(nextWidth)
+    persistWorkspaceNavigatorWidth(nextWidth)
+  }, [getNavigatorMaximumWidth])
+
+  const handleNavigatorResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    let nextWidth: number | null = null
+    if (event.key === 'ArrowLeft') nextWidth = navigatorWidthRef.current - 16
+    if (event.key === 'ArrowRight') nextWidth = navigatorWidthRef.current + 16
+    if (event.key === 'Home') nextWidth = WORKSPACE_NAVIGATOR_MIN_WIDTH
+    if (event.key === 'End') nextWidth = getNavigatorMaximumWidth()
+    if (nextWidth === null) return
+    event.preventDefault()
+    const clampedWidth = clampWorkspaceNavigatorWidth(nextWidth, getNavigatorMaximumWidth())
+    navigatorWidthRef.current = clampedWidth
+    setNavigatorWidth(clampedWidth)
+    persistWorkspaceNavigatorWidth(clampedWidth)
+  }, [getNavigatorMaximumWidth])
+
+  useEffect(() => () => {
+    window.removeEventListener('mousemove', handleNavigatorResizeMove)
+    window.removeEventListener('mouseup', handleNavigatorResizeEnd)
+    document.body.style.removeProperty('cursor')
+    document.body.style.removeProperty('user-select')
+  }, [handleNavigatorResizeEnd, handleNavigatorResizeMove])
+
   if (!shouldRender) return null
 
   const panelWidth = hasPreviewTabs ? width : Math.min(width, 520)
@@ -1751,14 +1864,14 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     setIsViewMenuOpen(false)
   }
 
-  const handlePreviewTabContextMenu = (event: MouseEvent, tabId: string) => {
+  const handlePreviewTabContextMenu = (event: ReactMouseEvent, tabId: string) => {
     event.preventDefault()
     event.stopPropagation()
     setFileContextMenu(null)
     setPreviewTabContextMenu({ tabId, x: event.clientX, y: event.clientY })
   }
 
-  const handleFileContextMenu = (event: MouseEvent, path: string, isDirectory = false) => {
+  const handleFileContextMenu = (event: ReactMouseEvent, path: string, isDirectory = false) => {
     event.preventDefault()
     event.stopPropagation()
     setPreviewTabContextMenu(null)
@@ -2065,6 +2178,23 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                 showTooltip={false}
               />
             )}
+            {activeTableView && (
+              <IconButton
+                icon={activeTableView === 'preview'
+                  ? <Code2 size={16} strokeWidth={1.9} aria-hidden="true" />
+                  : <Eye size={16} strokeWidth={1.9} aria-hidden="true" />}
+                label={activeTableView === 'preview'
+                  ? t('workspace.openTableSource')
+                  : t('workspace.openTablePreview')}
+                onClick={() => setTableSourceByTab((current) => ({
+                  ...current,
+                  [activePreviewTab.id]: activeTableView === 'preview',
+                }))}
+                size="md"
+                tone="muted"
+                showTooltip={false}
+              />
+            )}
             {activePreviewTab.previewType !== 'image' && (
               <label className="hidden items-center gap-1 text-[10px] text-[var(--color-text-secondary)] min-[720px]:inline-flex">
                 <span>{t('workspace.encoding')}</span>
@@ -2183,6 +2313,11 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             sessionId={sessionId}
             workDir={status?.workDir}
             onAddSelection={(selection) => addSelectionToChat(activePreviewTab.path, selection)}
+          />
+        ) : state === 'ok' && activeTableView === 'preview' ? (
+          <WorkspaceTableSurface
+            value={activePreviewTab.content ?? ''}
+            path={activePreviewTab.path}
           />
         ) : state === 'ok' ? (
           <CodeSurface
@@ -2333,6 +2468,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       style={embedded ? undefined : { width: panelWidth, maxWidth: panelMaxWidth, minWidth: panelMinWidth }}
     >
       <div
+        ref={workspaceLayoutRef}
         data-testid="workspace-review-layout"
         data-layout={layout}
         className={`relative flex min-h-0 flex-1 overflow-hidden ${isVscodeLayout ? 'flex-row' : 'flex-col'}`}
@@ -2360,8 +2496,10 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
         </div>}
 
         <div
+            ref={navigatorRef}
             data-testid="workspace-file-navigator"
-            className={`${isVscodeLayout || isNavigatorVisible ? 'flex' : 'hidden'} min-h-0 flex-col bg-[var(--color-surface)] ${isVscodeLayout ? 'order-first w-[min(32%,320px)] min-w-[220px] shrink-0 border-r border-[var(--color-border)]' : 'flex-1'}`}
+            className={`${isVscodeLayout || isNavigatorVisible ? 'flex' : 'hidden'} min-h-0 flex-col bg-[var(--color-surface)] ${isVscodeLayout ? 'order-first min-w-[220px] max-w-[70%] shrink-0' : 'flex-1'}`}
+            style={isVscodeLayout ? { width: navigatorWidth } : undefined}
           >
             <header
               data-testid="workspace-file-navigator-header"
@@ -2466,6 +2604,24 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               {navigatorView === 'changed' ? renderChangedView() : renderAllFilesView()}
             </div>
         </div>
+        {isVscodeLayout && (
+          <div
+            role="separator"
+            tabIndex={0}
+            aria-orientation="vertical"
+            aria-label={t('workspace.resizeNavigator')}
+            aria-valuemin={WORKSPACE_NAVIGATOR_MIN_WIDTH}
+            aria-valuemax={Math.round(getNavigatorMaximumWidth())}
+            aria-valuenow={navigatorWidth}
+            data-testid="workspace-file-navigator-resize-handle"
+            onMouseDown={handleNavigatorResizeStart}
+            onDoubleClick={resetNavigatorWidth}
+            onKeyDown={handleNavigatorResizeKeyDown}
+            className="group relative order-[-1] w-px shrink-0 cursor-col-resize bg-[var(--color-border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+          >
+            <div className="absolute inset-y-0 -left-[3px] z-10 w-[7px] transition-colors group-hover:bg-[var(--color-brand)]/20 group-focus-visible:bg-[var(--color-brand)]/20" />
+          </div>
+        )}
       </div>
 
       {fileContextMenu && (

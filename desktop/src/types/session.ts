@@ -22,6 +22,7 @@ export type SessionListItem = {
   title: string
   createdAt: string
   modifiedAt: string
+  lastUserMessageAt?: string | null
   messageCount: number
   projectPath: string
   projectRoot?: string | null

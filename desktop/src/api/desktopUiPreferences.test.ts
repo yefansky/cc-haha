@@ -22,6 +22,7 @@ const preferences = {
   sidebar: {
     projectOrder: [],
     pinnedProjects: [],
+    pinnedSessions: [],
     hiddenProjects: [],
     projectOrganization: 'recentProject',
     projectSortBy: 'updatedAt',

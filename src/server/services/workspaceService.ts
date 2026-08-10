@@ -24,16 +24,50 @@ const AUTO_ENCODING_SAMPLE_BYTES = 16 * 1024
 const MAX_SVN_STATUS_BUFFER_BYTES = 16 * 1024 * 1024
 const VCS_METADATA_DIRECTORY_NAMES = new Set(['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'])
 const PLAINTEXT_FILE_EXTENSIONS = new Set([
-  'asm', 'bat', 'c', 'cc', 'cfg', 'cmake', 'conf', 'cpp', 'cs', 'css', 'csv',
+  'asm', 'bash', 'bat', 'c', 'cc', 'cfg', 'cjs', 'cmake', 'cmd', 'conf', 'cpp', 'cs', 'css', 'csv', 'cts',
   'def', 'go', 'h', 'hh', 'hpp', 'html', 'i', 'ini', 'inl', 'java', 'js', 'json',
   'jsx', 'lh', 'li', 'log', 'lua', 'm', 'md', 'mjs', 'mm', 'ps1', 'py', 'rc',
-  'rs', 'sh', 'sln', 'sql', 'svg', 'tab', 'targets', 'toml', 'ts', 'tsx', 'tsv',
-  'txt', 'vcxproj', 'xml', 'yaml', 'yml',
+  'mts', 'rs', 'sh', 'shell', 'sln', 'sql', 'svg', 'tab', 'targets', 'toml', 'ts', 'tsx', 'tsv',
+  'txt', 'vcproj', 'vcxproj', 'xml', 'yaml', 'yml', 'zsh',
 ])
 const PLAINTEXT_FILE_NAMES = new Set([
   'cmakelists.txt', 'dockerfile', 'makefile', 'readme', 'license',
 ])
 const execFile = promisify(execFileCallback)
+
+export function resolveSvnExecutableCandidates(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const candidates = [env.SVN_EXECUTABLE?.trim(), 'svn']
+
+  if (platform === 'win32') {
+    const programFilesRoots = [
+      env.ProgramW6432,
+      env.ProgramFiles,
+      env['ProgramFiles(x86)'],
+    ]
+    for (const root of programFilesRoots) {
+      if (!root) continue
+      candidates.push(
+        path.join(root, 'TortoiseSVN', 'bin', 'svn.exe'),
+        path.join(root, 'Subversion', 'bin', 'svn.exe'),
+      )
+    }
+    if (env.LOCALAPPDATA) {
+      candidates.push(path.join(env.LOCALAPPDATA, 'Programs', 'TortoiseSVN', 'bin', 'svn.exe'))
+    }
+  }
+
+  const seen = new Set<string>()
+  return candidates.flatMap((candidate) => {
+    if (!candidate) return []
+    const key = platform === 'win32' ? candidate.toLowerCase() : candidate
+    if (seen.has(key)) return []
+    seen.add(key)
+    return [candidate]
+  })
+}
 
 function decodeWorkspaceText(buffer: Buffer, requestedEncoding: WorkspaceTextEncoding): { content: string; encoding: WorkspaceTextEncoding } {
   const encoding = requestedEncoding === 'auto' ? detectWorkspaceTextEncoding(buffer) : requestedEncoding
@@ -66,26 +100,48 @@ function isVcsMetadataDirectoryName(name: string): boolean {
 }
 
 const LANGUAGE_MAP: Record<string, string> = {
+  bash: 'bash',
+  bat: 'bat',
+  c: 'c',
+  cc: 'cpp',
   cjs: 'javascript',
+  cmd: 'bat',
+  cpp: 'cpp',
+  cs: 'csharp',
   css: 'css',
+  cts: 'typescript',
+  cxx: 'cpp',
   go: 'go',
+  h: 'cpp',
+  hh: 'cpp',
+  hpp: 'cpp',
+  hxx: 'cpp',
   html: 'html',
+  inl: 'cpp',
   java: 'java',
   js: 'javascript',
   json: 'json',
   jsx: 'jsx',
+  lua: 'lua',
   md: 'markdown',
   mjs: 'javascript',
+  mts: 'typescript',
+  ps1: 'powershell',
   py: 'python',
   rs: 'rust',
   sh: 'bash',
+  shell: 'bash',
+  sln: 'ini',
   sql: 'sql',
   ts: 'typescript',
   tsx: 'tsx',
   txt: 'text',
+  vcproj: 'xml',
+  vcxproj: 'xml',
   xml: 'xml',
   yaml: 'yaml',
   yml: 'yaml',
+  zsh: 'bash',
 }
 
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
@@ -242,6 +298,7 @@ type GitCommandResult = {
   stdout: string
   stderr: string
   code: number
+  failure?: string
 }
 
 type DiffStatsResult =
@@ -307,6 +364,7 @@ export class WorkspaceService {
     private readonly resolveSessionFileHistorySnapshots: (
       sessionId: string,
     ) => Promise<FileHistorySnapshot[]> = async () => [],
+    private readonly resolveSvnExecutables: () => string[] = resolveSvnExecutableCandidates,
   ) {}
 
   /**
@@ -2131,15 +2189,24 @@ export class WorkspaceService {
     canonicalTargetPath: string,
   ): Promise<{ kind: 'ok'; diff: string } | { kind: 'error'; message: string }> {
     const cwd = path.dirname(canonicalTargetPath)
-    const result = await this.runSvn(cwd, ['diff'])
+    const targetName = path.basename(canonicalTargetPath)
+    const canPassTargetName = /^[\x00-\x7f]+$/.test(targetName)
+    // Keep regular source files scoped to one exact target. For names that the
+    // Windows SVN executable cannot accept losslessly, inspect only the files
+    // in the immediate parent instead of recursively diffing a large tree.
+    const args = canPassTargetName
+      ? ['diff', '--', targetName]
+      : ['diff', '--depth', 'files']
+    const result = await this.runSvn(cwd, args)
     if (result.code !== 0) {
       return {
         kind: 'error',
-        message: this.formatSvnError('Failed to read SVN diff', ['diff'], cwd, result),
+        message: this.formatSvnError('Failed to read SVN diff', args, cwd, result),
       }
     }
 
-    const targetName = path.basename(canonicalTargetPath)
+    if (canPassTargetName) return { kind: 'ok', diff: result.stdout }
+
     const lossyWindowsTargetName = targetName.replace(/[^\x00-\x7f]/g, '?')
     const blocks = result.stdout.split(/(?=^Index: )/m)
     const indexedBlocks = blocks.filter((block) => /^Index: /m.test(block))
@@ -2515,29 +2582,52 @@ export class WorkspaceService {
     args: string[],
     maxBuffer = MAX_GIT_BUFFER_BYTES,
   ): Promise<GitCommandResult> {
-    try {
-      const result = await execFile('svn', args, {
-        cwd: workDir,
-        timeout: GIT_TIMEOUT_MS,
-        maxBuffer,
-        encoding: 'buffer',
-      })
-      return {
-        stdout: decodeCommandOutput(result.stdout),
-        stderr: decodeCommandOutput(result.stderr),
-        code: 0,
+    let lastMissingExecutableError: NodeJS.ErrnoException | null = null
+    const executables = this.resolveSvnExecutables()
+
+    for (const executable of executables) {
+      try {
+        const result = await execFile(executable, args, {
+          cwd: workDir,
+          timeout: GIT_TIMEOUT_MS,
+          maxBuffer,
+          encoding: 'buffer',
+        })
+        return {
+          stdout: decodeCommandOutput(result.stdout),
+          stderr: decodeCommandOutput(result.stderr),
+          code: 0,
+        }
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException & {
+          stdout?: string | Buffer
+          stderr?: string | Buffer
+          code?: number | string
+          killed?: boolean
+        }
+        if (err.code === 'ENOENT') {
+          lastMissingExecutableError = err
+          continue
+        }
+        return {
+          stdout: decodeCommandOutput(err.stdout),
+          stderr: decodeCommandOutput(err.stderr),
+          code: typeof err.code === 'number' ? err.code : 1,
+          failure: err.killed
+            ? `SVN command timed out after ${GIT_TIMEOUT_MS} ms.`
+            : err.message || (typeof err.code === 'string' ? err.code : undefined),
+        }
       }
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException & {
-        stdout?: string | Buffer
-        stderr?: string | Buffer
-        code?: number | string
-      }
-      return {
-        stdout: decodeCommandOutput(err.stdout),
-        stderr: decodeCommandOutput(err.stderr),
-        code: typeof err.code === 'number' ? err.code : 1,
-      }
+    }
+
+    const attempted = executables.length > 0 ? executables.join(', ') : 'svn'
+    return {
+      stdout: '',
+      stderr: '',
+      code: 1,
+      failure: lastMissingExecutableError
+        ? `SVN executable was not found. Tried: ${attempted}`
+        : 'No SVN executable candidates were configured.',
     }
   }
 
@@ -2636,7 +2726,7 @@ export class WorkspaceService {
     // an SVN diagnostic and must not replace the file tree with raw markup.
     const details = stderr || (result.stdout.trimStart().startsWith('<?xml')
       ? 'SVN returned XML status output but the command did not complete.'
-      : result.stdout.trim() || 'unknown SVN failure')
+      : result.stdout.trim() || result.failure || `SVN exited with code ${result.code}.`)
     return `${prefix} (svn ${args.join(' ')} in ${workDir}): ${details}`
   }
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseWorkspaceDiff } from './workspaceDiffModel'
 import {
   buildWorkspaceDiffWordRanges,
+  getWorkspaceDiffShikiLanguage,
   highlightWorkspaceCode,
   highlightWorkspaceDiff,
 } from './workspaceDiffHighlighter'
@@ -31,6 +32,68 @@ describe('workspaceDiffHighlighter', () => {
     expect(tokens.some((token) => token.content === 'package' && token.color === 'var(--color-code-keyword)')).toBe(true)
     expect(tokens.some((token) => token.content === 'MentalHealthTrendController' && token.color === 'var(--color-code-type)')).toBe(true)
     expect(tokens.some((token) => token.content === 'countVisibleOrganizations' && token.color === 'var(--color-code-function)')).toBe(true)
+  })
+
+  it.each([
+    {
+      language: 'cpp',
+      value: 'class Player { public: int GetLevel() const { return 80; } };',
+      keyword: 'class',
+    },
+    {
+      language: 'lua',
+      value: 'local function get_level(player) return player.level or 0 end',
+      keyword: 'local',
+    },
+    {
+      language: 'typescript',
+      value: 'const answer: number = 42',
+      keyword: 'const',
+    },
+    {
+      language: 'javascript',
+      value: 'function answer() { return 42 }',
+      keyword: 'function',
+    },
+    {
+      language: 'bash',
+      value: 'if [[ -f "$file" ]]; then echo ready; fi',
+      keyword: 'if',
+    },
+    {
+      language: 'bat',
+      value: 'if exist app.exe echo ready',
+      keyword: 'if',
+    },
+    {
+      language: 'csharp',
+      value: 'public sealed class Program { static void Main() {} }',
+      keyword: 'public',
+    },
+    {
+      language: 'xml',
+      value: '<Project><ItemGroup /></Project>',
+      keyword: 'Project',
+    },
+    {
+      language: 'ini',
+      value: '[SolutionConfigurationPlatforms]\nDebug|x64 = Debug|x64',
+      keyword: 'x64',
+    },
+  ])('loads the $language grammar for workspace previews', async ({ language, value, keyword }) => {
+    const result = await highlightWorkspaceCode({ language, value })
+    const tokens = result.tokensByLine.flat()
+
+    expect(result.engine).toBe('shiki')
+    expect(tokens.some((token) => (
+      token.content.includes(keyword) && token.color === 'var(--color-code-keyword)'
+    ))).toBe(true)
+  })
+
+  it('maps Visual Studio solution and project files to supported grammars', () => {
+    expect(getWorkspaceDiffShikiLanguage('Game.sln')).toBe('ini')
+    expect(getWorkspaceDiffShikiLanguage('Legacy.vcproj')).toBe('xml')
+    expect(getWorkspaceDiffShikiLanguage('Game.vcxproj')).toBe('xml')
   })
 
   it('keeps TextMate grammar state across the rows in one diff hunk', async () => {

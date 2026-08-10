@@ -83,6 +83,7 @@ function preferencesResponse(pet: DesktopPetPreferences) {
       sidebar: {
         projectOrder: [],
         pinnedProjects: [],
+        pinnedSessions: [],
         hiddenProjects: [],
         projectOrganization: 'recentProject' as const,
         projectSortBy: 'updatedAt' as const,

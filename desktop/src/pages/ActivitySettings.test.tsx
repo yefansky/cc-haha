@@ -121,6 +121,7 @@ describe('ActivitySettings', () => {
         sidebar: {
           projectOrder: [],
           pinnedProjects: [],
+          pinnedSessions: [],
           hiddenProjects: [],
           projectOrganization: 'recentProject',
           projectSortBy: 'updatedAt',
@@ -140,6 +141,7 @@ describe('ActivitySettings', () => {
         sidebar: {
           projectOrder: [],
           pinnedProjects: [],
+          pinnedSessions: [],
           hiddenProjects: [],
           projectOrganization: 'recentProject',
           projectSortBy: 'updatedAt',
@@ -159,6 +161,7 @@ describe('ActivitySettings', () => {
         sidebar: {
           projectOrder: [],
           pinnedProjects: [],
+          pinnedSessions: [],
           hiddenProjects: [],
           projectOrganization: 'recentProject',
           projectSortBy: 'updatedAt',
@@ -178,6 +181,7 @@ describe('ActivitySettings', () => {
         sidebar: {
           projectOrder: [],
           pinnedProjects: [],
+          pinnedSessions: [],
           hiddenProjects: [],
           projectOrganization: 'recentProject',
           projectSortBy: 'updatedAt',
@@ -352,6 +356,7 @@ describe('ActivitySettings', () => {
         sidebar: {
           projectOrder: [],
           pinnedProjects: [],
+          pinnedSessions: [],
           hiddenProjects: [],
           projectOrganization: 'recentProject',
           projectSortBy: 'updatedAt',

@@ -375,6 +375,7 @@ describe('WorkspacePanel', () => {
 
     await act(() => {
       useWorkspacePanelStore.getState().openPanel('session-changed')
+      useWorkspacePanelStore.getState().setActiveView('session-changed', 'changed')
     })
 
     const view = await renderPanel('session-changed')
@@ -813,7 +814,7 @@ describe('WorkspacePanel', () => {
     expect(view.getByText('next.ts')).toBeTruthy()
   })
 
-  it('refreshes status on open and switches back to changed files when new changes exist', async () => {
+  it('refreshes status on open and preserves an explicitly selected changed-files view', async () => {
     getMocks().getWorkspaceStatusMock.mockResolvedValue({
       state: 'ok',
       workDir: '/repo',
@@ -841,7 +842,8 @@ describe('WorkspacePanel', () => {
         ...state.panelBySession,
         'session-stale-all': {
           isOpen: true,
-          activeView: 'all',
+          activeView: 'changed',
+          hasUserSelectedView: true,
         },
       },
       statusBySession: {
@@ -895,6 +897,7 @@ describe('WorkspacePanel', () => {
 
     await act(() => {
       useWorkspacePanelStore.getState().openPanel('session-running-open')
+      useWorkspacePanelStore.getState().setActiveView('session-running-open', 'changed')
     })
 
     const view = await renderPanel('session-running-open')
@@ -932,6 +935,7 @@ describe('WorkspacePanel', () => {
 
     await act(() => {
       useWorkspacePanelStore.getState().openPanel('session-non-git')
+      useWorkspacePanelStore.getState().setActiveView('session-non-git', 'changed')
     })
 
     const view = await renderPanel('session-non-git')
@@ -974,7 +978,7 @@ describe('WorkspacePanel', () => {
     })
 
     const view = await renderPanel('session-empty-tree')
-    expect(view.getByRole('button', { name: 'Changed files' })).toBeTruthy()
+    expect(view.getByRole('button', { name: 'All files' })).toBeTruthy()
 
     await act(async () => {
       statusRequest.resolve({
@@ -1267,10 +1271,7 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel('session-tree')
 
-    expect(view.getByRole('button', { name: 'Changed files' })).toBeTruthy()
-
-    await clickElement(view.getByRole('button', { name: 'Changed files' }))
-    await clickElement(view.getByRole('menuitem', { name: 'All files' }))
+    expect(view.getByRole('button', { name: 'All files' })).toBeTruthy()
 
     await waitFor(() => {
       expect(getMocks().getWorkspaceTreeMock).toHaveBeenCalledWith('session-tree', '')
@@ -1494,6 +1495,57 @@ describe('WorkspacePanel', () => {
       expect(view.getByTestId('workspace-code').textContent).toContain('export const ready = true')
     })
     expect(view.getByTestId('workspace-file-navigator').className).toContain('flex')
+  })
+
+  it('resizes the VSCode file navigator by dragging its divider and persists the width', async () => {
+    window.localStorage.removeItem('workspace.navigatorWidth')
+    const sessionId = 'session-vscode-navigator-resize'
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: {
+        ...state.panelBySession,
+        [sessionId]: { isOpen: true, activeView: 'all', hasUserSelectedView: true },
+      },
+      treeBySessionPath: {
+        ...state.treeBySessionPath,
+        [sessionId]: {
+          '': { state: 'ok', path: '', entries: [] },
+        },
+      },
+    }))
+
+    const view = await renderPanel(sessionId, { embedded: true, forceVisible: true, layout: 'vscode' })
+    const layout = view.getByTestId('workspace-review-layout')
+    const navigatorPanel = view.getByTestId('workspace-file-navigator')
+    const divider = view.getByTestId('workspace-file-navigator-resize-handle')
+    vi.spyOn(layout, 'getBoundingClientRect').mockReturnValue({
+      width: 1200,
+      height: 700,
+      top: 0,
+      right: 1200,
+      bottom: 700,
+      left: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+
+    expect(navigatorPanel.style.width).toBe('320px')
+    expect(divider.getAttribute('role')).toBe('separator')
+
+    fireEvent.mouseDown(divider, { button: 0, clientX: 320 })
+    fireEvent.mouseMove(window, { clientX: 500 })
+    fireEvent.mouseUp(window)
+
+    expect(navigatorPanel.style.width).toBe('500px')
+    expect(window.localStorage.getItem('workspace.navigatorWidth')).toBe('500')
+
+    fireEvent.doubleClick(divider)
+    expect(navigatorPanel.style.width).toBe('320px')
+
+    fireEvent.keyDown(divider, { key: 'ArrowRight' })
+    expect(navigatorPanel.style.width).toBe('336px')
+    window.localStorage.removeItem('workspace.navigatorWidth')
   })
 
   it('keeps a close control available for the last preview tab', async () => {
@@ -2136,6 +2188,61 @@ describe('WorkspacePanel', () => {
     await clickElement(view.getByRole('button', { name: 'Open Markdown preview' }))
     expect(view.getByRole('heading', { name: 'Project Notes', level: 1 })).toBeTruthy()
     expect(view.queryByTestId('workspace-code')).toBeNull()
+  })
+
+  it('renders CSV files as tables and switches back to source', async () => {
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: {
+        ...state.panelBySession,
+        'session-table-preview': {
+          isOpen: true,
+          activeView: 'all',
+        },
+      },
+      statusBySession: {
+        ...state.statusBySession,
+        'session-table-preview': {
+          state: 'ok',
+          workDir: '/repo',
+          repoName: 'repo',
+          branch: 'main',
+          isGitRepo: true,
+          changedFiles: [],
+        },
+      },
+      previewTabsBySession: {
+        ...state.previewTabsBySession,
+        'session-table-preview': [{
+          id: 'file:report.csv',
+          path: 'report.csv',
+          kind: 'file',
+          title: 'report.csv',
+          language: 'text',
+          content: 'name,note\nAlice,"hello, world"\nBob,ready\n',
+          state: 'ok',
+          size: 48,
+        }],
+      },
+      activePreviewTabIdBySession: {
+        ...state.activePreviewTabIdBySession,
+        'session-table-preview': 'file:report.csv',
+      },
+    }))
+
+    const view = await renderPanel('session-table-preview')
+
+    expect(view.getByTestId('workspace-table')).toBeTruthy()
+    expect(view.getByRole('columnheader', { name: 'name' })).toBeTruthy()
+    expect(view.getByRole('cell', { name: 'hello, world' })).toBeTruthy()
+    expect(view.queryByTestId('workspace-code')).toBeNull()
+
+    await clickElement(view.getByRole('button', { name: 'Open table source' }))
+    expect(view.getByTestId('workspace-code').textContent).toContain('Alice,"hello, world"')
+    expect(view.queryByTestId('workspace-table')).toBeNull()
+
+    await clickElement(view.getByRole('button', { name: 'Open table preview' }))
+    expect(view.getByTestId('workspace-table')).toBeTruthy()
   })
 
   it('resolves relative and remote markdown preview images to loadable URLs', async () => {

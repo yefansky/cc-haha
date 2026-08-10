@@ -54,6 +54,9 @@ vi.mock('../../i18n', () => ({
       'sidebar.projectActions': 'Project actions for {project}',
       'sidebar.pinProject': 'Pin Project',
       'sidebar.unpinProject': 'Unpin Project',
+      'sidebar.pinnedSessions': 'Pinned',
+      'sidebar.pinSession': 'Pin session',
+      'sidebar.unpinSession': 'Unpin session',
       'sidebar.openInFinder': 'Open in Finder',
       'sidebar.openInFinderFailed': 'Could not open the project in Finder.',
       'sidebar.openInFinderUnavailable': 'No file manager is available.',
@@ -221,6 +224,7 @@ describe('Sidebar', () => {
         sidebar: {
           projectOrder: [],
           pinnedProjects: [],
+          pinnedSessions: [],
           hiddenProjects: [],
           projectOrganization: 'recentProject',
           projectSortBy: 'updatedAt',
@@ -544,10 +548,14 @@ describe('Sidebar', () => {
   it('persists project header sort preferences through desktop UI settings', async () => {
     useSessionStore.setState({
       sessions: [
-        makeSession('alpha-1', 'Alpha Session', '/workspace/alpha', '2026-03-01T00:00:00.000Z'),
+        {
+          ...makeSession('alpha-1', 'Alpha Session', '/workspace/alpha', '2026-03-01T00:00:00.000Z'),
+          lastUserMessageAt: '2026-05-01T00:00:00.000Z',
+        },
         {
           ...makeSession('beta-1', 'Beta Session', '/workspace/beta', '2026-02-01T00:00:00.000Z'),
           createdAt: '2026-04-01T00:00:00.000Z',
+          lastUserMessageAt: '2026-02-01T00:00:00.000Z',
         },
       ],
     })
@@ -564,6 +572,7 @@ describe('Sidebar', () => {
       expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenCalledWith({
         projectOrder: [],
         pinnedProjects: [],
+        pinnedSessions: [],
         hiddenProjects: [],
         projectOrganization: 'recentProject',
         projectSortBy: 'createdAt',
@@ -725,6 +734,7 @@ describe('Sidebar', () => {
     expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenCalledWith({
       projectOrder: [],
       pinnedProjects: [],
+      pinnedSessions: [],
       hiddenProjects: [],
       projectOrganization: 'recentProject',
       projectSortBy: 'updatedAt',
@@ -762,6 +772,7 @@ describe('Sidebar', () => {
     expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenCalledWith({
       projectOrder: [],
       pinnedProjects: [],
+      pinnedSessions: [],
       hiddenProjects: [],
       projectOrganization: 'recentProject',
       projectSortBy: 'updatedAt',
@@ -776,6 +787,7 @@ describe('Sidebar', () => {
         sidebar: {
           projectOrder: ['/workspace/beta', '/workspace/alpha'],
           pinnedProjects: ['/workspace/beta'],
+          pinnedSessions: [],
           hiddenProjects: ['/workspace/alpha'],
           projectOrganization: 'recentProject',
           projectSortBy: 'updatedAt',
@@ -812,6 +824,7 @@ describe('Sidebar', () => {
         sidebar: {
           projectOrder: [],
           pinnedProjects: [],
+          pinnedSessions: [],
           hiddenProjects: [],
           projectOrganization: 'recentProject',
           projectSortBy: 'updatedAt',
@@ -832,6 +845,7 @@ describe('Sidebar', () => {
       expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenCalledWith({
         projectOrder: [],
         pinnedProjects: [],
+        pinnedSessions: [],
         hiddenProjects: ['/workspace/beta'],
         projectOrganization: 'recentProject',
         projectSortBy: 'updatedAt',
@@ -1087,6 +1101,58 @@ describe('Sidebar', () => {
       expect(connectToSession).toHaveBeenCalledWith('copied-session-1')
     })
     expect(useTabStore.getState().activeTabId).toBe('copied-session-1')
+  })
+
+  it('orders regular sessions by the most recent user input, not assistant activity', () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          ...makeSession('assistant-active', 'Assistant active', '/workspace/project', '2026-05-01T00:00:00.000Z'),
+          modifiedAt: '2026-05-03T00:00:00.000Z',
+          lastUserMessageAt: '2026-05-01T00:00:00.000Z',
+        },
+        {
+          ...makeSession('recent-user-input', 'Recent user input', '/workspace/project', '2026-04-01T00:00:00.000Z'),
+          modifiedAt: '2026-05-02T00:00:00.000Z',
+          lastUserMessageAt: '2026-05-02T00:00:00.000Z',
+        },
+      ],
+    })
+
+    render(<Sidebar />)
+
+    expect([...document.querySelectorAll('[data-sidebar-session-id]')].map((row) => row.getAttribute('data-sidebar-session-id')))
+      .toEqual(['recent-user-input', 'assistant-active'])
+  })
+
+  it('moves a pinned session into the pinned section and persists the toggle', async () => {
+    useSessionStore.setState({
+      sessions: [
+        makeSession('session-to-pin', 'Session to pin', '/workspace/project', '2026-05-01T00:00:00.000Z'),
+      ],
+    })
+
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: /Session to pin/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Pin session' }))
+
+    expect(within(screen.getByTestId('sidebar-pinned-sessions')).getByRole('button', { name: /Session to pin/ })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenCalledWith(expect.objectContaining({
+        pinnedSessions: ['session-to-pin'],
+      }))
+    })
+
+    fireEvent.contextMenu(within(screen.getByTestId('sidebar-pinned-sessions')).getByRole('button', { name: /Session to pin/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Unpin session' }))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('sidebar-pinned-sessions')).not.toBeInTheDocument()
+      expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenLastCalledWith(expect.objectContaining({
+        pinnedSessions: [],
+      }))
+    })
   })
 
   it('selects and deletes multiple sessions from batch mode', async () => {

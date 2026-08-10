@@ -79,6 +79,7 @@ export type SessionListItem = {
   title: string
   createdAt: string
   modifiedAt: string
+  lastUserMessageAt?: string | null
   messageCount: number
   projectPath: string
   projectRoot: string | null
@@ -992,6 +993,7 @@ export class SessionService {
         title: 'Untitled Session',
         createdAt: stat.birthtime.toISOString(),
         modifiedAt: stat.mtime.toISOString(),
+        lastUserMessageAt: null,
         messageCount: 0,
         workDir: this.desanitizePath(projectDir),
       },
@@ -1370,6 +1372,16 @@ export class SessionService {
       }
     }
     return modifiedAt
+  }
+
+  private resolveLastUserMessageAtFromEntries(entries: RawEntry[]): string | null {
+    let lastUserMessageAt: string | null = null
+    for (const entry of entries) {
+      if (entry.type === 'user' && !entry.isMeta && entry.message?.role === 'user') {
+        lastUserMessageAt = this.latestTimestamp(lastUserMessageAt, entry.timestamp)
+      }
+    }
+    return lastUserMessageAt
   }
 
   private resolveRuntimeContextMetadataFromEntries(entries: RawEntry[]): ProviderContextWindowHint {
@@ -3250,6 +3262,7 @@ export class SessionService {
       title: row.title,
       createdAt: row.createdAt,
       modifiedAt: row.modifiedAt,
+      lastUserMessageAt: row.lastUserMessageAt ?? null,
       messageCount: row.messageCount,
       projectPath: row.projectPath,
       projectRoot,
@@ -3275,6 +3288,7 @@ export class SessionService {
       'title',
       'createdAt',
       'modifiedAt',
+      'lastUserMessageAt',
       'messageCount',
       'projectPath',
       'projectRoot',
@@ -3390,9 +3404,10 @@ export class SessionService {
     }
 
     summarizedFiles.sort((a, b) => {
-      const modifiedAtDifference =
-        Date.parse(b.summary.modifiedAt) - Date.parse(a.summary.modifiedAt)
-      if (modifiedAtDifference !== 0) return modifiedAtDifference
+      const aActivityAt = a.summary.lastUserMessageAt ?? a.summary.createdAt
+      const bActivityAt = b.summary.lastUserMessageAt ?? b.summary.createdAt
+      const activityDifference = Date.parse(bActivityAt) - Date.parse(aActivityAt)
+      if (activityDifference !== 0) return activityDifference
       const sessionIdDifference = a.sessionId.localeCompare(b.sessionId)
       return sessionIdDifference || a.filePath.localeCompare(b.filePath)
     })
@@ -3429,6 +3444,7 @@ export class SessionService {
           title: summary.title,
           createdAt: summary.createdAt,
           modifiedAt: summary.modifiedAt,
+          lastUserMessageAt: summary.lastUserMessageAt ?? null,
           messageCount: summary.messageCount,
           projectPath: projectDir,
           projectRoot,
@@ -3504,6 +3520,7 @@ export class SessionService {
       title,
       createdAt,
       modifiedAt: this.resolveTranscriptModifiedAtFromEntries(entries) ?? stat.mtime.toISOString(),
+      lastUserMessageAt: this.resolveLastUserMessageAtFromEntries(entries),
       messageCount: messages.length,
       projectPath: projectDir,
       projectRoot,
