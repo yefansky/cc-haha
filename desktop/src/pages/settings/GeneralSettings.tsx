@@ -61,6 +61,8 @@ export function GeneralSettings() {
     setTheme,
     chatSendBehavior,
     setChatSendBehavior,
+    initialPromptPrefix,
+    setInitialPromptPrefix,
     outputStyle,
     outputStyles,
     outputStyleScope,
@@ -961,10 +963,27 @@ export function GeneralSettings() {
               </div>
             </button>
           ))}
-        </Card>
-      </div>
+          </Card>
+        </div>
 
-      {uiZoomSection}
+        <div className="mt-8">
+          <h2 className="text-[16.5px] font-semibold leading-tight text-[var(--color-text-primary)] mb-1" style={{ fontFamily: 'var(--font-headline)' }}>{t('settings.general.initialPromptPrefixTitle')}</h2>
+          <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.initialPromptPrefixDescription')}</p>
+          <Card radius="xl" surface="low" padding="none" className="px-4 py-4">
+            <Input
+              id="initial-prompt-prefix"
+              label={t('settings.general.initialPromptPrefixLabel')}
+              value={initialPromptPrefix}
+              placeholder={t('settings.general.initialPromptPrefixPlaceholder')}
+              onChange={(event) => void setInitialPromptPrefix(event.target.value)}
+            />
+            <p className="mt-3 text-xs leading-5 text-[var(--color-text-tertiary)]">
+              {t('settings.general.initialPromptPrefixHint')}
+            </p>
+          </Card>
+        </div>
+
+        {uiZoomSection}
 
       <div className="mt-8">
         <h2 className="text-[16.5px] font-semibold leading-tight text-[var(--color-text-primary)] mb-1" style={{ fontFamily: 'var(--font-headline)' }}>{t('settings.general.networkTitle')}</h2>

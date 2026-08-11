@@ -65,6 +65,7 @@ type SettingsStore = {
   // setTheme, and the Settings picker highlighted a theme that was no longer
   // on screen. Read `useUIStore(s => s.theme)` instead.
   chatSendBehavior: ChatSendBehavior
+  initialPromptPrefix: string
   outputStyle: string
   outputStyles: OutputStyleOption[]
   outputStyleScope: OutputStylesResponse['scope']
@@ -101,6 +102,7 @@ type SettingsStore = {
   setLocale: (locale: Locale) => void
   setTheme: (theme: ThemeMode) => Promise<void>
   setChatSendBehavior: (behavior: ChatSendBehavior) => Promise<void>
+  setInitialPromptPrefix: (prefix: string) => Promise<void>
   fetchOutputStyles: (workDir?: string | null) => Promise<void>
   setOutputStyle: (outputStyle: string, workDir?: string | null) => Promise<void>
   setSkipWebFetchPreflight: (enabled: boolean) => Promise<void>
@@ -192,6 +194,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   activeProviderName: null,
   locale: initialLocale,
   chatSendBehavior: 'enter',
+  initialPromptPrefix: '',
   outputStyle: DEFAULT_OUTPUT_STYLE,
   outputStyles: DEFAULT_OUTPUT_STYLE_OPTIONS,
   outputStyleScope: 'userSettings',
@@ -264,6 +267,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         autoDreamEnabled: userSettings.autoDreamEnabled === true,
         autoModeOptInAccepted: userSettings.skipAutoPermissionPrompt === true,
         chatSendBehavior: normalizeChatSendBehavior(userSettings.chatSendBehavior),
+        initialPromptPrefix: normalizeInitialPromptPrefix(userSettings.initialPromptPrefix),
         outputStyle: normalizeOutputStyle(userSettings.outputStyle),
         skipWebFetchPreflight: userSettings.skipWebFetchPreflight !== false,
         desktopNotificationsEnabled: userSettings.desktopNotificationsEnabled === true,
@@ -387,6 +391,18 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       await settingsApi.updateUser({ chatSendBehavior: next })
     } catch (error) {
       set({ chatSendBehavior: prev })
+      throw error
+    }
+  },
+
+  setInitialPromptPrefix: async (prefix) => {
+    const prev = get().initialPromptPrefix
+    const next = normalizeInitialPromptPrefix(prefix)
+    set({ initialPromptPrefix: next })
+    try {
+      await settingsApi.updateUser({ initialPromptPrefix: next || undefined })
+    } catch (error) {
+      set({ initialPromptPrefix: prev })
       throw error
     }
   },
@@ -676,6 +692,10 @@ function normalizeWebSearchSettings(settings: WebSearchSettings | undefined): We
 
 function normalizeChatSendBehavior(value: unknown): ChatSendBehavior {
   return value === 'modifierEnter' ? 'modifierEnter' : 'enter'
+}
+
+function normalizeInitialPromptPrefix(value: unknown): string {
+  return typeof value === 'string' ? value : ''
 }
 
 function normalizeOutputStyle(value: unknown): string {

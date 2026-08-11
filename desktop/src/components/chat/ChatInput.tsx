@@ -146,6 +146,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const [launchTransitioning, setLaunchTransitioning] = useState(false)
   const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<string | null>(null)
   const [editingQueuedMessageText, setEditingQueuedMessageText] = useState('')
+  const [initialPromptPrefixEnabledBySession, setInitialPromptPrefixEnabledBySession] = useState<Record<string, boolean>>({})
   const [runningConfigBySession, setRunningConfigBySession] = useState<Record<string, {
     modelLabel: string
     permissionMode: PermissionMode
@@ -210,6 +211,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const currentModel = useSettingsStore((state) => state.currentModel)
   const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
+  const initialPromptPrefix = useSettingsStore((state) => state.initialPromptPrefix)
   const runtimeSelectionKey = runtimeSelection
     ? `${runtimeSelection.providerId ?? 'official'}:${runtimeSelection.modelId}:${runtimeSelection.effortLevel ?? 'auto'}`
     : undefined
@@ -261,6 +263,9 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   }, [])
 
   const isMemberSession = !!memberInfo
+  const applyInitialPromptPrefix = activeTabId
+    ? initialPromptPrefixEnabledBySession[activeTabId] !== false
+    : true
   const isActive = chatState !== 'idle'
   const hasRunningSubagents = hasRunningSubagentTasks(sessionState?.backgroundAgentTasks)
   const activePermissionMode = (activeSession?.permissionMode as PermissionMode | undefined) ?? defaultPermissionMode
@@ -277,6 +282,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const isHeroComposer = variant === 'hero' && !isMemberSession && !compact
   const resolvedWorkDir = activeSession?.workDir || gitInfo?.workDir || undefined
   const showLaunchControls = !isMemberSession && messageCount === 0
+  const shouldOfferInitialPromptPrefix = !isMemberSession && messageCount === 0 && initialPromptPrefix.length > 0
   // Two different questions, and they used to share one answer.
   //
   // `useCompactChrome` is about context: the shell's padding, its top divider
@@ -795,12 +801,6 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     // parses. Serialized from the live document — only the doc knows which
     // `@label` is a pill and which is literal text the user typed.
     const serializedText = (composerRef.current?.getModelContent() ?? input).trim()
-    const contentForModel = [workspaceReferencePrompt, serializedText].filter(Boolean).join('\n\n')
-    const displayContent = text || (
-      workspaceReferences.length > 0
-        ? t('chat.contextReferencesOnly', { count: workspaceReferences.length })
-        : ''
-    )
     const uploadAttachmentPayload: AttachmentRef[] = attachments.map((attachment) => ({
       type: attachment.type,
       name: attachment.name,
@@ -866,6 +866,21 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       }
     }
 
+    const targetHasUserMessage = (useChatStore.getState().sessions[targetSessionId]?.messages ?? [])
+      .some((message) => message.type === 'user_text')
+    const shouldApplyPrefix = shouldOfferInitialPromptPrefix && applyInitialPromptPrefix && !targetHasUserMessage
+    const prefixedText = shouldApplyPrefix && !serializedText.startsWith(initialPromptPrefix)
+      ? `${initialPromptPrefix}${serializedText}`
+      : serializedText
+    const prefixedDisplayText = shouldApplyPrefix && !text.startsWith(initialPromptPrefix)
+      ? `${initialPromptPrefix}${text}`
+      : text
+    const contentForModel = [workspaceReferencePrompt, prefixedText].filter(Boolean).join('\n\n')
+    const displayContent = prefixedDisplayText || (
+      workspaceReferences.length > 0
+        ? t('chat.contextReferencesOnly', { count: workspaceReferences.length })
+        : ''
+    )
     const targetChatState = useChatStore.getState().sessions[targetSessionId]?.chatState ?? 'idle'
     if (!isMemberSession && targetChatState !== 'idle') {
       queueUserMessage(targetSessionId, {
@@ -1355,6 +1370,24 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
               <span>{t('chat.currentRunConfig', { model: runningConfig.modelLabel, permission: t(`permMode.label.${runningConfig.permissionMode}` as 'permMode.label.default') })}</span>
               <span className="font-medium text-[var(--color-brand)]">{t('chat.nextRunConfig', { model: pendingModelLabel, permission: t(`permMode.label.${displayedPermissionMode}` as 'permMode.label.default') })}</span>
             </div>
+          )}
+
+          {shouldOfferInitialPromptPrefix && (
+            <label className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+              <input
+                type="checkbox"
+                checked={applyInitialPromptPrefix}
+                onChange={(event) => {
+                  if (!activeTabId) return
+                  setInitialPromptPrefixEnabledBySession((current) => ({
+                    ...current,
+                    [activeTabId]: event.target.checked,
+                  }))
+                }}
+                className="h-4 w-4 accent-[var(--color-brand)]"
+              />
+              <span>{t('chat.applyInitialPromptPrefix')}</span>
+            </label>
           )}
 
           {isHeroComposer ? (

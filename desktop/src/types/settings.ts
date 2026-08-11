@@ -158,6 +158,7 @@ export type UserSettings = {
   permissionMode?: PermissionMode
   theme?: ThemeMode
   chatSendBehavior?: ChatSendBehavior
+  initialPromptPrefix?: string
   outputStyle?: string
   skipWebFetchPreflight?: boolean
   desktopNotificationsEnabled?: boolean

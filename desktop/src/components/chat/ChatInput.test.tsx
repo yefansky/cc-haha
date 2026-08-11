@@ -195,7 +195,11 @@ describe('ChatInput file mentions', () => {
     Reflect.deleteProperty(window, 'desktopHost')
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     viewportMocks.isMobile = false
-    useSettingsStore.setState({ locale: 'en' })
+      useSettingsStore.setState({
+        locale: 'en',
+        chatSendBehavior: 'enter',
+        initialPromptPrefix: '',
+      })
     useChatStore.setState(initialChatState, true)
     useSessionStore.setState(initialSessionState, true)
     useTabStore.setState(initialTabState, true)
@@ -631,6 +635,73 @@ describe('ChatInput file mentions', () => {
 
     await waitFor(() => {
       expect(screen.queryByAltText('screenshot-full.png')).not.toBeInTheDocument()
+    })
+  })
+
+  it('adds the configured prefix only to a new conversation first message', async () => {
+    useSettingsStore.setState({ initialPromptPrefix: '启动项目大脑，yefan1 ' })
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Project',
+        createdAt: '2026-05-01T00:00:00.000Z',
+        modifiedAt: '2026-05-01T00:00:00.000Z',
+        messageCount: 0,
+        projectPath: '/repo',
+        workDir: '/repo',
+        workDirExists: true,
+      }],
+    })
+    useChatStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        [sessionId]: { ...state.sessions[sessionId]!, messages: [] },
+      },
+    }))
+
+    render(<ChatInput compact />)
+    setComposerText('分析这个项目', 6)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run' })).toBeEnabled())
+    fireEvent.keyDown(getComposerElement(), { key: 'Enter' })
+
+    expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, {
+      type: 'user_message',
+      content: '启动项目大脑，yefan1 分析这个项目',
+      attachments: [],
+    })
+  })
+
+  it('lets a new conversation temporarily skip its prefix and never duplicates an existing prefix', async () => {
+    useSettingsStore.setState({ initialPromptPrefix: '启动项目大脑，yefan1 ' })
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Project',
+        createdAt: '2026-05-01T00:00:00.000Z',
+        modifiedAt: '2026-05-01T00:00:00.000Z',
+        messageCount: 0,
+        projectPath: '/repo',
+        workDir: '/repo',
+        workDirExists: true,
+      }],
+    })
+    useChatStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        [sessionId]: { ...state.sessions[sessionId]!, messages: [] },
+      },
+    }))
+
+    render(<ChatInput compact />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /configured prefix/i }))
+    setComposerText('不加前缀', 4)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run' })).toBeEnabled())
+    fireEvent.keyDown(getComposerElement(), { key: 'Enter' })
+
+    expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, {
+      type: 'user_message',
+      content: '不加前缀',
+      attachments: [],
     })
   })
 
