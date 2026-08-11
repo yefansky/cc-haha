@@ -3454,7 +3454,14 @@ describe('Sessions API', () => {
   })
 
   it('POST /api/sessions/:id/trace/calls/:callId/diagnostic-bundle writes a local evidence bundle', async () => {
-    const sessionId = 'trace-diagnostic-session'
+    const sourceWorkDir = await fs.mkdtemp(path.join(tmpDir, 'trace-diagnostic-project-'))
+    const createSessionResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workDir: sourceWorkDir }),
+    })
+    expect(createSessionResponse.status).toBe(201)
+    const { sessionId } = await createSessionResponse.json() as { sessionId: string }
     const callId = 'trace-diagnostic-call'
     process.env.CC_HAHA_TRACE_API_CALLS = '1'
     try {
@@ -3483,9 +3490,10 @@ describe('Sessions API', () => {
 
       expect(res.status).toBe(200)
       const body = await res.json() as { file: string; workDir: string; prompt: string; source: { rawRequestFile: string | null } }
-      expect(body.workDir).toContain('cc-haha')
+      expect(body.workDir).toBe(sourceWorkDir)
       expect(body.source.rawRequestFile).not.toBeNull()
       expect(body.prompt).toContain(body.file)
+      expect(body.prompt).toContain('来源项目的启动文档')
       expect(await fs.readFile(body.file, 'utf-8')).toContain('Why was process.md ignored?')
     } finally {
       clearTraceCaptureStateForTests()

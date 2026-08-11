@@ -471,10 +471,16 @@ async function createSessionTraceDiagnosticBundle(
   if (typeof body.comparisonCallId !== 'undefined' && typeof body.comparisonCallId !== 'string') {
     throw ApiError.badRequest('comparisonCallId must be a string')
   }
+  const sourceWorkDir = conversationService.getSessionWorkDir(sessionId) ||
+    await sessionService.getSessionWorkDir(sessionId)
+  if (!sourceWorkDir) {
+    throw ApiError.notFound(`Source session workspace not found: ${sessionId}`)
+  }
   const bundle = await traceCaptureService.createDiagnosticBundle({
     sessionId,
     callId,
     question: typeof body.question === 'string' ? body.question : '',
+    sourceWorkDir,
     ...(typeof body.comparisonCallId === 'string' && body.comparisonCallId.trim()
       ? { comparisonCallId: body.comparisonCallId.trim() }
       : {}),

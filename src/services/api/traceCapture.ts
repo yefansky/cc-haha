@@ -588,6 +588,7 @@ class TraceCaptureService {
     sessionId: string
     callId: string
     question: string
+    sourceWorkDir: string
     comparisonCallId?: string
   }): Promise<TraceDiagnosticBundle | null> {
     const call = await this.getSessionTraceCall(input.sessionId, input.callId)
@@ -639,11 +640,11 @@ class TraceCaptureService {
     return {
       file,
       directory,
-      // Trace storage is the diagnostic session's only workspace, keeping
-      // diagnosis separate from the source project working copy.
-      workDir: context.storageDir,
+      // Start the diagnostic session in the same project as its source so it
+      // can inspect the project's startup documents and other local evidence.
+      workDir: input.sourceWorkDir,
       prompt: [
-        '请作为上下文审计诊断 agent 工作。只读分析，不修改来源项目文件，也不要外发审计内容。',
+        '请作为上下文审计诊断 agent 工作。只读分析，可读取来源项目的启动文档和其他本地证据；不要修改项目文件，也不要外发审计内容。',
         `先读取诊断包：${file}`,
         '按包中的证据要求完成诊断；如需更多证据，只比较包中列出的相邻上行。',
       ].join('\n'),
