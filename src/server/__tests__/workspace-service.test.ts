@@ -242,6 +242,74 @@ describe('WorkspaceService', () => {
     expect(svnCalls.some((call) => call.args.includes('编译说明.md'))).toBe(false)
   })
 
+  it('reads SVN changes whose immediate parent directory was deleted', async () => {
+    const workspaceDir = await createSvnWorkspace()
+    const deletedParent = path.join(workspaceDir, 'removed-parent')
+    const deletedNested = path.join(deletedParent, '深层')
+    await fs.mkdir(deletedNested, { recursive: true })
+    await fs.writeFile(path.join(deletedParent, 'deleted.txt'), 'deleted line\n')
+    await fs.writeFile(path.join(deletedNested, 'deleted.txt'), 'nested deleted line\n')
+    svn(workspaceDir, 'add', 'removed-parent')
+    svn(workspaceDir, 'commit', '-m', 'add directory that will be removed')
+    svn(deletedParent, 'delete', 'deleted.txt')
+    svn(deletedNested, 'delete', 'deleted.txt')
+    await fs.rm(deletedParent, { recursive: true })
+    const service = new WorkspaceService(async () => workspaceDir)
+
+    const status = await service.getStatus('session-1')
+
+    expect(status).toMatchObject({ state: 'ok', isGitRepo: false })
+    expect(status.changedFiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: 'removed-parent/deleted.txt',
+        status: 'deleted',
+        additions: 0,
+        deletions: 1,
+      }),
+      expect.objectContaining({
+        path: 'removed-parent/深层/deleted.txt',
+        status: 'deleted',
+        additions: 0,
+        deletions: 1,
+      }),
+    ]))
+    await expect(
+      service.getDiff('session-1', 'removed-parent/deleted.txt'),
+    ).resolves.toMatchObject({
+      state: 'ok',
+      diff: expect.stringContaining('-deleted line'),
+    })
+    await expect(
+      service.getDiff('session-1', 'removed-parent/深层/deleted.txt'),
+    ).resolves.toMatchObject({
+      state: 'ok',
+      diff: expect.stringContaining('-nested deleted line'),
+    })
+  })
+
+  it('does not misreport a missing SVN working directory as a missing executable', async () => {
+    const workspaceDir = await createSvnWorkspace()
+    const missingWorkDir = path.join(workspaceDir, 'missing-directory')
+    const service = new WorkspaceService(
+      async () => workspaceDir,
+      undefined,
+      undefined,
+      () => ['svn'],
+    ) as WorkspaceService & {
+      runSvn: (workDir: string, args: string[]) => Promise<{
+        stdout: string
+        stderr: string
+        code: number
+        failure?: string
+      }>
+    }
+
+    await expect(service.runSvn(missingWorkDir, ['--version', '--quiet'])).resolves.toMatchObject({
+      code: 1,
+      failure: `SVN working directory was not found: ${missingWorkDir}`,
+    })
+  })
+
   it('writes review edits only when the displayed file content is still current', async () => {
     const workspaceDir = await makeTempDir('workspace-service-review-write-')
     const target = path.join(workspaceDir, 'note.txt')

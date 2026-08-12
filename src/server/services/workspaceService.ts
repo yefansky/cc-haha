@@ -912,7 +912,10 @@ export class WorkspaceService {
       }
     }
 
-    const vcsProbePath = path.dirname(resolvedPath.canonicalTargetPath)
+    const vcsProbePath = await this.findNearestExistingDirectory(
+      path.dirname(resolvedPath.canonicalTargetPath),
+      resolvedPath.canonicalWorkspaceRoot,
+    )
     const repoInfo = await this.getGitRepoInfo(vcsProbePath)
     if (repoInfo.kind === 'not_git_repo') {
       const svnInfo = await this.getSvnWorkspaceInfo(vcsProbePath)
@@ -1751,7 +1754,10 @@ export class WorkspaceService {
             ? { kind: 'ok' as const, additions: 0, deletions: 0 }
             : statusEntry.status === 'untracked'
             ? await this.getUntrackedStats(statusEntry.absolutePath)
-            : await this.getSvnDiffStatsForCanonicalPath(statusEntry.absolutePath)
+            : await this.getSvnDiffStatsForCanonicalPath(
+                svnInfo.workspaceRoot,
+                statusEntry.absolutePath,
+              )
           return {
             path: path.posix.join(logicalRootPath, statusEntry.path),
             oldPath: statusEntry.oldPath
@@ -1999,7 +2005,7 @@ export class WorkspaceService {
         ? { kind: 'ok' as const, additions: 0, deletions: 0 }
         : entry.status === 'untracked'
         ? await this.getUntrackedStats(entry.absolutePath)
-        : await this.getSvnDiffStatsForCanonicalPath(entry.absolutePath)
+        : await this.getSvnDiffStatsForCanonicalPath(svnRoot, entry.absolutePath)
       if (stats.kind === 'error') throw new Error(stats.message)
       return {
         path: entry.path,
@@ -2075,7 +2081,10 @@ export class WorkspaceService {
           ? { state: 'missing', path: resolvedPath.relativePath }
           : { state: 'error', path: resolvedPath.relativePath, error: diff.message }
     }
-    const diff = await this.runSvnDiffForCanonicalPath(resolvedPath.canonicalTargetPath)
+    const diff = await this.runSvnDiffForCanonicalPath(
+      svnRoot,
+      resolvedPath.canonicalTargetPath,
+    )
     if (diff.kind === 'error') return { state: 'error', path: resolvedPath.relativePath, error: diff.message }
     return diff.diff.trim()
       ? { state: 'ok', path: resolvedPath.relativePath, diff: diff.diff }
@@ -2186,17 +2195,22 @@ export class WorkspaceService {
   }
 
   private async runSvnDiffForCanonicalPath(
+    svnRoot: string,
     canonicalTargetPath: string,
   ): Promise<{ kind: 'ok'; diff: string } | { kind: 'error'; message: string }> {
-    const cwd = path.dirname(canonicalTargetPath)
-    const targetName = path.basename(canonicalTargetPath)
-    const canPassTargetName = /^[\x00-\x7f]+$/.test(targetName)
+    const targetParent = path.dirname(canonicalTargetPath)
+    const cwd = await this.findNearestExistingDirectory(targetParent, svnRoot)
+
+    const targetPath = path.relative(cwd, canonicalTargetPath)
+    const normalizedTargetPath = this.normalizeRelativePath(targetPath)
+    const canPassTargetPath = /^[\x00-\x7f]+$/.test(targetPath)
     // Keep regular source files scoped to one exact target. For names that the
-    // Windows SVN executable cannot accept losslessly, inspect only the files
-    // in the immediate parent instead of recursively diffing a large tree.
-    const args = canPassTargetName
-      ? ['diff', '--', targetName]
-      : ['diff', '--depth', 'files']
+    // Windows SVN executable cannot accept losslessly, run without a target
+    // argument and extract the matching diff block. A deleted parent cannot be
+    // used as cwd, so widen only to the nearest existing ancestor in that case.
+    const args = canPassTargetPath
+      ? ['diff', '--', targetPath]
+      : ['diff', '--depth', cwd === targetParent ? 'files' : 'infinity']
     const result = await this.runSvn(cwd, args)
     if (result.code !== 0) {
       return {
@@ -2205,19 +2219,19 @@ export class WorkspaceService {
       }
     }
 
-    if (canPassTargetName) return { kind: 'ok', diff: result.stdout }
+    if (canPassTargetPath) return { kind: 'ok', diff: result.stdout }
 
-    const lossyWindowsTargetName = targetName.replace(/[^\x00-\x7f]/g, '?')
+    const lossyWindowsTargetPath = normalizedTargetPath.replace(/[^\x00-\x7f]/g, '?')
     const blocks = result.stdout.split(/(?=^Index: )/m)
     const indexedBlocks = blocks.filter((block) => /^Index: /m.test(block))
     const matchingBlock = indexedBlocks.find((block) => {
       const indexPath = /^Index: (.+)\r?$/m.exec(block)?.[1]?.trim()
       if (!indexPath) return false
-      const indexName = path.basename(indexPath)
+      const normalizedIndexPath = this.normalizeRelativePath(indexPath)
       return process.platform === 'win32'
-        ? indexName.toLowerCase() === targetName.toLowerCase()
-          || indexName.toLowerCase() === lossyWindowsTargetName.toLowerCase()
-        : indexName === targetName
+        ? normalizedIndexPath.toLowerCase() === normalizedTargetPath.toLowerCase()
+          || normalizedIndexPath.toLowerCase() === lossyWindowsTargetPath.toLowerCase()
+        : normalizedIndexPath === normalizedTargetPath
     })
     // Some Windows SVN builds replace every non-ASCII character in Index paths
     // with '?'. Match that deterministic lossy name before falling back to the
@@ -2505,8 +2519,11 @@ export class WorkspaceService {
     }
   }
 
-  private async getSvnDiffStatsForCanonicalPath(canonicalTargetPath: string): Promise<DiffStatsResult> {
-    const result = await this.runSvnDiffForCanonicalPath(canonicalTargetPath)
+  private async getSvnDiffStatsForCanonicalPath(
+    svnRoot: string,
+    canonicalTargetPath: string,
+  ): Promise<DiffStatsResult> {
+    const result = await this.runSvnDiffForCanonicalPath(svnRoot, canonicalTargetPath)
     if (result.kind === 'error') return result
     return { kind: 'ok', ...this.countSvnDiffStats(result.diff) }
   }
@@ -2621,13 +2638,41 @@ export class WorkspaceService {
     }
 
     const attempted = executables.length > 0 ? executables.join(', ') : 'svn'
+    const workDirStat = await this.safeStat(workDir)
     return {
       stdout: '',
       stderr: '',
       code: 1,
       failure: lastMissingExecutableError
-        ? `SVN executable was not found. Tried: ${attempted}`
+        ? workDirStat.kind === 'missing'
+          ? `SVN working directory was not found: ${workDir}`
+          : `SVN executable was not found. Tried: ${attempted}`
         : 'No SVN executable candidates were configured.',
+    }
+  }
+
+  private async findNearestExistingDirectory(
+    startPath: string,
+    floorPath: string,
+  ): Promise<string> {
+    let candidate = startPath
+    while (true) {
+      const candidateStat = await this.safeStat(candidate)
+      if (candidateStat.kind === 'ok' && candidateStat.stat.isDirectory()) {
+        return candidate
+      }
+
+      const parent = path.dirname(candidate)
+      const parentFromFloor = path.relative(floorPath, parent)
+      if (
+        parent === candidate
+        || parentFromFloor === '..'
+        || parentFromFloor.startsWith(`..${path.sep}`)
+        || path.isAbsolute(parentFromFloor)
+      ) {
+        return floorPath
+      }
+      candidate = parent
     }
   }
 
