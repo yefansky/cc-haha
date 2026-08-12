@@ -19,9 +19,9 @@
 
 import { parseLauncherArgs, resolveSidecarInvocation } from './launcherRouting'
 
-// Keep optional IM packages out of the compiled default server. Bun eagerly
-// resolves literal dynamic imports while compiling, which otherwise makes a
-// missing IM-only dependency prevent normal desktop startup.
+// Keep adapters with optional third-party packages out of the compiled default
+// server. Bun eagerly resolves literal dynamic imports while compiling, which
+// otherwise makes a missing IM-only dependency prevent normal desktop startup.
 function importOptionalAdapterModule(modulePath: string): Promise<unknown> {
   return import(modulePath)
 }
@@ -155,7 +155,10 @@ async function runAdapters(rawArgs: string[]): Promise<void> {
       )
     } else {
       console.log('[claude-sidecar] starting WeChat adapter')
-      await importOptionalAdapterModule('../../adapters/wechat/index.ts')
+      // WeChat has no optional npm dependency, so keep this import literal.
+      // Bun must see the path at compile time to embed it in the standalone
+      // executable instead of resolving it from B:/~BUN/root at runtime.
+      await import('../../adapters/wechat/index.ts')
       started += 1
     }
   }

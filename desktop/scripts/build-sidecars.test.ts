@@ -110,6 +110,70 @@ function startCompiledSidecar(options: {
   return { child, exited, logs: () => output }
 }
 
+function startCompiledWechatAdapter(options: {
+  executable: string
+  repoRoot: string
+  env: NodeJS.ProcessEnv
+}): SidecarProcess {
+  const child = spawn(options.executable, [
+    'adapters',
+    '--app-root',
+    options.repoRoot,
+    '--wechat',
+  ], {
+    cwd: options.repoRoot,
+    env: {
+      ...options.env,
+      ADAPTER_SERVER_URL: 'ws://127.0.0.1:1',
+      WECHAT_ACCOUNT_ID: 'compiled-sidecar-smoke-account',
+      WECHAT_BOT_TOKEN: 'compiled-sidecar-smoke-token',
+      WECHAT_BASE_URL: 'http://127.0.0.1:1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let output = ''
+  child.stdout.setEncoding('utf8')
+  child.stderr.setEncoding('utf8')
+  child.stdout.on('data', chunk => {
+    output += String(chunk)
+  })
+  child.stderr.on('data', chunk => {
+    output += String(chunk)
+  })
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolveExit, rejectExit) => {
+      child.once('error', rejectExit)
+      child.once('exit', (code, signal) => resolveExit({ code, signal }))
+    },
+  )
+  return { child, exited, logs: () => output }
+}
+
+async function waitForLog(
+  processHandle: SidecarProcess,
+  expected: string,
+  deadlineMs: number,
+): Promise<void> {
+  const deadline = Date.now() + deadlineMs
+  while (Date.now() < deadline) {
+    if (processHandle.logs().includes(expected)) return
+    const exited = await Promise.race([
+      processHandle.exited.then(result => ({ exited: true as const, result })),
+      new Promise<{ exited: false }>(resolveWait => {
+        setTimeout(() => resolveWait({ exited: false }), 10)
+      }),
+    ])
+    if (exited.exited) {
+      throw new Error(
+        `compiled sidecar exited before logging ${JSON.stringify(expected)} (${JSON.stringify(exited.result)}):\n${processHandle.logs()}`,
+      )
+    }
+  }
+  throw new Error(
+    `compiled sidecar did not log ${JSON.stringify(expected)} before the deadline:\n${processHandle.logs()}`,
+  )
+}
+
 /**
  * What the compiled binary must still enforce about the desktop process token.
  *
@@ -652,4 +716,42 @@ describe.skipIf(!compiledSidecarSmokeEnabled)('compiled sidecar local-index smok
 
     expect(await stat(rootDir).then(() => true, () => false)).toBe(false)
   }, Math.max(90_000, compiledSidecarSmokeStarts * 10_000))
+})
+
+describe.skipIf(!compiledSidecarSmokeEnabled)('compiled sidecar WeChat adapter smoke', () => {
+  it('bundles and starts the WeChat adapter from the standalone executable', async () => {
+    const repoRoot = path.resolve(import.meta.dirname, '../..')
+    const desktopRoot = path.resolve(import.meta.dirname, '..')
+    const executable = resolveSidecarExecutable(
+      desktopRoot,
+      resolveHostTriple(),
+    )
+    await stat(executable)
+
+    const rootDir = await mkdtemp(joinPath(tmpdir(), 'cc-haha-compiled-wechat-smoke-'))
+    const homeDir = joinPath(rootDir, 'home')
+    const configDir = joinPath(homeDir, '.claude')
+    let activeProcess: SidecarProcess | undefined
+
+    try {
+      await mkdir(configDir, { recursive: true })
+      activeProcess = startCompiledWechatAdapter({
+        executable,
+        repoRoot,
+        env: controlledSidecarEnvironment(
+          homeDir,
+          configDir,
+          'compiled-wechat-smoke-local-access-token',
+        ),
+      })
+      await waitForLog(activeProcess, '[WeChat] Starting adapter...', 10_000)
+      expect(activeProcess.logs()).not.toContain('Cannot find module')
+    } finally {
+      try {
+        if (activeProcess) await terminateCompiledSidecar(activeProcess)
+      } finally {
+        await rm(rootDir, { recursive: true, force: true })
+      }
+    }
+  }, 20_000)
 })
