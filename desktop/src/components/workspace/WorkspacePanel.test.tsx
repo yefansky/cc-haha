@@ -2725,6 +2725,61 @@ describe('WorkspacePanel', () => {
     }
   })
 
+  it('copies a file path through the native desktop clipboard without waiting for the browser clipboard', async () => {
+    const originalDesktopHost = window.desktopHost
+    const originalClipboard = navigator.clipboard
+    const nativeWriteText = vi.fn().mockResolvedValue(undefined)
+    const browserWriteText = vi.fn(() => new Promise<void>(() => {}))
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: browserWriteText },
+    })
+    window.desktopHost = {
+      kind: 'electron',
+      isDesktop: true,
+      capabilities: { clipboard: true },
+      clipboard: { writeText: nativeWriteText },
+    } as unknown as typeof window.desktopHost
+
+    try {
+      await setWorkspaceState((state) => ({
+        ...state,
+        panelBySession: {
+          ...state.panelBySession,
+          'session-native-copy': { isOpen: true, activeView: 'all' },
+        },
+        statusBySession: {
+          ...state.statusBySession,
+          'session-native-copy': {
+            state: 'ok', workDir: '/repo', repoName: 'repo', branch: 'main', isGitRepo: true, changedFiles: [],
+          },
+        },
+        treeBySessionPath: {
+          ...state.treeBySessionPath,
+          'session-native-copy': {
+            '': { state: 'ok', path: '', entries: [{ name: 'App.tsx', path: 'src/App.tsx', isDirectory: false }] },
+          },
+        },
+      }))
+
+      const view = await renderPanel('session-native-copy')
+      await act(() => {
+        fireEvent.contextMenu(view.getByRole('button', { name: /App\.tsx/i }), { clientX: 260, clientY: 80 })
+      })
+      await clickElement(view.getByRole('menuitem', { name: 'Copy path' }))
+
+      expect(nativeWriteText).toHaveBeenCalledWith('src/App.tsx')
+      expect(browserWriteText).not.toHaveBeenCalled()
+      expect(useUIStore.getState().toasts.at(-1)).toMatchObject({ type: 'success', message: 'Path copied.' })
+    } finally {
+      window.desktopHost = originalDesktopHost
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+      })
+    }
+  })
+
   it('adds a line comment from a code preview to the chat context', async () => {
     await setWorkspaceState((state) => ({
       ...state,
@@ -3367,6 +3422,37 @@ describe('WorkspacePanel', () => {
     expect(view.getByText('latest')).toBeTruthy()
     expect(view.queryByText('cached')).toBeNull()
     expect(view.getByTestId('workspace-preview-content').getAttribute('aria-busy')).toBe('false')
+  })
+
+  it('refreshes every expanded file tree directory instead of leaving nested entries cached', async () => {
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: {
+        ...state.panelBySession,
+        'session-tree-refresh': { isOpen: true, activeView: 'all' },
+      },
+      expandedPathsBySession: {
+        ...state.expandedPathsBySession,
+        'session-tree-refresh': ['src'],
+      },
+      treeBySessionPath: {
+        ...state.treeBySessionPath,
+        'session-tree-refresh': {
+          '': { state: 'ok', path: '', entries: [{ name: 'src', path: 'src', isDirectory: true }] },
+          src: { state: 'ok', path: 'src', entries: [{ name: 'App.tsx', path: 'src/App.tsx', isDirectory: false }] },
+        },
+      },
+    }))
+
+    const view = await renderPanel('session-tree-refresh')
+    getMocks().getWorkspaceTreeMock.mockClear()
+
+    await clickElement(view.getByRole('button', { name: 'Refresh workspace' }))
+
+    await waitFor(() => {
+      expect(getMocks().getWorkspaceTreeMock).toHaveBeenCalledWith('session-tree-refresh', '')
+      expect(getMocks().getWorkspaceTreeMock).toHaveBeenCalledWith('session-tree-refresh', 'src')
+    })
   })
 
   it('localizes an initial missing preview without describing it as a refresh failure', async () => {

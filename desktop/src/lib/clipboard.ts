@@ -1,4 +1,16 @@
+import { getDesktopHost } from './desktopHost'
+
 export async function copyTextToClipboard(text: string): Promise<boolean> {
+  const host = getDesktopHost()
+  if (host.capabilities.clipboard) {
+    try {
+      await host.clipboard.writeText(text)
+      return true
+    } catch {
+      // Fall back to the browser clipboard APIs when the native bridge is unavailable.
+    }
+  }
+
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text)

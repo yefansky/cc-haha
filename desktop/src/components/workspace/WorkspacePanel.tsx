@@ -1740,8 +1740,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     if (hasWorkspaceSearch) {
       setWorkspaceSearchRevision((revision) => revision + 1)
     } else if (navigatorView === 'all') {
-      void loadTree(sessionId, '')
-      for (const root of mountedRoots) void loadTree(sessionId, root.path)
+      const pathsToRefresh = new Set(['', ...expandedPaths, ...mountedRoots.map((root) => root.path)])
+      for (const path of pathsToRefresh) void loadTree(sessionId, path)
     }
   }
 
