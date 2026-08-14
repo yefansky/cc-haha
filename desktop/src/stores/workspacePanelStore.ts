@@ -646,7 +646,11 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
           [sessionId]: upsertPreviewTab(
             state.previewTabsBySession[sessionId] ?? [],
             tabId,
-            (tab) => ({ ...tab, reveal: nextReveal }),
+            (tab) => ({
+              ...tab,
+              reveal: nextReveal,
+              diffSource: kind === 'diff' || diffSource.kind === 'turn' ? diffSource : undefined,
+            }),
           ),
         },
         activePreviewTabIdBySession: {
@@ -679,7 +683,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         kind,
         title: getPathTitle(path),
         textEncoding,
-        ...(kind === 'diff' ? { diffSource } : {}),
+        ...(kind === 'diff' || diffSource.kind === 'turn' ? { diffSource } : {}),
         state: 'loading',
         ...(nextReveal ? { reveal: nextReveal } : {}),
       }

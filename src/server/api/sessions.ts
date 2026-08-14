@@ -1175,9 +1175,9 @@ async function getGitInfo(sessionId: string): Promise<Response> {
 }
 
 async function rewindSession(req: Request, sessionId: string): Promise<Response> {
-  let body: RewindTargetSelector & { dryRun?: boolean; mode?: unknown }
+  let body: RewindTargetSelector & { dryRun?: boolean; mode?: unknown; paths?: unknown }
   try {
-    body = (await req.json()) as RewindTargetSelector & { dryRun?: boolean; mode?: unknown }
+    body = (await req.json()) as RewindTargetSelector & { dryRun?: boolean; mode?: unknown; paths?: unknown }
   } catch {
     throw ApiError.badRequest('Invalid JSON body')
   }
@@ -1190,9 +1190,22 @@ async function rewindSession(req: Request, sessionId: string): Promise<Response>
   }
 
   const mode = parseSessionRewindMode(body.mode)
+  const paths = body.paths === undefined
+    ? undefined
+    : Array.isArray(body.paths) && body.paths.length > 0 && body.paths.every((value) => (
+        typeof value === 'string' && value.trim().length > 0
+      ))
+      ? [...new Set(body.paths)] as string[]
+      : null
+  if (paths === null) {
+    throw ApiError.badRequest('paths must be a non-empty array of file paths')
+  }
+  if (paths && mode !== 'files') {
+    throw ApiError.badRequest("paths can only be used with rewind mode 'files'")
+  }
   const result = body.dryRun
     ? await previewSessionRewind(sessionId, body)
-    : await executeSessionRewind(sessionId, body, mode)
+    : await executeSessionRewind(sessionId, body, mode, paths)
 
   return Response.json(result)
 }

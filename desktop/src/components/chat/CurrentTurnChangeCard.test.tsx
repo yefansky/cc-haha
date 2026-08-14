@@ -273,14 +273,14 @@ describe('CurrentTurnChangeCard – rich file row (icon / name / type)', () => {
   })
 })
 
-describe('CurrentTurnChangeCard – row opens the workspace diff', () => {
+describe('CurrentTurnChangeCard – row opens the readable workspace file', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ensureTargetsMock.mockResolvedValue(undefined)
     openPreviewSpy.mockResolvedValue(undefined)
   })
 
-  it('clicking a file row calls openPreview(sessionId, displayPath, "diff")', () => {
+  it('clicking a file row calls openPreview(sessionId, displayPath, "file") with its checkpoint source', () => {
     renderCard(['/w/proj/src/main.ts'])
     const row = screen.getByRole('button', { name: /turnChangesOpenInWorkspaceAria/ })
     fireEvent.click(row)
@@ -288,7 +288,7 @@ describe('CurrentTurnChangeCard – row opens the workspace diff', () => {
     expect(openPreviewSpy).toHaveBeenCalledWith(
       's1',
       'src/main.ts',
-      'diff',
+      'file',
       expect.objectContaining({ sourceTurnKey: 'msg-1' }),
       undefined,
       { kind: 'turn', targetUserMessageId: 'msg-1', userMessageIndex: 0 },
@@ -302,7 +302,7 @@ describe('CurrentTurnChangeCard – row opens the workspace diff', () => {
     expect(openPreviewSpy).toHaveBeenCalledWith(
       's1',
       'README.md',
-      'diff',
+      'file',
       expect.objectContaining({ sourceTurnKey: 'msg-1' }),
       undefined,
       { kind: 'turn', targetUserMessageId: 'msg-1', userMessageIndex: 0 },
@@ -492,7 +492,7 @@ describe('CurrentTurnChangeCard – conversation continuity', () => {
     expect(screen.getByText('chat.turnChangesCurrentWorkspaceDiff')).toBeInTheDocument()
   })
 
-  it('records a stable opener id and semantic turn key before opening the diff', () => {
+  it('records a stable opener id and semantic turn key before opening the file', () => {
     renderCard(['/w/proj/src/main.ts'])
     const row = screen.getByRole('button', { name: /turnChangesOpenInWorkspaceAria/ })
 
@@ -503,7 +503,7 @@ describe('CurrentTurnChangeCard – conversation continuity', () => {
     expect(openPreviewSpy).toHaveBeenCalledWith(
       's1',
       'src/main.ts',
-      'diff',
+      'file',
       {
         sourceTurnKey: 'msg-1',
         sourceElementId: row.id,

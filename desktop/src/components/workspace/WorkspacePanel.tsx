@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
-import { CircleAlert, Code2, Eye, FileText, FolderOpen, FolderPlus, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X } from 'lucide-react'
+import { CircleAlert, Code2, Eye, FileText, FolderOpen, FolderPlus, GitCompareArrows, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X } from 'lucide-react'
 import { Highlight } from 'prism-react-renderer'
 import {
   sessionsApi,
@@ -12,6 +12,7 @@ import {
 import { useTranslation } from '../../i18n'
 import { useShallow } from 'zustand/react/shallow'
 import {
+  getWorkspacePreviewTabId,
   useWorkspacePanelStore,
   type WorkspacePreviewCloseScope,
   type WorkspacePreviewKind,
@@ -1770,16 +1771,28 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     window.setTimeout(() => previewHeaderRef.current?.focus(), 0)
   }
 
-  const handleOpenDiff = (path: string) => {
-    if (!isVscodeLayout) setIsNavigatorOpen(false)
-    void openPreview(sessionId, path, 'diff')
-    focusPreviewAfterOpen()
-  }
-
   const handleOpenFile = (path: string) => {
     if (!isVscodeLayout) setIsNavigatorOpen(false)
     void openPreview(sessionId, path, 'file')
     focusPreviewAfterOpen()
+  }
+
+  const handleTogglePreviewKind = () => {
+    if (!activePreviewTab) return
+    const previousTabId = activePreviewTab.id
+    const nextKind: WorkspacePreviewKind = activePreviewTab.kind === 'file' ? 'diff' : 'file'
+    const diffSource = activePreviewTab.diffSource ?? { kind: 'workspace' as const }
+    const nextTabId = getWorkspacePreviewTabId(activePreviewTab.path, nextKind, diffSource)
+    void openPreview(
+      sessionId,
+      activePreviewTab.path,
+      nextKind,
+      undefined,
+      activePreviewTab.reveal,
+      diffSource,
+      activePreviewTab.textEncoding,
+    )
+    if (nextTabId !== previousTabId) closePreview(sessionId, previousTabId)
   }
 
   const clearWorkspaceSearch = () => {
@@ -1953,7 +1966,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               else next.add(path)
               return next
             })}
-            onOpenFile={handleOpenDiff}
+            onOpenFile={handleOpenFile}
             onFileContextMenu={handleFileContextMenu}
             activePath={activeTreePath}
             variant="changed"
@@ -2161,6 +2174,20 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             </span>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {activePreviewTab.previewType !== 'image' && (
+              <IconButton
+                icon={activePreviewTab.kind === 'file'
+                  ? <GitCompareArrows size={16} strokeWidth={1.9} aria-hidden="true" />
+                  : <FileText size={16} strokeWidth={1.9} aria-hidden="true" />}
+                label={activePreviewTab.kind === 'file'
+                  ? t('workspace.openDiffView')
+                  : t('workspace.openFileView')}
+                onClick={handleTogglePreviewKind}
+                size="md"
+                tone="muted"
+                showTooltip={false}
+              />
+            )}
             {activeMarkdownView && (
               <IconButton
                 icon={activeMarkdownView === 'preview'

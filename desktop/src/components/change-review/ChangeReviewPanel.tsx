@@ -1,19 +1,74 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Check, FileCode2, Pencil, RefreshCw, Undo2, X } from 'lucide-react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from 'react'
+import { ChevronDown, ChevronRight, Clock3, FileCode2, Pencil, RefreshCw, RotateCcw, Undo2 } from 'lucide-react'
 import {
   sessionsApi,
   type SessionTurnCheckpoint,
-  type WorkspaceChangedFile,
   type WorkspaceDiffResult,
 } from '../../api/sessions'
+import { useTranslation } from '../../i18n'
+import { Button } from '@/components/ui/Button'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { EmptyState } from '@/components/ui/EmptyState'
+import { IconButton } from '@/components/ui/IconButton'
+import { LoadingState } from '@/components/ui/LoadingState'
+import { SearchField } from '@/components/ui/SearchField'
+import { TextArea } from '@/components/ui/TextArea'
 import { WorkspaceDiffSurface } from '../workspace/WorkspaceDiffSurface'
 import { buildHunkRevertContent } from './reviewDiffActions'
 
-type ReviewFile = WorkspaceChangedFile & { sourcePath: string }
-type ReviewFileState = { file: ReviewFile; diff: WorkspaceDiffResult }
+type ReviewFile = {
+  sourcePath: string
+  displayPath: string
+}
 
-function displayName(path: string) {
-  return path.split('/').filter(Boolean).at(-1) || path
+type ActiveReview = {
+  checkpoint: SessionTurnCheckpoint
+  file: ReviewFile
+  diff: WorkspaceDiffResult
+}
+
+type RestoreIntent =
+  | { kind: 'all'; checkpoint: SessionTurnCheckpoint }
+  | { kind: 'file'; checkpoint: SessionTurnCheckpoint; file: ReviewFile }
+
+const TIMELINE_WIDTH_STORAGE_KEY = 'cc-haha.change-review.timeline-width'
+const TIMELINE_DEFAULT_WIDTH = 400
+const TIMELINE_MIN_WIDTH = 280
+const TIMELINE_MAX_WIDTH = 720
+const REVIEW_DETAIL_MIN_WIDTH = 360
+
+function clampTimelineWidth(width: number, maximum = TIMELINE_MAX_WIDTH) {
+  return Math.min(maximum, Math.max(TIMELINE_MIN_WIDTH, Math.round(width)))
+}
+
+function readTimelineWidth() {
+  try {
+    const value = window.localStorage.getItem(TIMELINE_WIDTH_STORAGE_KEY)
+    const parsed = value === null ? Number.NaN : Number.parseInt(value, 10)
+    return Number.isFinite(parsed) ? clampTimelineWidth(parsed) : TIMELINE_DEFAULT_WIDTH
+  } catch {
+    return TIMELINE_DEFAULT_WIDTH
+  }
+}
+
+function persistTimelineWidth(width: number) {
+  try {
+    window.localStorage.setItem(TIMELINE_WIDTH_STORAGE_KEY, String(width))
+  } catch {
+    // Keep the in-memory width when localStorage is unavailable.
+  }
+}
+
+function checkpointId(checkpoint: SessionTurnCheckpoint) {
+  return checkpoint.target.targetUserMessageId
 }
 
 function toReviewPath(filePath: string, workDir?: string) {
@@ -24,184 +79,575 @@ function toReviewPath(filePath: string, workDir?: string) {
     : normalizedPath
 }
 
-function checkpointFiles(checkpoint: SessionTurnCheckpoint | null): ReviewFile[] {
-  if (!checkpoint) return []
-  return checkpoint.code.filesChanged.map((sourcePath) => ({
-    sourcePath,
-    path: toReviewPath(sourcePath, checkpoint.workDir),
-    status: 'modified' as const,
-    additions: 0,
-    deletions: 0,
-  })).sort((left, right) => left.path.localeCompare(right.path))
+function checkpointFiles(checkpoint: SessionTurnCheckpoint): ReviewFile[] {
+  return checkpoint.code.filesChanged
+    .map((sourcePath) => ({
+      sourcePath,
+      displayPath: toReviewPath(sourcePath, checkpoint.workDir),
+    }))
+    .sort((left, right) => left.displayPath.localeCompare(right.displayPath))
 }
 
-function ReviewEditor({ value, saving, onCancel, onSave }: { value: string; saving: boolean; onCancel: () => void; onSave: (value: string) => void }) {
+function formatCheckpointTime(createdAt?: string) {
+  if (!createdAt) return null
+  const date = new Date(createdAt)
+  if (!Number.isFinite(date.getTime())) return null
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date)
+}
+
+function ReviewEditor({
+  value,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  value: string
+  saving: boolean
+  onCancel: () => void
+  onSave: (value: string) => void
+}) {
+  const t = useTranslation()
   const [draft, setDraft] = useState(value)
   useEffect(() => setDraft(value), [value])
-  return <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-code-bg)]">
-    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-text-primary)]/10 bg-[var(--color-surface)] px-4">
-      <span className="text-[12px] font-medium text-[var(--color-text-secondary)]">Editing</span>
-      <div className="ml-auto flex items-center gap-1.5">
-        <button type="button" onClick={onCancel} disabled={saving} className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]">Cancel</button>
-        <button type="button" onClick={() => onSave(draft)} disabled={saving || draft === value} className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-info)] px-2 text-[12px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"><Check size={13} aria-hidden="true" />{saving ? 'Saving' : 'Save'}</button>
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-code-bg)]">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4">
+        <span className="text-[12px] font-medium text-[var(--color-text-secondary)]">
+          {t('review.editing')}
+        </span>
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={saving}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            loading={saving}
+            disabled={draft === value}
+            onClick={() => onSave(draft)}
+          >
+            {t('common.save')}
+          </Button>
+        </div>
       </div>
+      <TextArea
+        label={t('review.editFile')}
+        aria-label={t('review.editFile')}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        spellCheck={false}
+        containerClassName="min-h-0 flex-1 [&>label]:sr-only"
+        className="h-full resize-none rounded-none border-0 bg-transparent px-5 py-4 font-[var(--font-mono)] text-[13px] leading-5 text-[var(--color-code-fg)] shadow-none"
+      />
     </div>
-    <textarea aria-label="Edit file content" value={draft} onChange={(event) => setDraft(event.target.value)} spellCheck={false} className="min-h-0 flex-1 resize-none bg-transparent px-5 py-4 font-[var(--font-mono)] text-[13px] leading-5 text-[var(--color-code-fg)] outline-none" />
-  </div>
+  )
 }
 
-/** Session-scoped review: fast turn evidence first, no full workspace scan on mount. */
+/** Session-scoped checkpoint timeline. It never scans the full workspace. */
 export function ChangeReviewPanel({ sessionId }: { sessionId: string }) {
-  const [checkpoint, setCheckpoint] = useState<SessionTurnCheckpoint | null>(null)
-  const [files, setFiles] = useState<ReviewFile[]>([])
-  const [openFiles, setOpenFiles] = useState<ReviewFileState[]>([])
-  const [activePath, setActivePath] = useState<string | null>(null)
+  const t = useTranslation()
+  const [checkpoints, setCheckpoints] = useState<SessionTurnCheckpoint[]>([])
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const [active, setActive] = useState<ActiveReview | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadingDiffKey, setLoadingDiffKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [filterQuery, setFilterQuery] = useState('')
+  const [restoreIntent, setRestoreIntent] = useState<RestoreIntent | null>(null)
+  const [restoring, setRestoring] = useState(false)
   const [revertingHunkId, setRevertingHunkId] = useState<string | null>(null)
-  const [revertingFile, setRevertingFile] = useState(false)
   const [editorContent, setEditorContent] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [filterQuery, setFilterQuery] = useState('')
+  const [timelineWidth, setTimelineWidth] = useState(readTimelineWidth)
+  const splitLayoutRef = useRef<HTMLDivElement>(null)
+  const timelineRef = useRef<HTMLElement>(null)
+  const timelineDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const timelineWidthRef = useRef(timelineWidth)
+  timelineWidthRef.current = timelineWidth
 
   const refresh = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
       const response = await sessionsApi.getTurnCheckpoints(sessionId)
-      // The last completed turn can be text-only/read-only. Review should show
-      // the most recent turn that actually has cc checkpointed file changes,
-      // matching the change card in the transcript.
-      const nextCheckpoint = [...response.checkpoints].reverse().find((candidate) => (
-        candidate.code.available && candidate.code.filesChanged.length > 0
-      )) ?? null
-      const nextFiles = checkpointFiles(nextCheckpoint)
-      setCheckpoint(nextCheckpoint)
-      // Review is deliberately scoped to the current turn. Do not fall back to
-      // `svn status` here: that scans the whole checkout, is slow on large SVN
-      // workspaces, and includes changes from other sessions/windows.
-      const reviewFiles = nextFiles
-      setFiles(reviewFiles)
-      setOpenFiles((current) => current.filter((item) => reviewFiles.some((file) => file.path === item.file.path)))
-      setActivePath((current) => reviewFiles.some((file) => file.path === current) ? current : null)
+      const nextCheckpoints = response.checkpoints.filter((checkpoint) => (
+        checkpoint.code.available && checkpoint.code.filesChanged.length > 0
+      ))
+      setCheckpoints(nextCheckpoints)
+      const latestId = nextCheckpoints.at(-1) ? checkpointId(nextCheckpoints.at(-1)!) : null
+      setExpandedIds((current) => {
+        const surviving = new Set([...current].filter((id) => (
+          nextCheckpoints.some((checkpoint) => checkpointId(checkpoint) === id)
+        )))
+        if (surviving.size === 0 && latestId) surviving.add(latestId)
+        return surviving
+      })
+      setActive((current) => current && nextCheckpoints.some((checkpoint) => (
+        checkpointId(checkpoint) === checkpointId(current.checkpoint)
+        && checkpoint.code.filesChanged.includes(current.file.sourcePath)
+      )) ? current : null)
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Unable to load the turn review')
+      setError(nextError instanceof Error ? nextError.message : t('review.loadError'))
     } finally {
       setLoading(false)
     }
-  }, [sessionId])
+  }, [sessionId, t])
 
   useEffect(() => { void refresh() }, [refresh])
 
-  const active = useMemo(() => openFiles.find((item) => item.file.path === activePath) ?? null, [activePath, openFiles])
-  const visibleFiles = useMemo(() => {
+  const filteredTimeline = useMemo(() => {
     const query = filterQuery.trim().toLowerCase()
-    return files.filter((file) => !query || file.path.toLowerCase().includes(query))
-  }, [files, filterQuery])
+    return [...checkpoints].reverse().flatMap((checkpoint, reverseIndex) => {
+      const files = checkpointFiles(checkpoint).filter((file) => (
+        !query
+        || file.displayPath.toLowerCase().includes(query)
+        || checkpoint.prompt?.toLowerCase().includes(query)
+      ))
+      if (files.length === 0) return []
+      return [{ checkpoint, files, chronologicalNumber: checkpoints.length - reverseIndex }]
+    })
+  }, [checkpoints, filterQuery])
 
-  const openFile = useCallback(async (file: ReviewFile) => {
-    const existing = openFiles.find((item) => item.file.path === file.path)
-    if (existing) {
-      setActivePath(file.path)
-      setEditorContent(null)
-      return
-    }
+  const uniqueFileCount = useMemo(() => new Set(
+    checkpoints.flatMap((checkpoint) => checkpoint.code.filesChanged),
+  ).size, [checkpoints])
+
+  const openFile = useCallback(async (checkpoint: SessionTurnCheckpoint, file: ReviewFile) => {
+    const key = `${checkpointId(checkpoint)}::${file.sourcePath}`
+    setLoadingDiffKey(key)
     setError(null)
     setEditorContent(null)
     try {
-      const diff = checkpoint
-        ? await sessionsApi.getTurnCheckpointDiff(sessionId, checkpoint.target.targetUserMessageId, file.sourcePath, checkpoint.target.userMessageIndex)
-        : await sessionsApi.getWorkspaceDiff(sessionId, file.sourcePath)
-      setOpenFiles((current) => [...current, { file, diff }])
-      setActivePath(file.path)
+      const diff = await sessionsApi.getTurnCheckpointDiff(
+        sessionId,
+        checkpoint.target.targetUserMessageId,
+        file.sourcePath,
+        checkpoint.target.userMessageIndex,
+      )
+      setActive({ checkpoint, file, diff })
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Unable to load the file diff')
+      setError(nextError instanceof Error ? nextError.message : t('review.diffError'))
+    } finally {
+      setLoadingDiffKey(null)
     }
-  }, [checkpoint, openFiles, sessionId])
+  }, [sessionId, t])
 
   const openEditor = useCallback(async () => {
     if (!active) return
-    const file = await sessionsApi.getWorkspaceFile(sessionId, active.file.path)
+    const file = await sessionsApi.getWorkspaceFile(sessionId, active.file.sourcePath)
     if (file.state !== 'ok' || typeof file.content !== 'string') {
-      setError('Unable to edit this file as text')
+      setError(t('review.editUnavailable'))
       return
     }
     setEditorContent(file.content)
-  }, [active, sessionId])
+  }, [active, sessionId, t])
 
   const saveEditor = useCallback(async (content: string) => {
     if (!active || editorContent === null) return
     setSaving(true)
+    setError(null)
     try {
-      const result = await sessionsApi.writeWorkspaceFile(sessionId, { path: active.file.path, expectedContent: editorContent, content })
-      if (result.state !== 'ok') throw new Error(result.error ?? 'Unable to save file')
+      const result = await sessionsApi.writeWorkspaceFile(sessionId, {
+        path: active.file.sourcePath,
+        expectedContent: editorContent,
+        content,
+      })
+      if (result.state !== 'ok') throw new Error(result.error ?? t('review.saveError'))
       setEditorContent(null)
+      await openFile(active.checkpoint, active.file)
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Unable to save file')
+      setError(nextError instanceof Error ? nextError.message : t('review.saveError'))
     } finally {
       setSaving(false)
     }
-  }, [active, editorContent, sessionId])
-
-  const revertFile = useCallback(async () => {
-    if (!active) return
-    setRevertingFile(true)
-    try {
-      const file = await sessionsApi.getWorkspaceFile(sessionId, active.file.path)
-      const expectedContent = file.state === 'ok' && typeof file.content === 'string' ? file.content : file.state === 'missing' ? null : undefined
-      if (expectedContent === undefined) throw new Error('Unable to safely revert this file')
-      const result = await sessionsApi.revertWorkspaceFile(sessionId, { path: active.file.path, expectedContent })
-      if (result.state !== 'ok') throw new Error(result.error ?? 'Unable to revert file')
-      setOpenFiles((current) => current.filter((item) => item.file.path !== active.file.path))
-      setActivePath(null)
-      setEditorContent(null)
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Unable to revert file')
-    } finally {
-      setRevertingFile(false)
-    }
-  }, [active, sessionId])
+  }, [active, editorContent, openFile, sessionId, t])
 
   const revertHunk = useCallback(async (hunkId: string) => {
     if (!active || active.diff.state !== 'ok') return
     setRevertingHunkId(hunkId)
+    setError(null)
     try {
-      const file = await sessionsApi.getWorkspaceFile(sessionId, active.file.path)
-      if (file.state !== 'ok' || typeof file.content !== 'string') throw new Error('Unable to read file')
-      const content = buildHunkRevertContent(file.content, active.diff.diff ?? '', active.file.path, hunkId)
-      if (content === null) throw new Error('This hunk overlaps a later change')
-      const result = await sessionsApi.writeWorkspaceFile(sessionId, { path: active.file.path, expectedContent: file.content, content })
-      if (result.state !== 'ok') throw new Error(result.error ?? 'Unable to revert hunk')
+      const file = await sessionsApi.getWorkspaceFile(sessionId, active.file.sourcePath)
+      if (file.state !== 'ok' || typeof file.content !== 'string') throw new Error(t('review.readError'))
+      const content = buildHunkRevertContent(
+        file.content,
+        active.diff.diff ?? '',
+        active.file.displayPath,
+        hunkId,
+      )
+      if (content === null) throw new Error(t('review.hunkConflict'))
+      const result = await sessionsApi.writeWorkspaceFile(sessionId, {
+        path: active.file.sourcePath,
+        expectedContent: file.content,
+        content,
+      })
+      if (result.state !== 'ok') throw new Error(result.error ?? t('review.hunkError'))
+      await openFile(active.checkpoint, active.file)
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Unable to revert hunk')
+      setError(nextError instanceof Error ? nextError.message : t('review.hunkError'))
     } finally {
       setRevertingHunkId(null)
     }
-  }, [active, sessionId])
+  }, [active, openFile, sessionId, t])
 
-  const closeTab = (path: string) => {
-    const remaining = openFiles.filter((item) => item.file.path !== path)
-    setOpenFiles(remaining)
-    if (activePath === path) setActivePath(remaining.at(-1)?.file.path ?? null)
-  }
+  const confirmRestore = useCallback(async () => {
+    if (!restoreIntent) return
+    setRestoring(true)
+    setError(null)
+    try {
+      await sessionsApi.rewind(sessionId, {
+        targetUserMessageId: restoreIntent.checkpoint.target.targetUserMessageId,
+        userMessageIndex: restoreIntent.checkpoint.target.userMessageIndex,
+        mode: 'files',
+        ...(restoreIntent.kind === 'file' ? { paths: [restoreIntent.file.sourcePath] } : {}),
+      })
+      setRestoreIntent(null)
+      setActive(null)
+      setEditorContent(null)
+      await refresh()
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : t('review.restoreError'))
+    } finally {
+      setRestoring(false)
+    }
+  }, [refresh, restoreIntent, sessionId, t])
 
-  return <section data-testid="change-review-panel" className="flex min-h-0 flex-1 flex-col bg-[var(--color-surface)]">
-    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-text-primary)]/10 px-5">
-      <span className="text-[13px] font-semibold text-[var(--color-text-primary)]">上一轮</span>
-      <span className="font-[var(--font-mono)] text-[13px] tabular-nums"><span className="text-[var(--color-success)]">+{checkpoint?.code.insertions ?? files.reduce((total, file) => total + file.additions, 0)}</span><span className="ml-1 text-[var(--color-error)]">-{checkpoint?.code.deletions ?? files.reduce((total, file) => total + file.deletions, 0)}</span></span>
-      <button type="button" onClick={() => void refresh()} aria-label="刷新修改清单" className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"><RefreshCw size={14} className={loading ? 'animate-spin' : ''} aria-hidden="true" /></button>
-      {active && editorContent === null && <><button type="button" onClick={() => void revertFile()} disabled={revertingFile} className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"><Undo2 size={13} aria-hidden="true" />回退文件</button><button type="button" onClick={() => void openEditor()} className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"><Pencil size={13} aria-hidden="true" />编辑</button></>}
-    </header>
-    {error && <div role="alert" className="border-b border-[var(--color-error)]/20 bg-[var(--color-error)]/8 px-5 py-2 text-[12px] text-[var(--color-error)]">{error}</div>}
-    <div className="flex min-h-0 flex-1">
-      <aside className="flex w-[280px] shrink-0 flex-col border-r border-[var(--color-text-primary)]/10 bg-[var(--color-surface-container-low)]">
-        <div className="border-b border-[var(--color-text-primary)]/10 px-3 py-2.5"><input aria-label="筛选文件" value={filterQuery} onChange={(event) => setFilterQuery(event.target.value)} placeholder="筛选文件..." className="h-8 w-full rounded-[var(--radius-sm)] bg-[var(--color-surface-container)] px-3 text-[12px] text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:ring-2 focus:ring-[var(--color-info)]/30" /></div>
-        <div className="min-h-0 flex-1 overflow-auto py-2">{visibleFiles.map((file) => <button key={file.path} type="button" onClick={() => void openFile(file)} title={file.path} className={`flex min-h-9 w-full items-center gap-2 px-3 text-left text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)] ${activePath === file.path ? 'bg-[var(--color-surface-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'}`}><FileCode2 size={13} className="shrink-0 text-[var(--color-success)]" aria-hidden="true" /><span className="min-w-0 flex-1 truncate">{file.path}</span><span className="shrink-0 font-[var(--font-mono)] text-[10px]"><span className="text-[var(--color-success)]">+{file.additions}</span><span className="ml-1 text-[var(--color-error)]">-{file.deletions}</span></span></button>)}{!loading && visibleFiles.length === 0 && <div className="px-3 py-8 text-center text-[13px] text-[var(--color-text-tertiary)]">没有可审阅的本轮修改。</div>}</div>
-      </aside>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {openFiles.length > 0 && <div className="flex h-9 shrink-0 overflow-x-auto border-b border-[var(--color-text-primary)]/10 bg-[var(--color-surface-container-low)]">{openFiles.map((item) => <div key={item.file.path} className={`flex h-9 max-w-[220px] shrink-0 items-center gap-1 border-r border-[var(--color-text-primary)]/10 pl-3 text-[12px] ${activePath === item.file.path ? 'bg-[var(--color-surface)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)]'}`}><button type="button" onClick={() => { setActivePath(item.file.path); setEditorContent(null) }} className="min-w-0 flex-1 truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]">{displayName(item.file.path)}</button><button type="button" aria-label={`Close ${displayName(item.file.path)}`} onClick={() => closeTab(item.file.path)} className="mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-sm)] hover:bg-[var(--color-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"><X size={13} aria-hidden="true" /></button></div>)}</div>}
-        {!active ? <div className="flex flex-1 items-center justify-center px-5 text-[13px] text-[var(--color-text-tertiary)]">从左侧修改清单选择一个文件进行审阅。</div> : editorContent !== null ? <ReviewEditor value={editorContent} saving={saving} onCancel={() => setEditorContent(null)} onSave={(value) => void saveEditor(value)} /> : active.diff.state === 'ok' ? <div className="flex min-h-0 flex-1 flex-col"><div className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--color-text-primary)]/10 px-5 font-[var(--font-mono)] text-[12px] text-[var(--color-text-secondary)]"><FileCode2 size={14} className="text-[var(--color-success)]" aria-hidden="true" /><span className="min-w-0 flex-1 truncate">{active.file.path}</span></div><WorkspaceDiffSurface value={active.diff.diff ?? ''} path={active.file.path} hideSingleFileHeader renderHunkAction={(hunkId) => <button type="button" aria-label="撤销此差异块" disabled={revertingHunkId === hunkId} onClick={() => void revertHunk(hunkId)} className="ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2 font-[var(--font-body)] text-[11px] font-medium text-[var(--color-text-secondary)] opacity-0 transition-[opacity,color,background-color] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] group-hover:opacity-100 focus:opacity-100 disabled:cursor-wait disabled:opacity-70"><Undo2 aria-hidden="true" size={12} />撤销此块</button>} /></div> : <div className="px-5 py-8 text-[13px] text-[var(--color-text-tertiary)]">{active.diff.error ?? '无法加载此文件的差异。'}</div>}
+  const getTimelineMaximumWidth = useCallback(() => {
+    const layoutWidth = splitLayoutRef.current?.getBoundingClientRect().width ?? 0
+    if (layoutWidth <= 0) return TIMELINE_MAX_WIDTH
+    return Math.max(
+      TIMELINE_MIN_WIDTH,
+      Math.min(TIMELINE_MAX_WIDTH, layoutWidth - REVIEW_DETAIL_MIN_WIDTH),
+    )
+  }, [])
+
+  useEffect(() => {
+    const clampToLayout = () => {
+      const maximum = getTimelineMaximumWidth()
+      setTimelineWidth((current) => {
+        const next = clampTimelineWidth(current, maximum)
+        timelineWidthRef.current = next
+        return next
+      })
+    }
+    clampToLayout()
+    window.addEventListener('resize', clampToLayout)
+    return () => window.removeEventListener('resize', clampToLayout)
+  }, [getTimelineMaximumWidth])
+
+  const handleTimelineResizeMove = useCallback((event: globalThis.MouseEvent) => {
+    const drag = timelineDragRef.current
+    if (!drag) return
+    const nextWidth = clampTimelineWidth(
+      drag.startWidth + event.clientX - drag.startX,
+      getTimelineMaximumWidth(),
+    )
+    timelineWidthRef.current = nextWidth
+    setTimelineWidth(nextWidth)
+  }, [getTimelineMaximumWidth])
+
+  const handleTimelineResizeEnd = useCallback(() => {
+    if (!timelineDragRef.current) return
+    timelineDragRef.current = null
+    persistTimelineWidth(timelineWidthRef.current)
+    document.body.style.removeProperty('cursor')
+    document.body.style.removeProperty('user-select')
+    window.removeEventListener('mousemove', handleTimelineResizeMove)
+    window.removeEventListener('mouseup', handleTimelineResizeEnd)
+  }, [handleTimelineResizeMove])
+
+  const handleTimelineResizeStart = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const measuredWidth = timelineRef.current?.getBoundingClientRect().width ?? 0
+    timelineDragRef.current = {
+      startX: event.clientX,
+      startWidth: measuredWidth > 0 ? measuredWidth : timelineWidthRef.current,
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', handleTimelineResizeMove)
+    window.addEventListener('mouseup', handleTimelineResizeEnd)
+  }, [handleTimelineResizeEnd, handleTimelineResizeMove])
+
+  const resetTimelineWidth = useCallback(() => {
+    const nextWidth = clampTimelineWidth(TIMELINE_DEFAULT_WIDTH, getTimelineMaximumWidth())
+    timelineWidthRef.current = nextWidth
+    setTimelineWidth(nextWidth)
+    persistTimelineWidth(nextWidth)
+  }, [getTimelineMaximumWidth])
+
+  const handleTimelineResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    let nextWidth: number | null = null
+    if (event.key === 'ArrowLeft') nextWidth = timelineWidthRef.current - 16
+    if (event.key === 'ArrowRight') nextWidth = timelineWidthRef.current + 16
+    if (event.key === 'Home') nextWidth = TIMELINE_MIN_WIDTH
+    if (event.key === 'End') nextWidth = getTimelineMaximumWidth()
+    if (nextWidth === null) return
+    event.preventDefault()
+    const clampedWidth = clampTimelineWidth(nextWidth, getTimelineMaximumWidth())
+    timelineWidthRef.current = clampedWidth
+    setTimelineWidth(clampedWidth)
+    persistTimelineWidth(clampedWidth)
+  }, [getTimelineMaximumWidth])
+
+  useEffect(() => () => {
+    window.removeEventListener('mousemove', handleTimelineResizeMove)
+    window.removeEventListener('mouseup', handleTimelineResizeEnd)
+    document.body.style.removeProperty('cursor')
+    document.body.style.removeProperty('user-select')
+  }, [handleTimelineResizeEnd, handleTimelineResizeMove])
+
+  const earliestCheckpoint = checkpoints[0] ?? null
+  const latestCheckpointId = checkpoints.at(-1) ? checkpointId(checkpoints.at(-1)!) : null
+  const activeKey = active ? `${checkpointId(active.checkpoint)}::${active.file.sourcePath}` : null
+
+  return (
+    <section data-testid="change-review-panel" className="flex min-h-0 flex-1 flex-col bg-[var(--color-surface)]">
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-5">
+        <div className="min-w-0">
+          <h2 className="truncate text-[13px] font-semibold text-[var(--color-text-primary)]">
+            {t('review.title')}
+          </h2>
+          <p className="truncate text-[11px] text-[var(--color-text-tertiary)]">
+            {t('review.summary', { checkpoints: checkpoints.length, files: uniqueFileCount })}
+          </p>
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <IconButton
+            icon={<RefreshCw size={14} className={loading ? 'animate-spin' : ''} aria-hidden="true" />}
+            label={t('review.refresh')}
+            onClick={() => void refresh()}
+            size="md"
+            tone="muted"
+            showTooltip={false}
+          />
+          <Button
+            variant="danger-outline"
+            size="base"
+            icon={<RotateCcw size={14} aria-hidden="true" />}
+            disabled={!earliestCheckpoint}
+            onClick={() => earliestCheckpoint && setRestoreIntent({ kind: 'all', checkpoint: earliestCheckpoint })}
+          >
+            {t('review.restoreAll')}
+          </Button>
+        </div>
+      </header>
+
+      {error && (
+        <div role="alert" className="border-b border-[var(--color-error)] bg-[var(--color-error-container)] px-5 py-2 text-[12px] text-[var(--color-on-error-container)]">
+          {error}
+        </div>
+      )}
+
+      <div ref={splitLayoutRef} className="flex min-h-0 flex-1">
+        <aside
+          ref={timelineRef}
+          data-testid="change-review-timeline"
+          className="flex shrink-0 flex-col bg-[var(--color-surface-container-low)]"
+          style={{ width: timelineWidth }}
+        >
+          <div className="border-b border-[var(--color-border)] p-3">
+            <SearchField
+              value={filterQuery}
+              onChange={setFilterQuery}
+              label={t('review.filter')}
+              placeholder={t('review.filterPlaceholder')}
+              clearLabel={t('review.clearFilter')}
+              size="sm"
+            />
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto py-2">
+            {loading && checkpoints.length === 0 ? (
+              <LoadingState label={t('review.loading')} size="sm" variant="block" />
+            ) : filteredTimeline.length === 0 ? (
+              <EmptyState
+                icon={<Clock3 size={18} />}
+                title={t('review.emptyTitle')}
+                description={t('review.emptyDescription')}
+                size="sm"
+                variant="plain"
+              />
+            ) : filteredTimeline.map(({ checkpoint, files, chronologicalNumber }) => {
+              const id = checkpointId(checkpoint)
+              const expanded = expandedIds.has(id)
+              const time = formatCheckpointTime(checkpoint.createdAt)
+              const latest = id === latestCheckpointId
+              return (
+                <section key={id} className="mx-2 mb-2 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)]">
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    onClick={() => setExpandedIds((current) => {
+                      const next = new Set(current)
+                      if (next.has(id)) next.delete(id)
+                      else next.add(id)
+                      return next
+                    })}
+                    className="flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-[var(--color-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]"
+                  >
+                    {expanded
+                      ? <ChevronDown size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-[var(--color-text-tertiary)]" />
+                      : <ChevronRight size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-[var(--color-text-tertiary)]" />}
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2 text-[12px] font-semibold text-[var(--color-text-primary)]">
+                        {t('review.checkpoint', { number: chronologicalNumber })}
+                        {latest && <span className="rounded-[var(--radius-sm)] bg-[var(--color-info-container)] px-1.5 py-0.5 text-[10px] text-[var(--color-on-info-container)]">{t('review.latest')}</span>}
+                      </span>
+                      <span className="mt-0.5 block truncate text-[11px] text-[var(--color-text-tertiary)]">
+                        {time ?? t('review.timeUnavailable')}{checkpoint.prompt ? ` · ${checkpoint.prompt}` : ''}
+                      </span>
+                      <span className="mt-1 flex items-center gap-2 font-[var(--font-mono)] text-[10px]">
+                        <span className="text-[var(--color-text-secondary)]">{t('review.filesCount', { count: files.length })}</span>
+                        <span className="text-[var(--color-success)]">+{checkpoint.code.insertions}</span>
+                        <span className="text-[var(--color-error)]">-{checkpoint.code.deletions}</span>
+                      </span>
+                    </span>
+                  </button>
+                  {expanded && (
+                    <div className="border-t border-[var(--color-border)] py-1">
+                      {files.map((file) => {
+                        const key = `${id}::${file.sourcePath}`
+                        const selected = activeKey === key
+                        return (
+                          <div key={file.sourcePath} className="flex items-center gap-1 px-1.5">
+                            <button
+                              type="button"
+                              title={file.displayPath}
+                              onClick={() => void openFile(checkpoint, file)}
+                              className={`flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-md)] px-2 text-left text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)] ${
+                                selected
+                                  ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
+                                  : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
+                              }`}
+                            >
+                              <FileCode2 size={13} aria-hidden="true" className="shrink-0 text-[var(--color-success)]" />
+                              <span className="min-w-0 flex-1 truncate">{file.displayPath}</span>
+                              {loadingDiffKey === key && <span className="text-[10px] text-[var(--color-text-tertiary)]">…</span>}
+                            </button>
+                            <IconButton
+                              icon={<Undo2 size={12} aria-hidden="true" />}
+                              label={t('review.restoreFileAria', { path: file.displayPath })}
+                              onClick={() => setRestoreIntent({ kind: 'file', checkpoint, file })}
+                              size="2xs"
+                              tone="muted"
+                              hoverTone="danger"
+                              showTooltip={false}
+                            />
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </section>
+              )
+            })}
+          </div>
+        </aside>
+
+        <div
+          role="separator"
+          tabIndex={0}
+          aria-orientation="vertical"
+          aria-label={t('review.resizeTimeline')}
+          aria-valuemin={TIMELINE_MIN_WIDTH}
+          aria-valuemax={Math.round(getTimelineMaximumWidth())}
+          aria-valuenow={timelineWidth}
+          data-testid="change-review-timeline-resize-handle"
+          onMouseDown={handleTimelineResizeStart}
+          onDoubleClick={resetTimelineWidth}
+          onKeyDown={handleTimelineResizeKeyDown}
+          className="group relative w-px shrink-0 cursor-col-resize bg-[var(--color-border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+        >
+          <div className="absolute inset-y-0 -left-[3px] z-10 w-[7px] transition-colors group-hover:bg-[var(--color-brand)]/20 group-focus-visible:bg-[var(--color-brand)]/20" />
+        </div>
+
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {!active ? (
+            <EmptyState
+              icon={<FileCode2 size={20} />}
+              title={t('review.selectFileTitle')}
+              description={t('review.selectFileDescription')}
+              size="lg"
+              variant="plain"
+              className="min-h-0 flex-1"
+            />
+          ) : editorContent !== null ? (
+            <ReviewEditor
+              value={editorContent}
+              saving={saving}
+              onCancel={() => setEditorContent(null)}
+              onSave={(value) => void saveEditor(value)}
+            />
+          ) : (
+            <>
+              <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border)] px-4">
+                <FileCode2 size={14} aria-hidden="true" className="shrink-0 text-[var(--color-success)]" />
+                <span className="min-w-0 flex-1 truncate font-[var(--font-mono)] text-[12px] text-[var(--color-text-secondary)]">
+                  {active.file.displayPath}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<Undo2 size={13} aria-hidden="true" />}
+                  onClick={() => setRestoreIntent({ kind: 'file', checkpoint: active.checkpoint, file: active.file })}
+                >
+                  {t('review.restoreFile')}
+                </Button>
+                <Button variant="ghost" size="sm" icon={<Pencil size={13} aria-hidden="true" />} onClick={() => void openEditor()}>
+                  {t('review.edit')}
+                </Button>
+              </div>
+              {active.diff.state === 'ok' ? (
+                <WorkspaceDiffSurface
+                  value={active.diff.diff ?? ''}
+                  path={active.file.displayPath}
+                  hideSingleFileHeader
+                  renderHunkAction={(hunkId) => (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      aria-label={t('review.restoreHunk')}
+                      loading={revertingHunkId === hunkId}
+                      onClick={() => void revertHunk(hunkId)}
+                      className="ml-auto opacity-0 group-hover:opacity-100 focus:opacity-100"
+                      icon={<Undo2 size={12} aria-hidden="true" />}
+                    >
+                      {t('review.restoreHunk')}
+                    </Button>
+                  )}
+                />
+              ) : (
+                <EmptyState
+                  icon={<FileCode2 size={18} />}
+                  title={t('review.diffUnavailable')}
+                  description={active.diff.error ?? t('review.diffError')}
+                  variant="plain"
+                  className="min-h-0 flex-1"
+                />
+              )}
+            </>
+          )}
+        </div>
       </div>
-    </div>
-  </section>
+
+      <ConfirmDialog
+        open={restoreIntent !== null}
+        onClose={() => !restoring && setRestoreIntent(null)}
+        onConfirm={confirmRestore}
+        title={restoreIntent?.kind === 'all' ? t('review.restoreAllTitle') : t('review.restoreFileTitle')}
+        body={restoreIntent?.kind === 'all'
+          ? t('review.restoreAllBody')
+          : t('review.restoreFileBody', { path: restoreIntent?.file.displayPath ?? '' })}
+        confirmLabel={t('review.restore')}
+        cancelLabel={t('common.cancel')}
+        loading={restoring}
+      />
+    </section>
+  )
 }

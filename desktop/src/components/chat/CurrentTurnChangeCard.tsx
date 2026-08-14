@@ -84,11 +84,10 @@ export function CurrentTurnChangeCard({
       void useWorkspacePanelStore.getState().openPreview(sessionId, fileEntry.displayPath, 'file', origin)
       return
     }
-    // Jump to the right-side workspace and open a diff tab. We pass the workDir-relative
-    // path (same format the workspace file tree passes to openPreview). The source
-    // is this turn's checkpoint rather than the live VCS state, so sequential,
-    // uncommitted edits remain reviewable in SVN and non-repository workspaces.
-    void useWorkspacePanelStore.getState().openPreview(sessionId, fileEntry.displayPath, 'diff', origin, undefined, {
+    // Open the readable file first. The preview keeps this checkpoint source so
+    // the top-right file/diff toggle can still show this exact turn rather than
+    // falling back to the cumulative live VCS diff.
+    void useWorkspacePanelStore.getState().openPreview(sessionId, fileEntry.displayPath, 'file', origin, undefined, {
       kind: 'turn',
       targetUserMessageId: checkpoint.target.targetUserMessageId,
       userMessageIndex: checkpoint.target.userMessageIndex,

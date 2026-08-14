@@ -147,10 +147,10 @@ export type SessionRewindResponse = {
 }
 
 /**
- * `both` restores files and trims the transcript; `conversation` only trims,
- * which stays possible even when the files cannot be restored.
+ * `both` restores files and trims the transcript; `files` restores files while
+ * preserving the transcript; `conversation` only trims.
  */
-export type SessionRewindMode = 'both' | 'conversation'
+export type SessionRewindMode = 'both' | 'conversation' | 'files'
 
 export type RecentProject = {
   projectPath: string
@@ -360,6 +360,8 @@ export type SessionTurnCheckpoint = {
   workDir?: string
   restoreAvailable?: boolean
   unverifiedChangeSources?: string[]
+  createdAt?: string
+  prompt?: string
 }
 
 export type SessionTurnCheckpointsResponse = {
@@ -556,6 +558,7 @@ export const sessionsApi = {
     expectedContent?: string
     dryRun?: boolean
     mode?: SessionRewindMode
+    paths?: string[]
   }) {
     return api.post<SessionRewindResponse>(`/api/sessions/${sessionId}/rewind`, body, {
       timeout: 60_000,

@@ -78,17 +78,18 @@ type MergedTurnCodePreview = {
 /**
  * What a rewind is allowed to touch.
  *
- * `both` needs a restorable checkpoint and fails loudly without one.
- * `conversation` only trims the transcript, so it stays available for a turn
- * whose files cannot be restored — losing the ability to undo the code should
- * not also cost the user the ability to back out of the prompt.
+ * `both` restores files and trims the transcript. `files` restores files while
+ * preserving the conversation, which is what checkpoint review uses. The
+ * `conversation` mode only trims the transcript, so it stays available for a
+ * turn whose files cannot be restored — losing the ability to undo the code
+ * should not also cost the user the ability to back out of the prompt.
  */
-export type SessionRewindMode = 'both' | 'conversation'
+export type SessionRewindMode = 'both' | 'conversation' | 'files'
 
 export function parseSessionRewindMode(value: unknown): SessionRewindMode {
   if (value === undefined || value === null) return 'both'
-  if (value === 'both' || value === 'conversation') return value
-  throw ApiError.badRequest(`Invalid rewind mode: expected 'both' or 'conversation'.`)
+  if (value === 'both' || value === 'conversation' || value === 'files') return value
+  throw ApiError.badRequest(`Invalid rewind mode: expected 'both', 'conversation', or 'files'.`)
 }
 
 export type RewindTargetSelector = {
@@ -127,6 +128,8 @@ export type SessionRewindExecuteResult = SessionRewindPreview & {
 export type SessionTurnCheckpointPreview = SessionRewindPreview & {
   workDir: string
   restoreAvailable: boolean
+  createdAt?: string
+  prompt?: string
 }
 
 export type SessionTurnCheckpointDiffResult = {
@@ -1316,6 +1319,7 @@ async function buildRestorePlan(
   checkpointBaseDir: string,
   snapshots: FileHistorySnapshot[],
   targetSnapshot: FileHistorySnapshot,
+  requestedPathIdentities?: Set<string>,
 ): Promise<RestorePlanEntry[]> {
   const plan: RestorePlanEntry[] = []
   const backupByIdentity = new Map<string, string | null>()
@@ -1330,6 +1334,7 @@ async function buildRestorePlan(
 
     const absolutePath = expandTrackingPath(checkpointBaseDir, trackingPath)
     const identityPath = toFileIdentityPath(absolutePath)
+    if (requestedPathIdentities && !requestedPathIdentities.has(identityPath)) continue
     if (backupByIdentity.has(identityPath)) {
       if (backupByIdentity.get(identityPath) !== backupFileName) {
         throw ApiError.badRequest(`Conflicting checkpoints for tracked path: ${trackingPath}`)
@@ -1358,6 +1363,19 @@ async function buildRestorePlan(
   }
 
   return plan
+}
+
+function collectTargetTrackedPathIdentities(
+  checkpointBaseDir: string,
+  snapshots: FileHistorySnapshot[],
+  targetSnapshot: FileHistorySnapshot,
+): Set<string> {
+  const identities = new Set<string>()
+  for (const trackingPath of collectTrackedPaths(snapshots)) {
+    if (getBackupFileNameForTarget(trackingPath, snapshots, targetSnapshot) === undefined) continue
+    identities.add(toFileIdentityPath(expandTrackingPath(checkpointBaseDir, trackingPath)))
+  }
+  return identities
 }
 
 async function applyRestorePlan(
@@ -1743,7 +1761,11 @@ export async function listSessionTurnCheckpoints(
     )
 
     if (!checkpoint.code.available) continue
-    checkpoints.push(checkpoint)
+    checkpoints.push({
+      ...checkpoint,
+      createdAt: userMessage.timestamp,
+      prompt: extractUserPromptText(userMessage.content),
+    })
   }
 
   return checkpoints
@@ -1876,8 +1898,10 @@ export async function executeSessionRewind(
   sessionId: string,
   selector: RewindTargetSelector,
   mode: SessionRewindMode = 'both',
+  requestedPaths?: string[],
 ): Promise<SessionRewindExecuteResult> {
-  const restoreFiles = mode === 'both'
+  const restoreFiles = mode !== 'conversation'
+  const trimConversation = mode !== 'files'
   const selectedTarget = await resolveRewindTarget(sessionId, selector)
 
   // Stop and drain the runtime before the final completeness check. Otherwise
@@ -1902,7 +1926,7 @@ export async function executeSessionRewind(
     workDir,
     target,
   )
-  if (restoreFiles && !turnCheckpoint.restoreAvailable) {
+  if (restoreFiles && !requestedPaths && !turnCheckpoint.restoreAvailable) {
     throw ApiError.badRequest(
       'This turn includes file changes without a complete restorable checkpoint. No messages or files were changed.',
     )
@@ -1917,7 +1941,7 @@ export async function executeSessionRewind(
     checkpointBaseDir,
     target.targetUserMessageId,
   )
-  if (restoreFiles && !codePreview.restoreAvailable) {
+  if (restoreFiles && !requestedPaths && !codePreview.restoreAvailable) {
     throw ApiError.badRequest(
       'One or more tracked files cannot be safely restored from this checkpoint. No messages or files were changed.',
     )
@@ -1930,12 +1954,35 @@ export async function executeSessionRewind(
     if (!targetSnapshot) {
       throw ApiError.badRequest('No file checkpoint is available for the selected message.')
     }
+    const requestedPathIdentities = requestedPaths
+      ? new Set(requestedPaths.map((requestedPath) => toFileIdentityPath(
+          isAbsolute(requestedPath)
+            ? requestedPath
+            : resolve(checkpointBaseDir, requestedPath),
+        )))
+      : undefined
+    if (requestedPathIdentities) {
+      const trackedPathIdentities = collectTargetTrackedPathIdentities(
+        checkpointBaseDir,
+        snapshots,
+        targetSnapshot,
+      )
+      const unavailablePaths = [...requestedPathIdentities].filter((identityPath) => (
+        !trackedPathIdentities.has(identityPath)
+      ))
+      if (unavailablePaths.length > 0) {
+        throw ApiError.badRequest(
+          'One or more requested files do not have a restorable checkpoint. No files were changed.',
+        )
+      }
+    }
     try {
       appliedRestorePlan = await buildRestorePlan(
         sessionId,
         checkpointBaseDir,
         snapshots,
         targetSnapshot,
+        requestedPathIdentities,
       )
     } catch (error) {
       if (error instanceof ApiError) throw error
@@ -1946,25 +1993,39 @@ export async function executeSessionRewind(
     await applyRestorePlan(checkpointBaseDir, appliedRestorePlan)
   }
 
-  let trimResult: Awaited<ReturnType<typeof sessionService.trimSessionMessagesFrom>>
-  try {
-    trimResult = await sessionService.trimSessionMessagesFrom(
-      sessionId,
-      target.targetUserMessageId,
-    )
-  } catch (error) {
-    const rollbackErrors = await rollbackRestorePlan(
-      checkpointBaseDir,
-      appliedRestorePlan,
-    )
-    if (rollbackErrors.length > 0) {
-      throw new Error(
-        `Transcript trim failed and file rollback was incomplete: ${rollbackErrors.join('; ')}`,
-        { cause: error },
-      )
-    }
-    throw error
+  let trimResult: Awaited<ReturnType<typeof sessionService.trimSessionMessagesFrom>> = {
+    removedCount: 0,
+    removedMessageIds: [],
   }
+  if (trimConversation) {
+    try {
+      trimResult = await sessionService.trimSessionMessagesFrom(
+        sessionId,
+        target.targetUserMessageId,
+      )
+    } catch (error) {
+      const rollbackErrors = await rollbackRestorePlan(
+        checkpointBaseDir,
+        appliedRestorePlan,
+      )
+      if (rollbackErrors.length > 0) {
+        throw new Error(
+          `Transcript trim failed and file rollback was incomplete: ${rollbackErrors.join('; ')}`,
+          { cause: error },
+        )
+      }
+      throw error
+    }
+  }
+
+  const executedPreview = requestedPaths
+    ? {
+        ...preview,
+        filesChanged: appliedRestorePlan.map((entry) => entry.absolutePath),
+        insertions: 0,
+        deletions: 0,
+      }
+    : preview
 
   return {
     target: {
@@ -1976,10 +2037,10 @@ export async function executeSessionRewind(
       messagesRemoved: trimResult.removedCount,
       removedMessageIds: trimResult.removedMessageIds,
     },
-    code: preview,
-    // For `both` this is necessarily true — we threw above otherwise. For
-    // `conversation` it reports whether the files *could* have been restored,
-    // so the caller can tell "user chose not to" from "we could not".
+    code: executedPreview,
+    // For `both` and `files` this is necessarily true — we threw above
+    // otherwise. For `conversation` it reports whether the files *could* have
+    // been restored, so the caller can tell "user chose not to" from "we could not".
     restoreAvailable: turnCheckpoint.restoreAvailable && codePreview.restoreAvailable,
     unverifiedChangeSources: turnCheckpoint.unverifiedChangeSources,
     mode,

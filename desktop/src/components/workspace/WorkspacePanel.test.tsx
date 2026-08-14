@@ -350,7 +350,7 @@ describe('WorkspacePanel', () => {
     expect(view.queryByTestId('workspace-panel')).toBeNull()
   })
 
-  it('loads changed status on open and opens a diff preview from the changed view', async () => {
+  it('opens a readable file from changed files and switches to diff on demand', async () => {
     const statusRequest = deferred<{
       state: 'ok'
       workDir: string
@@ -369,9 +369,18 @@ describe('WorkspacePanel', () => {
       path: string
       diff: string
     }>()
+    const fileRequest = deferred<{
+      state: 'ok'
+      path: string
+      previewType: 'text'
+      content: string
+      language: string
+      size: number
+    }>()
 
     getMocks().getWorkspaceStatusMock.mockReturnValue(statusRequest.promise)
     getMocks().getWorkspaceDiffMock.mockReturnValue(diffRequest.promise)
+    getMocks().getWorkspaceFileMock.mockReturnValue(fileRequest.promise)
 
     await act(() => {
       useWorkspacePanelStore.getState().openPanel('session-changed')
@@ -414,6 +423,25 @@ describe('WorkspacePanel', () => {
       expect(view.container.querySelector('[data-workspace-file-path="src/app.ts"]')).toBeTruthy()
     })
     await clickElement(view.container.querySelector('[data-workspace-file-path="src/app.ts"]')!)
+
+    await waitFor(() => {
+      expect(getMocks().getWorkspaceFileMock).toHaveBeenCalledWith('session-changed', 'src/app.ts')
+    })
+
+    await act(async () => {
+      fileRequest.resolve({
+        state: 'ok',
+        path: 'src/app.ts',
+        previewType: 'text',
+        content: 'console.log("new")',
+        language: 'typescript',
+        size: 18,
+      })
+      await fileRequest.promise
+    })
+
+    expect(view.getByTestId('workspace-code').textContent).toContain('console.log("new")')
+    await clickElement(view.getByRole('button', { name: 'View diff' }))
 
     await waitFor(() => {
       expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith('session-changed', 'src/app.ts')
@@ -661,7 +689,7 @@ describe('WorkspacePanel', () => {
     expect(view.queryByText('App.tsx')).toBeNull()
   })
 
-  it('expands a linked SVN directory in the changed-files view and opens its logical diff path', async () => {
+  it('expands a linked SVN directory in the changed-files view and opens its logical file path', async () => {
     const sessionId = 'session-linked-svn-changes'
     getMocks().getWorkspaceDiffMock.mockResolvedValue({
       state: 'ok',
@@ -771,8 +799,11 @@ describe('WorkspacePanel', () => {
 
     await clickElement(view.getByRole('button', { name: 'Versioned' }))
 
+    getMocks().getWorkspaceFileMock.mockResolvedValueOnce({
+      state: 'ok', path: 'project-brain/note.md', previewType: 'text', content: '# note', language: 'markdown', size: 6,
+    })
     await clickElement(view.getByText('note.md').closest('button')!)
-    expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith(sessionId, 'project-brain/note.md')
+    expect(getMocks().getWorkspaceFileMock).toHaveBeenCalledWith(sessionId, 'project-brain/note.md')
   })
 
   it('gives renamed files enough height to show the old path without overlapping the next row', async () => {
@@ -927,10 +958,13 @@ describe('WorkspacePanel', () => {
         },
       ],
     })
-    getMocks().getWorkspaceDiffMock.mockResolvedValue({
+    getMocks().getWorkspaceFileMock.mockResolvedValue({
       state: 'ok',
       path: 'src/app.ts',
-      diff: 'diff --session a/src/app.ts b/src/app.ts\n-export const answer = 1\n+export const answer = 2',
+      previewType: 'text',
+      content: 'export const answer = 2',
+      language: 'typescript',
+      size: 23,
     })
 
     await act(() => {
@@ -948,7 +982,7 @@ describe('WorkspacePanel', () => {
     await clickElement(view.container.querySelector('[data-workspace-file-path="src/app.ts"]')!)
 
     await waitFor(() => {
-      expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith('session-non-git', 'src/app.ts')
+      expect(getMocks().getWorkspaceFileMock).toHaveBeenCalledWith('session-non-git', 'src/app.ts')
     })
     await waitFor(() => {
       expect(view.getByTestId('workspace-code').textContent).toContain('export const answer = 2')

@@ -6089,6 +6089,8 @@ describe('Sessions API', () => {
           deletions: number
         }
         workDir: string
+        createdAt?: string
+        prompt?: string
       }>
     }
 
@@ -6110,6 +6112,8 @@ describe('Sessions API', () => {
         workDir: fixture.workDir,
         restoreAvailable: true,
         unverifiedChangeSources: [],
+        createdAt: '2026-01-01T00:01:00.000Z',
+        prompt: 'make v1',
       },
       {
         target: {
@@ -6127,6 +6131,8 @@ describe('Sessions API', () => {
         workDir: fixture.workDir,
         restoreAvailable: true,
         unverifiedChangeSources: [],
+        createdAt: '2026-01-01T00:01:00.000Z',
+        prompt: 'make v2',
       },
       {
         target: {
@@ -6144,6 +6150,8 @@ describe('Sessions API', () => {
         workDir: fixture.workDir,
         restoreAvailable: true,
         unverifiedChangeSources: [],
+        createdAt: '2026-01-01T00:01:00.000Z',
+        prompt: 'make v3 and create file',
       },
     ])
   })
@@ -7973,6 +7981,28 @@ describe('Sessions API', () => {
     expect(await defaultRes.json()).toMatchObject({ mode: 'both' })
   })
 
+  it('should restore files without trimming messages in files mode', async () => {
+    const fixture = await createThreeTurnCheckpointFixture(
+      '99999999-bbbb-cccc-dddd-0000000f0008',
+    )
+    const messagesBefore = await service.getSessionMessages(fixture.sessionId)
+
+    const res = await fetch(`${baseUrl}/api/sessions/${fixture.sessionId}/rewind`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userMessageIndex: 0, mode: 'files' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      mode: 'files',
+      conversation: { messagesRemoved: 0, removedMessageIds: [] },
+    })
+    expect(await fs.readFile(fixture.stepFile, 'utf-8')).toBe("export const STEP = 'base'\n")
+    await expect(fs.stat(fixture.createdFile)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await service.getSessionMessages(fixture.sessionId)).toHaveLength(messagesBefore.length)
+  })
+
   it('should reject unsafe backup file names without reading outside file history', async () => {
     const sessionId = '99999999-bbbb-cccc-dddd-000000000019'
     const workDir = path.join(tmpDir, 'unsafe-backup-name')
@@ -8448,6 +8478,33 @@ describe('Sessions API', () => {
     ])
     return { workDir, fileA, fileB, fileC, ids }
   }
+
+  it('POST /api/sessions/:id/rewind should restore only the requested checkpoint file', async () => {
+    const sessionId = 'aaaaaaaa-9999-7777-8888-999999999999'
+    const fixture = await writeFirstTurnCreatesFilesFixture(sessionId)
+    const messagesBefore = await service.getSessionMessages(sessionId)
+
+    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/rewind`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetUserMessageId: fixture.ids[2],
+        mode: 'files',
+        paths: [fixture.fileA],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      mode: 'files',
+      conversation: { messagesRemoved: 0, removedMessageIds: [] },
+      code: { filesChanged: [fixture.fileA] },
+    })
+    expect(await fs.readFile(fixture.fileA, 'utf-8')).toBe('a v2\n')
+    expect(await fs.readFile(fixture.fileB, 'utf-8')).toBe('b v3\n')
+    expect(await fs.readFile(fixture.fileC, 'utf-8')).toBe('c v3\n')
+    expect(await service.getSessionMessages(sessionId)).toHaveLength(messagesBefore.length)
+  })
 
   it('POST /api/sessions/:id/rewind should return to the start of the third turn without touching earlier turns', async () => {
     const sessionId = 'aaaaaaaa-9999-1111-2222-333333333333'

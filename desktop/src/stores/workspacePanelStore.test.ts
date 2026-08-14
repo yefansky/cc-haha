@@ -488,6 +488,31 @@ describe('workspacePanelStore', () => {
     }])
   })
 
+  it('preserves the turn checkpoint source on a file preview for later diff toggling', async () => {
+    mocks.getWorkspaceFileMock.mockResolvedValue({
+      state: 'ok',
+      path: 'src/a.ts',
+      content: 'export const a = 1',
+      language: 'typescript',
+    })
+
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-turn-file',
+      'src/a.ts',
+      'file',
+      undefined,
+      undefined,
+      { kind: 'turn', targetUserMessageId: 'message-1', userMessageIndex: 2 },
+    )
+
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-turn-file']).toMatchObject([{
+      id: 'file:src/a.ts',
+      kind: 'file',
+      diffSource: { kind: 'turn', targetUserMessageId: 'message-1', userMessageIndex: 2 },
+      content: 'export const a = 1',
+    }])
+  })
+
   it('refreshes an existing preview tab when the same path is opened again', async () => {
     mocks.getWorkspaceDiffMock
       .mockResolvedValueOnce({
