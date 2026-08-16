@@ -5,7 +5,6 @@ import * as React from 'react';
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js';
 import type { AppState } from 'src/state/AppState.js';
 import { z } from 'zod/v4';
-import { getKairosActive } from '../../bootstrap/state.js';
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js';
@@ -39,6 +38,7 @@ import { TaskOutput } from '../../utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from '../../utils/terminal.js';
 import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, getToolResultPath, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
 import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js';
+import { FOREGROUND_BLOCKING_BUDGET_MS, scheduleForegroundAutoBackground } from '../shared/foregroundAutoBackground.js';
 import { trackGitOperations } from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
 import { interpretCommandResult } from './commandSemantics.js';
@@ -53,8 +53,6 @@ const EOL = '\n';
 
 // Progress display constants
 const PROGRESS_THRESHOLD_MS = 2000; // Show progress after 2 seconds
-// In assistant mode, blocking bash auto-backgrounds after this many ms in the main agent
-const ASSISTANT_BLOCKING_BUDGET_MS = 15_000;
 
 // Search commands for collapsible display (grep, find, etc.)
 const BASH_SEARCH_COMMANDS = new Set(['find', 'grep', 'rg', 'ag', 'ack', 'locate', 'which', 'whereis']);
@@ -284,7 +282,7 @@ const outputSchema = lazySchema(() => z.object({
   isImage: z.boolean().optional().describe('Flag to indicate if stdout contains image data'),
   backgroundTaskId: z.string().optional().describe('ID of the background task if command is running in background'),
   backgroundedByUser: z.boolean().optional().describe('True if the user manually backgrounded the command with Ctrl+B'),
-  assistantAutoBackgrounded: z.boolean().optional().describe('True if assistant-mode auto-backgrounded a long-running blocking command'),
+  assistantAutoBackgrounded: z.boolean().optional().describe('True if the foreground blocking budget auto-backgrounded a long-running command'),
   dangerouslyDisableSandbox: z.boolean().optional().describe('Flag to indicate if sandbox mode was overridden'),
   returnCodeInterpretation: z.string().optional().describe('Semantic interpretation for non-error exit codes with special meaning'),
   noOutputExpected: z.boolean().optional().describe('Whether the command is expected to produce no output on success'),
@@ -607,7 +605,7 @@ export const BashTool = buildTool({
     if (backgroundTaskId) {
       const outputPath = getTaskOutputPath(backgroundTaskId);
       if (assistantAutoBackgrounded) {
-        backgroundInfo = `Command exceeded the assistant-mode blocking budget (${ASSISTANT_BLOCKING_BUDGET_MS / 1000}s) and was moved to the background with ID: ${backgroundTaskId}. It is still running — you will be notified when it completes. Output is being written to: ${outputPath}. In assistant mode, delegate long-running work to a subagent or use run_in_background to keep this conversation responsive.`;
+        backgroundInfo = `Command exceeded the foreground blocking budget (${FOREGROUND_BLOCKING_BUDGET_MS / 1000}s) and was moved to the background with ID: ${backgroundTaskId}. It is still running — you will be notified when it completes. Output is being written to: ${outputPath}. Use run_in_background for commands that are expected to run longer.`;
       } else if (backgroundedByUser) {
         backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`;
       } else {
@@ -874,6 +872,13 @@ async function* runShellCommand({
     });
   }
 
+  function wakeProgressLoop(): void {
+    const resolve = resolveProgress;
+    if (!resolve) return;
+    resolveProgress = null;
+    resolve();
+  }
+
   // Determine if auto-backgrounding should be enabled
   // Only enable for commands that are allowed to be auto-backgrounded
   // and when background tasks are not disabled
@@ -931,6 +936,7 @@ async function* runShellCommand({
         return;
       }
       backgroundShellId = foregroundTaskId;
+      wakeProgressLoop();
       logEvent(eventName, {
         command_type: getCommandTypeForLogging(command)
       });
@@ -948,11 +954,7 @@ async function* runShellCommand({
       // (no output + shared-poller race with sibling stopPolling calls)
       // and the process is hung on I/O, the race at line ~1357 never
       // resolves and the generator deadlocks despite being backgrounded.
-      const resolve = resolveProgress;
-      if (resolve) {
-        resolveProgress = null;
-        resolve();
-      }
+      wakeProgressLoop();
       logEvent(eventName, {
         command_type: getCommandTypeForLogging(command)
       });
@@ -970,17 +972,23 @@ async function* runShellCommand({
     });
   }
 
-  // In assistant mode, the main agent should stay responsive. Auto-background
-  // blocking commands after ASSISTANT_BLOCKING_BUDGET_MS so the agent can keep
-  // coordinating instead of waiting. The command keeps running — no state loss.
-  if (feature('KAIROS') && getKairosActive() && isMainThread && !isBackgroundTasksDisabled && run_in_background !== true) {
-    setTimeout(() => {
-      if (shellCommand.status === 'running' && backgroundShellId === undefined) {
-        assistantAutoBackgrounded = true;
-        startBackgrounding('tengu_bash_command_assistant_auto_backgrounded');
-      }
-    }, ASSISTANT_BLOCKING_BUDGET_MS).unref();
-  }
+  // Keep every main conversation responsive: foreground waiting and process
+  // lifetime are separate. The command keeps running and completion is
+  // delivered through the existing background-task notification path.
+  scheduleForegroundAutoBackground({
+    command: shellCommand,
+    policy: {
+      isMainThread: isMainThread === true,
+      runInBackground: run_in_background,
+      backgroundTasksDisabled: isBackgroundTasksDisabled,
+      autoBackgroundAllowed: shouldAutoBackground
+    },
+    background() {
+      if (backgroundShellId !== undefined) return;
+      assistantAutoBackgrounded = true;
+      startBackgrounding('tengu_bash_command_foreground_budget_backgrounded');
+    }
+  });
 
   // Handle Claude asking to run it in the background explicitly
   // When explicitly requested via run_in_background, always honor the request
