@@ -314,7 +314,34 @@ export function parseFilePathRef(value: string): FilePathRef | null {
   const trimmed = value.trim()
   if (!trimmed) return null
   const ref = matchFilePath(trimmed)
-  return ref && ref.raw === trimmed ? ref : null
+  if (ref && ref.raw === trimmed) return ref
+
+  // `matchFilePath` intentionally excludes CJK and spaces because it scans
+  // ordinary prose, where those characters would swallow the words around a
+  // path. Here the whole value is already an explicit reference (an href,
+  // inline-code value, or a verified tool path), so accepting them is safe and
+  // is required for real Windows paths such as `G:\项目\规则.md`.
+  const explicitMatch = /^(.*?)(?:(?::(\d+)(?::(\d+))?)|(?:[#:]L(\d+)(?:-L?\d+)?))?$/.exec(trimmed)
+  if (!explicitMatch) return null
+
+  const [, path = '', colonLine, colonColumn, anchorLine] = explicitMatch
+  const firstSeparator = path.search(/[\\/]/)
+  const hasExplicitPathShape = /^(?:[A-Za-z]:[\\/]|~?[\\/]|\.{1,2}[\\/])/.test(path)
+    || (firstSeparator > 0
+      && !/\s/.test(path.slice(0, firstSeparator))
+      && /[^\x00-\x7F]/.test(path))
+  if (!hasExplicitPathShape) return null
+  if (!isLinkableFilePath(path)) return null
+
+  const lineText = colonLine ?? anchorLine
+  const line = lineText ? Number.parseInt(lineText, 10) : undefined
+  const column = colonColumn ? Number.parseInt(colonColumn, 10) : undefined
+  return {
+    raw: trimmed,
+    path,
+    ...(line && Number.isFinite(line) ? { line } : {}),
+    ...(column && Number.isFinite(column) ? { column } : {}),
+  }
 }
 
 /** True when `value` is nothing but a single file reference (used for inline code). */

@@ -105,6 +105,25 @@ describe('AssistantMessage link routing', () => {
     fireEvent.click(screen.getByRole('link', { name: 'http://localhost:3000' }))
     expect(openBrowser).toHaveBeenCalledWith('s1', 'http://localhost:3000/')
   })
+
+  it('routes a short file link to the verified changed file path', () => {
+    render(
+      <AssistantMessage
+        sessionId="s1"
+        content={'见 [SKILL.md](SKILL.md)'}
+        turnChangedFiles={['I:/skills/agent/SKILL.md']}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('link', { name: 'SKILL.md' }))
+    expect(openPreviewFn).toHaveBeenCalledWith(
+      's1',
+      'I:/skills/agent/SKILL.md',
+      'file',
+      undefined,
+      undefined,
+    )
+  })
 })
 
 describe('AssistantMessage output-target cards', () => {

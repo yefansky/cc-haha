@@ -160,6 +160,13 @@ describe('parseFilePathRef / isFilePathOnly', () => {
     expect(parseFilePathRef(' src/a.py ')?.path).toBe('src/a.py')
   })
 
+  it('accepts CJK and spaces when the whole value is an explicit file reference', () => {
+    expect(parseFilePathRef('G:\\项目大脑\\规则 文件.md:42')).toMatchObject({
+      path: 'G:\\项目大脑\\规则 文件.md',
+      line: 42,
+    })
+  })
+
   it('rejects a command that merely contains one', () => {
     // Matches urlBoundary's rule for `` `curl http://x` ``: a command stays code.
     expect(isFilePathOnly('bun test src/a.test.ts')).toBe(false)

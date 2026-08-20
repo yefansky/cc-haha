@@ -2790,6 +2790,44 @@ describe('MessageList nested tool calls', () => {
     )
   })
 
+  it('opens a short assistant file link at the unique path read earlier in the same turn', () => {
+    const actualPath = 'G:\\Jx3_Classic\\Sword3_Classic\\项目大脑\\项目专家\\实习生\\策划编辑器\\lua-script-review\\references\\custom-value-rules.md'
+    const openPreview = vi.spyOn(useWorkspacePanelStore.getState(), 'openPreview').mockResolvedValue(undefined)
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({ messages: [
+          { id: 'user-1', type: 'user_text', content: '检查规则', timestamp: 1 },
+          {
+            id: 'read-1',
+            type: 'tool_use',
+            toolName: 'Read',
+            toolUseId: 'read-1',
+            input: { file_path: actualPath },
+            timestamp: 2,
+          },
+          { id: 'result-1', type: 'tool_result', toolUseId: 'read-1', content: '规则正文', isError: false, timestamp: 3 },
+          {
+            id: 'assistant-1',
+            type: 'assistant_text',
+            content: '策划 Agent 实际读取的是 [custom-value-rules.md](custom-value-rules.md)。',
+            timestamp: 4,
+          },
+        ] }),
+      },
+    })
+
+    render(<MessageList />)
+    fireEvent.click(screen.getByRole('link', { name: 'custom-value-rules.md' }))
+
+    expect(openPreview).toHaveBeenCalledWith(
+      ACTIVE_TAB,
+      actualPath.replace(/\\/g, '/'),
+      'file',
+      undefined,
+      undefined,
+    )
+  })
+
   it('releases pointer focus from message actions after clicking copy', () => {
     useChatStore.setState({
       sessions: {
@@ -6011,7 +6049,7 @@ describe('MessageList nested tool calls', () => {
       restoreAvailable: true,
       mode: 'conversation',
     })
-    const reloadHistory = vi.fn().mockResolvedValue(undefined)
+    const reloadHistory = vi.fn(() => new Promise<void>(() => {}))
     const queueComposerPrefill = vi.fn()
     const sendMessage = vi.fn()
     useChatStore.setState({
@@ -6058,11 +6096,63 @@ describe('MessageList nested tool calls', () => {
       expectedContent: 'first prompt',
       mode: 'conversation',
     }))
-    expect(reloadHistory).toHaveBeenCalledWith(ACTIVE_TAB)
+    expect(reloadHistory).not.toHaveBeenCalled()
     expect(queueComposerPrefill).not.toHaveBeenCalled()
     expect(sendMessage).toHaveBeenCalledWith(ACTIVE_TAB, 'edited first prompt', undefined, {
       displayContent: 'edited first prompt',
       displayAttachments: undefined,
+      replaceFromMessageId: 'user-1',
+    })
+  })
+
+  it('keeps every persisted prompt editable while the latest reply is streaming', async () => {
+    vi.spyOn(sessionsApi, 'rewind').mockResolvedValue({
+      target: { targetUserMessageId: 'user-2', userMessageIndex: 1, userMessageCount: 2 },
+      conversation: { messagesRemoved: 1, removedMessageIds: ['user-2'] },
+      code: { available: false, filesChanged: [], insertions: 0, deletions: 0 },
+      restoreAvailable: true,
+      mode: 'conversation',
+    })
+    const realStopGeneration = useChatStore.getState().stopGeneration
+    const stopGeneration = vi.fn(realStopGeneration)
+    const sendMessage = vi.fn()
+    useChatStore.setState({
+      stopGeneration,
+      sendMessage,
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({ messages: [
+          { id: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
+          { id: 'assistant-1', type: 'assistant_text', content: 'first reply', timestamp: 2 },
+          { id: 'user-2', type: 'user_text', content: 'latest prompt', timestamp: 3 },
+        ] }),
+      },
+    })
+
+    render(<MessageList />)
+    act(() => {
+      const store = useChatStore.getState()
+      store.handleServerMessage(ACTIVE_TAB, { type: 'status', state: 'streaming' })
+      store.handleServerMessage(ACTIVE_TAB, { type: 'content_delta', text: 'partial reply' })
+    })
+
+    const editButtons = await screen.findAllByRole('button', { name: 'Edit this prompt' })
+    expect(editButtons).toHaveLength(2)
+    fireEvent.click(editButtons[1]!)
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Edit prompt' }), {
+      target: { value: 'edited latest prompt' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(sessionsApi.rewind).toHaveBeenCalledWith(ACTIVE_TAB, {
+      userMessageIndex: 1,
+      expectedContent: 'latest prompt',
+      mode: 'conversation',
+    }))
+    expect(stopGeneration).toHaveBeenCalledWith(ACTIVE_TAB)
+    expect(sendMessage).toHaveBeenCalledWith(ACTIVE_TAB, 'edited latest prompt', undefined, {
+      displayContent: 'edited latest prompt',
+      displayAttachments: undefined,
+      replaceFromMessageId: 'user-2',
     })
   })
 

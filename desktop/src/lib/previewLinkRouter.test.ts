@@ -30,6 +30,10 @@ describe('classifyPreviewLink', () => {
     // every path link on Windows classified as `ignored`.
     expect(classifyPreviewLink('C:\\src\\app.ts')).toMatchObject({ kind: 'file-preview', path: 'C:\\src\\app.ts' })
     expect(classifyPreviewLink('C:\\src\\app.ts:42')).toMatchObject({ path: 'C:\\src\\app.ts', line: 42 })
+    expect(classifyPreviewLink('G:\\项目大脑\\规则 文件.md')).toMatchObject({
+      kind: 'file-preview',
+      path: 'G:\\项目大脑\\规则 文件.md',
+    })
   })
   it('routes the extensions the old private list was missing', () => {
     expect(classifyPreviewLink('.github/workflows/release-desktop.yml:386')).toMatchObject({

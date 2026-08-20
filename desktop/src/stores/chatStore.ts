@@ -306,7 +306,12 @@ type ChatStore = {
     sessionId: string,
     content: string,
     attachments?: AttachmentRef[],
-    options?: { displayContent?: string; displayAttachments?: AttachmentRef[]; hideDisplayContent?: boolean },
+    options?: {
+      displayContent?: string
+      displayAttachments?: AttachmentRef[]
+      hideDisplayContent?: boolean
+      replaceFromMessageId?: string
+    },
   ) => void
   respondToPermission: (
     sessionId: string,
@@ -1486,10 +1491,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const bufferedDelta = consumePendingDelta(sessionId)
       const pendingAssistantText = `${session.streamingText}${bufferedDelta}`
       const now = Date.now()
+      const replaceFromIndex = options?.replaceFromMessageId
+        ? session.messages.findIndex((message) => message.id === options.replaceFromMessageId)
+        : -1
+      const retainedMessages = replaceFromIndex >= 0
+        ? session.messages.slice(0, replaceFromIndex)
+        : session.messages
 
       const newMessages = pendingAssistantText.trim()
-        ? appendAssistantTextMessage(session.messages, pendingAssistantText, now)
-        : [...session.messages]
+        ? appendAssistantTextMessage(retainedMessages, pendingAssistantText, now)
+        : [...retainedMessages]
       if (!isMemberSession && allTasksDone) {
         newMessages.push({
           id: nextId(),
@@ -1526,7 +1537,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             historyMutationEpoch: (session.historyMutationEpoch ?? 0) + 1,
             elapsedSeconds: 0,
             suppressNextTaskNotificationResponse: false,
-            replaceHistoryOnCompletion: false,
+            // Editing a sent prompt has already truncated the server transcript.
+            // Replace from persisted history when the new turn completes so any
+            // non-message state removed by the rewind is reconciled as well.
+            replaceHistoryOnCompletion: Boolean(options?.replaceFromMessageId),
             streamingText: '',
             streamingResponseChars: 0,
             statusVerb: isMemberSession ? '' : randomSpinnerVerb(),

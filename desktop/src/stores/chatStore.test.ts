@@ -2209,6 +2209,47 @@ describe('chatStore history mapping', () => {
     )
   })
 
+  it('replaces a rewound prompt locally before sending the edited turn', () => {
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: makeSession({
+          messages: [
+            { id: 'user-0', type: 'user_text', content: 'keep prompt', timestamp: 1 },
+            { id: 'assistant-0', type: 'assistant_text', content: 'keep reply', timestamp: 2 },
+            { id: 'user-1', type: 'user_text', content: 'old prompt', timestamp: 3 },
+            { id: 'assistant-1', type: 'assistant_text', content: 'old reply', timestamp: 4 },
+            { id: 'user-2', type: 'user_text', content: 'later prompt', timestamp: 5 },
+          ],
+          chatState: 'idle',
+        }),
+      },
+    })
+
+    useChatStore.getState().sendMessage(
+      TEST_SESSION_ID,
+      'edited prompt',
+      undefined,
+      {
+        displayContent: 'edited prompt',
+        replaceFromMessageId: 'user-1',
+      },
+    )
+
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    expect(session?.messages).toMatchObject([
+      { id: 'user-0', type: 'user_text', content: 'keep prompt' },
+      { id: 'assistant-0', type: 'assistant_text', content: 'keep reply' },
+      { type: 'user_text', content: 'edited prompt' },
+    ])
+    expect(session?.replaceHistoryOnCompletion).toBe(true)
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
+      type: 'user_message',
+      content: 'edited prompt',
+      attachments: undefined,
+    })
+    if (session?.elapsedTimer) clearInterval(session.elapsedTimer)
+  })
+
   it('keeps queued message model context when editing the visible prompt text', () => {
     useChatStore.setState({
       sessions: {

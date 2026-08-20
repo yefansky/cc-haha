@@ -12,7 +12,10 @@ import { InlineImageGallery } from './InlineImageGallery'
 import { InlineVideoGallery } from './InlineVideoGallery'
 import { AssistantOutputTargetCard } from './AssistantOutputTargetCard'
 import { openPreviewLink } from '../../lib/openPreviewLink'
-import { extractAssistantOutputTargets } from '../../lib/assistantOutputTargets'
+import {
+  extractAssistantOutputTargets,
+  resolveAssistantOutputFileHref,
+} from '../../lib/assistantOutputTargets'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useTranslation, type TranslationKey } from '../../i18n'
 
@@ -25,13 +28,15 @@ type Props = {
   /** This turn's real changed files (absolute), used to anchor output chips onto
    *  files that were actually written instead of guessing from the prose. */
   turnChangedFiles?: string[]
+  /** Files the Agent accessed through path-bearing tools earlier in this turn. */
+  turnReferencedFiles?: string[]
   /** Set only on the last reply of a finished turn: when it ended and how long it took. */
   turnCompletion?: TurnCompletion
 }
 
 const MAX_CARDS = 3
 
-export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, branchAction, sessionId, timestamp, turnChangedFiles, turnCompletion }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, branchAction, sessionId, timestamp, turnChangedFiles, turnReferencedFiles, turnCompletion }: Props) {
   const t = useTranslation()
   const workDir = useWorkspacePanelStore((s) => (sessionId ? s.statusBySession[sessionId]?.workDir : undefined))
 
@@ -40,11 +45,16 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
   const handleLinkClick = useCallback(
     (href: string, event: ReactMouseEvent<HTMLDivElement>): boolean => {
       if (!sessionId) return false
-      const handled = openPreviewLink(href, sessionId)
+      const resolvedHref = resolveAssistantOutputFileHref(href, {
+        workDir,
+        changedFiles: turnChangedFiles,
+        referencedFiles: turnReferencedFiles,
+      })
+      const handled = openPreviewLink(resolvedHref, sessionId)
       if (handled) event.preventDefault()
       return handled
     },
-    [sessionId],
+    [sessionId, turnChangedFiles, turnReferencedFiles, workDir],
   )
 
   // Right-clicking a reference in the prose opens the same menu the output cards
@@ -61,7 +71,12 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
       event.preventDefault()
       const anchor = link!.getBoundingClientRect()
       void (async () => {
-        const items = await buildOpenWithMenuItemsForHref(href, {
+        const resolvedHref = resolveAssistantOutputFileHref(href, {
+          workDir,
+          changedFiles: turnChangedFiles,
+          referencedFiles: turnReferencedFiles,
+        })
+        const items = await buildOpenWithMenuItemsForHref(resolvedHref, {
           sessionId,
           workDir,
           // Cast t: useTranslation takes TranslationKey, the builder takes string.
@@ -71,7 +86,7 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
         if (items.length > 0) setOpenWith({ items, anchor })
       })()
     },
-    [sessionId, t, workDir],
+    [sessionId, t, turnChangedFiles, turnReferencedFiles, workDir],
   )
 
   const outputTargets = useMemo(

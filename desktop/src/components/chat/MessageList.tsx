@@ -728,6 +728,62 @@ export function buildRenderModel(messages: UIMessage[], activeAskUserQuestionToo
   return { renderItems: items, toolResultMap, childToolCallsByParent }
 }
 
+const TOOL_FILE_PATH_FIELDS = new Set([
+  'file_path',
+  'filePath',
+  'notebook_path',
+  'notebookPath',
+  'path',
+])
+
+function collectToolFilePaths(value: unknown, output: string[]) {
+  if (!value || typeof value !== 'object') return
+  if (Array.isArray(value)) {
+    for (const item of value) collectToolFilePaths(item, output)
+    return
+  }
+
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (TOOL_FILE_PATH_FIELDS.has(key) && typeof item === 'string' && item.trim()) {
+      output.push(item.trim())
+    } else if (item && typeof item === 'object') {
+      collectToolFilePaths(item, output)
+    }
+  }
+}
+
+export function buildTurnReferencedFilesByMessageId(messages: UIMessage[]): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+  const referencedFiles: string[] = []
+  const seen = new Set<string>()
+
+  for (const message of messages) {
+    if (message.type === 'user_text') {
+      referencedFiles.length = 0
+      seen.clear()
+      continue
+    }
+
+    if (message.type === 'tool_use') {
+      const candidates: string[] = []
+      collectToolFilePaths(message.input, candidates)
+      for (const candidate of candidates) {
+        const key = candidate.replace(/\\/g, '/').toLowerCase()
+        if (seen.has(key)) continue
+        seen.add(key)
+        referencedFiles.push(candidate)
+      }
+      continue
+    }
+
+    if (message.type === 'assistant_text' && referencedFiles.length > 0) {
+      result.set(message.id, [...referencedFiles])
+    }
+  }
+
+  return result
+}
+
 function isTurnResponseMessage(message: UIMessage) {
   return (
     message.type === 'assistant_text' ||
@@ -814,6 +870,25 @@ export function getCompletedTurnTargets(messages: UIMessage[]): RewindTurnTarget
   }
 
   return completedTurns
+}
+
+export function getEditableTurnTargets(messages: UIMessage[]): RewindTurnTarget[] {
+  let userMessageIndex = -1
+  const targets: RewindTurnTarget[] = []
+
+  for (const message of messages) {
+    if (message.type !== 'user_text' || message.pending) continue
+    userMessageIndex += 1
+    targets.push({
+      messageId: message.id,
+      userMessageIndex,
+      content: message.content,
+      expectedContent: message.modelContent ?? message.content,
+      attachments: message.attachments,
+    })
+  }
+
+  return targets
 }
 
 export function getLatestCompletedTurnTarget(messages: UIMessage[]): RewindTurnTarget | null {
@@ -1720,14 +1795,14 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   const [activeConversationFindMatch, setActiveConversationFindMatch] = useState<ConversationFindMatch | null>(null)
   const conversationFindMatchesRef = useRef<ConversationFindMatch[]>([])
   const [messageListWidth, setMessageListWidth] = useState<number | null>(null)
-  const branchActionsDisabled =
-    isMemberSession ||
+  const editRequiresActiveTurnStop =
     chatState !== 'idle' ||
     hasRunningBackgroundTasks ||
     streamingText.trim().length > 0 ||
     Boolean(activeThinkingId) ||
     Boolean(sessionState?.activeToolUseId) ||
     Boolean(sessionState?.activeToolName)
+  const branchActionsDisabled = isMemberSession || editRequiresActiveTurnStop
   const hasCompactingDivider = messages.some((message) =>
     message.type === 'compact_summary' && message.phase === 'compacting')
 
@@ -2160,6 +2235,10 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     () => buildRenderModel(messages, activeAskUserQuestionToolUseId),
     [activeAskUserQuestionToolUseId, messages],
   )
+  const turnReferencedFilesByMessageId = useMemo(
+    () => buildTurnReferencedFilesByMessageId(messages),
+    [messages],
+  )
   // Defer the per-message branchable / completed-turn computations so the first
   // commit on tab switch can render the virtualization window without doing two
   // additional O(N) walks synchronously. They re-run in a low-priority render
@@ -2180,10 +2259,10 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     [deferredMessages, chatState],
   )
   const editableTurnTargets = useMemo(
-    () => branchActionsDisabled
+    () => isMemberSession
       ? new Map<string, RewindTurnTarget>()
-      : new Map(completedTurnTargets.map((target) => [target.messageId, target])),
-    [branchActionsDisabled, completedTurnTargets],
+      : new Map(getEditableTurnTargets(deferredMessages).map((target) => [target.messageId, target])),
+    [deferredMessages, isMemberSession],
   )
   const latestCompletedTurnId =
     completedTurnTargets.length > 0
@@ -2519,9 +2598,9 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [addToast, branchSession, branchingMessageId, resolvedSessionId, t])
 
   const beginEditMessage = useCallback((target: RewindTurnTarget) => {
-    if (rewindingTurnId || branchActionsDisabled) return
+    if (rewindingTurnId || isMemberSession) return
     setEditingTurn({ target, content: target.content })
-  }, [branchActionsDisabled, rewindingTurnId])
+  }, [isMemberSession, rewindingTurnId])
 
   const cancelEditMessage = useCallback(() => {
     if (rewindingTurnId) return
@@ -2529,7 +2608,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [rewindingTurnId])
 
   const submitEditMessage = useCallback(async () => {
-    if (!resolvedSessionId || !editingTurn || rewindingTurnId || branchActionsDisabled) return
+    if (!resolvedSessionId || !editingTurn || rewindingTurnId || isMemberSession) return
 
     const content = editingTurn.content.trim()
     if (!content) return
@@ -2537,15 +2616,18 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
 
     setRewindingTurnId(target.messageId)
     try {
+      if (editRequiresActiveTurnStop) {
+        stopGeneration(resolvedSessionId)
+      }
       const result = await sessionsApi.rewind(resolvedSessionId, {
         userMessageIndex: target.userMessageIndex,
         expectedContent: target.expectedContent,
         mode: 'conversation',
       })
-      await reloadHistory(resolvedSessionId)
       sendMessage(resolvedSessionId, content, target.attachments, {
         displayContent: content,
         displayAttachments: target.attachments,
+        replaceFromMessageId: target.messageId,
       })
       setEditingTurn(null)
       addToast({
@@ -2560,7 +2642,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     } finally {
       setRewindingTurnId(null)
     }
-  }, [addToast, branchActionsDisabled, editingTurn, reloadHistory, resolvedSessionId, rewindingTurnId, sendMessage, t])
+  }, [addToast, editRequiresActiveTurnStop, editingTurn, isMemberSession, resolvedSessionId, rewindingTurnId, sendMessage, stopGeneration, t])
 
   // Pre-compute per-message branchAction + toolResult lookups so MessageBlock's
   // memo barrier is not broken by inline object literals on every render.
@@ -2887,6 +2969,9 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
               onCancel: cancelEditMessage,
             } : undefined}
             turnChangedFiles={changedFilesByRenderIndex.get(index)}
+            turnReferencedFiles={item.message.type === 'assistant_text'
+              ? turnReferencedFilesByMessageId.get(item.message.id)
+              : undefined}
             turnCompletion={turnCompletionByMessageId.get(item.message.id)}
           />
         )}
@@ -3042,6 +3127,7 @@ export const MessageBlock = memo(function MessageBlock({
   editAction,
   editComposer,
   turnChangedFiles,
+  turnReferencedFiles,
   turnCompletion,
 }: {
   sessionId?: string | null
@@ -3069,6 +3155,7 @@ export const MessageBlock = memo(function MessageBlock({
     onCancel: () => void
   }
   turnChangedFiles?: string[]
+  turnReferencedFiles?: string[]
   turnCompletion?: TurnCompletion
 }) {
   const t = useTranslation()
@@ -3107,6 +3194,7 @@ export const MessageBlock = memo(function MessageBlock({
             sessionId={sessionId ?? undefined}
             timestamp={message.timestamp}
             turnChangedFiles={turnChangedFiles}
+            turnReferencedFiles={turnReferencedFiles}
             turnCompletion={turnCompletion}
           />
         </SelectableChatMessage>

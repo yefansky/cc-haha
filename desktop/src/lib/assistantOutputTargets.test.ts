@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { extractAssistantOutputTargets } from './assistantOutputTargets'
+import {
+  extractAssistantOutputTargets,
+  resolveAssistantOutputFileHref,
+} from './assistantOutputTargets'
 
 const workDir = '/Users/nanmi/project/demo'
 
@@ -277,6 +280,54 @@ describe('extractAssistantOutputTargets', () => {
 })
 
 describe('extractAssistantOutputTargets with changedFiles reconciliation', () => {
+  it('resolves a short prose link to the unique file read earlier in the turn', () => {
+    expect(resolveAssistantOutputFileHref('custom-value-rules.md', {
+      workDir: 'G:/Jx3_Classic/Sword3_Classic',
+      referencedFiles: [
+        'G:/Jx3_Classic/Sword3_Classic/项目大脑/策划编辑器/references/custom-value-rules.md',
+      ],
+    })).toBe('项目大脑/策划编辑器/references/custom-value-rules.md')
+  })
+
+  it('does not guess between duplicate referenced-file basenames', () => {
+    expect(resolveAssistantOutputFileHref('custom-value-rules.md', {
+      workDir: 'G:/project',
+      referencedFiles: [
+        'G:/project/a/custom-value-rules.md',
+        'G:/project/b/custom-value-rules.md',
+      ],
+    })).toBe('custom-value-rules.md')
+  })
+
+  it('does not treat the same changed and referenced Windows path as ambiguous', () => {
+    expect(resolveAssistantOutputFileHref('SKILL.md', {
+      workDir: 'G:/project',
+      changedFiles: ['G:/project/skills/SKILL.md'],
+      referencedFiles: ['g:\\project\\skills\\SKILL.md'],
+    })).toBe('skills/SKILL.md')
+  })
+
+  it('resolves a short prose link to its verified changed file outside the workdir', () => {
+    expect(resolveAssistantOutputFileHref('SKILL.md', {
+      workDir: 'C:/Users/me/project',
+      changedFiles: ['I:/skills/agent/SKILL.md'],
+    })).toBe('I:/skills/agent/SKILL.md')
+  })
+
+  it('preserves a line suffix while resolving a short prose link', () => {
+    expect(resolveAssistantOutputFileHref('SKILL.md:42', {
+      workDir: '/work',
+      changedFiles: ['/work/skills/agent/SKILL.md'],
+    })).toBe('skills/agent/SKILL.md:42')
+  })
+
+  it('does not guess between duplicate changed-file basenames for prose links', () => {
+    expect(resolveAssistantOutputFileHref('SKILL.md', {
+      workDir: '/work',
+      changedFiles: ['/work/a/SKILL.md', '/work/b/SKILL.md'],
+    })).toBe('SKILL.md')
+  })
+
   it('corrects a bare mention to the real changed path in a subfolder', () => {
     // The reported bug: the model writes /private/tmp/todo-app/index.html but the
     // prose only says `index.html`, so the chip used to point at the (missing)

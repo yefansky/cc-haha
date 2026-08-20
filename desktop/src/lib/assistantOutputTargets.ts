@@ -1,4 +1,5 @@
 import { trimTrailingPunctuation } from './urlBoundary'
+import { parseFilePathRef } from './filePathBoundary'
 
 export type AssistantOutputTargetKind =
   | 'local-html'
@@ -248,6 +249,56 @@ export function extractAssistantOutputTargets(
   }
 
   return results
+}
+
+/**
+ * Resolve a file reference in an assistant reply against files verified by the
+ * turn's tool calls. The model often uses a short label such as `SKILL.md`,
+ * while the file it changed or read lives in a nested directory (or an
+ * authorized external root). Reusing the same reconciliation as output cards
+ * keeps the prose link pointed at the real file instead of treating the label
+ * as a workdir-relative path.
+ *
+ * An unresolved or ambiguous reference is deliberately returned unchanged:
+ * callers may still be referring to an existing workspace file, and guessing
+ * between duplicate basenames would open the wrong document.
+ */
+export function resolveAssistantOutputFileHref(
+  href: string,
+  options: Pick<ExtractAssistantOutputTargetOptions, 'workDir' | 'changedFiles'> & {
+    referencedFiles?: string[]
+  },
+): string {
+  const verifiedFiles: string[] = []
+  const seenFiles = new Set<string>()
+  for (const file of [...(options.changedFiles ?? []), ...(options.referencedFiles ?? [])]) {
+    const normalized = toPosixPath(file)
+    const key = normalized.toLowerCase()
+    if (seenFiles.has(key)) continue
+    seenFiles.add(key)
+    verifiedFiles.push(normalized)
+  }
+  if (verifiedFiles.length === 0) return href
+
+  const reference = parseFilePathRef(href)
+  if (!reference) return href
+
+  const workDir = options.workDir ? resolveFilePath(options.workDir) : null
+  const target = toWorkspaceFileTarget(reference.path, workDir)
+  if (!target) return href
+
+  const match = matchChangedFile(target.normalizedPath, verifiedFiles)
+  if (!match) return href
+
+  const resolvedMatch = resolveFilePath(match)
+  const resolvedPath = workDir && isWithinWorkDir(resolvedMatch, workDir)
+    ? relativeFilePath(workDir, resolvedMatch)
+    : toPosixPath(match)
+  const position = reference.line
+    ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}`
+    : ''
+
+  return `${resolvedPath}${position}`
 }
 
 /**
