@@ -30,6 +30,7 @@ import { handleStaticH5Request } from './staticH5.js'
 import {
   classifyH5Request,
   isH5AccessControlPath,
+  isLocalH5AccessControlPreflight,
   requiresLocalAccessCredential,
   shouldBlockDisabledH5Access,
   shouldRequireH5Token,
@@ -180,6 +181,10 @@ function isH5AccessControlRequest(
   context: H5RequestContext,
 ): boolean {
   if (!isH5AccessControlPath(url.pathname)) {
+    return false
+  }
+
+  if (isLocalH5AccessControlPreflight(req, url, context)) {
     return false
   }
 
@@ -335,6 +340,16 @@ export function startServer(port = PORT, host = HOST) {
 
         if (h5AccessControlBlocked) {
           return h5AccessControlRejectedResponse()
+        }
+
+        // Chromium omits Authorization from CORS preflights. A loopback-only
+        // H5 control preflight is harmless; the actual request below still
+        // requires the Electron process credential.
+        if (req.method === 'OPTIONS' && isH5AccessControlPath(url.pathname)) {
+          if (cors.rejected) {
+            return corsRejectedResponse(cors)
+          }
+          return new Response(null, { status: 204, headers: cors.headers })
         }
 
         if (h5AccessDisabledBlocked) {

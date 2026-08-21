@@ -392,6 +392,33 @@ describe('remote H5 auth and CORS integration', () => {
     await expect(desktopEnable.json()).resolves.toHaveProperty('token')
   })
 
+  test('allows the desktop browser preflight before checking the H5 control credential', async () => {
+    process.env.CC_HAHA_LOCAL_ACCESS_TOKEN = 'desktop-local-secret'
+    await restartRemoteServer()
+
+    // Chromium never includes Authorization on the CORS preflight. The real
+    // POST carries the process token, so the sidecar must let this harmless
+    // loopback OPTIONS request reach the CORS handler first.
+    const response = await fetch(`${baseUrl}/api/h5-access/enable`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://127.0.0.1:1420',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization,content-type',
+      },
+    })
+
+    expect(response.status).toBe(204)
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('http://127.0.0.1:1420')
+    expect(response.headers.get('Access-Control-Allow-Headers')).toContain('Authorization')
+
+    const tokenlessEnable = await fetch(`${baseUrl}/api/h5-access/enable`, {
+      method: 'POST',
+      headers: { Origin: 'http://127.0.0.1:1420' },
+    })
+    expect(tokenlessEnable.status).toBe(403)
+  })
+
   test('does not extend tokenless loopback trust to cross-site subresource loads', async () => {
     process.env.CC_HAHA_LOCAL_ACCESS_TOKEN = 'desktop-local-secret'
     await restartRemoteServer()

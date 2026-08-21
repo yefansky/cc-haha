@@ -95,6 +95,8 @@ try {
   $sidecarPath = Join-Path (Get-Location) 'src-tauri\binaries\claude-sidecar-x86_64-pc-windows-msvc.exe'
   $sidecarSources = @(
     (Join-Path $repoRoot 'src\services\api\traceCapture.ts'),
+    (Join-Path $repoRoot 'src\server\index.ts'),
+    (Join-Path $repoRoot 'src\server\h5AccessPolicy.ts'),
     (Join-Path $repoRoot 'src\server\api\sessions.ts'),
     (Join-Path $repoRoot 'src\server\api\traces.ts'),
     (Join-Path $repoRoot 'src\server\services\traceCaptureService.ts'),
