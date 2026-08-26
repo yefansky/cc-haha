@@ -297,6 +297,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import { useUIStore } from '../../stores/uiStore'
 import { getServerBaseUrl } from '../../lib/desktopRuntime'
 import { WorkspacePanel } from './WorkspacePanel'
@@ -304,6 +305,7 @@ import { WorkspacePanel } from './WorkspacePanel'
 describe('WorkspacePanel', () => {
   const workspaceInitialState = useWorkspacePanelStore.getInitialState()
   const workspaceChatInitialState = useWorkspaceChatContextStore.getInitialState()
+  const browserInitialState = useBrowserPanelStore.getState()
   const settingsInitialState = useSettingsStore.getInitialState()
   const chatInitialState = useChatStore.getInitialState()
 
@@ -311,6 +313,7 @@ describe('WorkspacePanel', () => {
     vi.clearAllMocks()
     ensureMermaidSvgMeasurementStubs()
     await setWorkspaceState(workspaceInitialState)
+    useBrowserPanelStore.setState(browserInitialState, true)
     useChatStore.setState(chatInitialState, true)
     useWorkspaceChatContextStore.setState(workspaceChatInitialState, true)
     await setSettingsState({ ...settingsInitialState, locale: 'en' })
@@ -338,6 +341,7 @@ describe('WorkspacePanel', () => {
   afterEach(async () => {
     cleanup()
     await setWorkspaceState(workspaceInitialState)
+    useBrowserPanelStore.setState(browserInitialState, true)
     useChatStore.setState(chatInitialState, true)
     useWorkspaceChatContextStore.setState(workspaceChatInitialState, true)
     await setSettingsState(settingsInitialState)
@@ -2222,6 +2226,65 @@ describe('WorkspacePanel', () => {
     await clickElement(view.getByRole('button', { name: 'Open Markdown preview' }))
     expect(view.getByRole('heading', { name: 'Project Notes', level: 1 })).toBeTruthy()
     expect(view.queryByTestId('workspace-code')).toBeNull()
+  })
+
+  it('opens local HTML in the native browser while retaining its workspace source tab', async () => {
+    const sessionId = 'session-html-preview'
+    getMocks().getWorkspaceFileMock.mockResolvedValue({
+      state: 'ok',
+      path: 'reports/dashboard.html',
+      content: '<!doctype html><h1>Dashboard</h1>',
+      language: 'html',
+      size: 34,
+    })
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: {
+        ...state.panelBySession,
+        [sessionId]: {
+          isOpen: true,
+          activeView: 'all',
+        },
+      },
+      statusBySession: {
+        ...state.statusBySession,
+        [sessionId]: {
+          state: 'ok',
+          workDir: '/repo',
+          repoName: 'repo',
+          branch: 'main',
+          isGitRepo: true,
+          changedFiles: [],
+        },
+      },
+      treeBySessionPath: {
+        ...state.treeBySessionPath,
+        [sessionId]: {
+          '': {
+            state: 'ok',
+            path: '',
+            entries: [{ name: 'dashboard.html', path: 'reports/dashboard.html', isDirectory: false }],
+          },
+        },
+      },
+    }))
+
+    const view = await renderPanel(sessionId)
+    await clickElement(await view.findByText('dashboard.html'))
+
+    await waitFor(() => {
+      expect(getMocks().getWorkspaceFileMock).toHaveBeenCalledWith(sessionId, 'reports/dashboard.html')
+      expect(useWorkspacePanelStore.getState().getMode(sessionId)).toBe('browser')
+      expect(useBrowserPanelStore.getState().bySession[sessionId]).toMatchObject({
+        isOpen: true,
+        url: `${getServerBaseUrl()}/local-file/repo/reports/dashboard.html`,
+      })
+    })
+
+    useWorkspacePanelStore.getState().setMode(sessionId, 'workspace')
+    await waitFor(() => {
+      expect(view.getByTestId('workspace-code').textContent).toContain('<h1>Dashboard</h1>')
+    })
   })
 
   it('renders CSV files as tables and switches back to source', async () => {

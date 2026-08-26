@@ -124,6 +124,24 @@ describe('AssistantMessage link routing', () => {
       undefined,
     )
   })
+
+  it('opens a short HTML reference through local-file when session evidence resolves it outside the workdir', () => {
+    render(
+      <AssistantMessage
+        sessionId="s1"
+        content={'未提交：`看板/2026-08-26-项目大脑使用态势综合分析.html`'}
+        turnReferencedFiles={[
+          'G:/Jx3_Classic/sword3-products/trunk/tools/AITools/项目大脑/看板/2026-08-26-项目大脑使用态势综合分析.html',
+        ]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('link', { name: '看板/2026-08-26-项目大脑使用态势综合分析.html' }))
+    expect(openBrowser).toHaveBeenCalledWith(
+      's1',
+      'http://127.0.0.1:4321/local-file/G%3A/Jx3_Classic/sword3-products/trunk/tools/AITools/%E9%A1%B9%E7%9B%AE%E5%A4%A7%E8%84%91/%E7%9C%8B%E6%9D%BF/2026-08-26-%E9%A1%B9%E7%9B%AE%E5%A4%A7%E8%84%91%E4%BD%BF%E7%94%A8%E6%80%81%E5%8A%BF%E7%BB%BC%E5%90%88%E5%88%86%E6%9E%90.html',
+    )
+  })
 })
 
 describe('AssistantMessage output-target cards', () => {

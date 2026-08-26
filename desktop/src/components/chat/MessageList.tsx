@@ -736,6 +736,14 @@ const TOOL_FILE_PATH_FIELDS = new Set([
   'path',
 ])
 
+// An assistant can introduce a full Windows/POSIX path in one reply and use a
+// concise path such as `看板/report.html` in a later reply. Keep those explicit
+// absolute references available to the later reply instead of silently falling
+// back to the session workdir. The final /local-file request remains subject to
+// the server's filesystem allow-list; this only selects a previously mentioned
+// candidate and never grants new file access.
+const ABSOLUTE_FILE_PATH_PATTERN = /(?:[A-Za-z]:[\\/]|\/)(?:[^\\/:*?"<>|\r\n]+[\\/])*[^\\/:*?"<>|\r\n]+\.[A-Za-z0-9]{1,16}/g
+
 function collectToolFilePaths(value: unknown, output: string[]) {
   if (!value || typeof value !== 'object') return
   if (Array.isArray(value)) {
@@ -752,32 +760,48 @@ function collectToolFilePaths(value: unknown, output: string[]) {
   }
 }
 
-export function buildTurnReferencedFilesByMessageId(messages: UIMessage[]): Map<string, string[]> {
-  const result = new Map<string, string[]>()
-  const referencedFiles: string[] = []
+function collectAbsoluteFilePathsFromText(value: string, output: string[]) {
+  for (const match of value.matchAll(ABSOLUTE_FILE_PATH_PATTERN)) {
+    const path = match[0]?.trim()
+    if (path) output.push(path)
+  }
+}
+
+function collectSessionKnownFiles(messages: UIMessage[]): string[] {
+  const files: string[] = []
   const seen = new Set<string>()
+  const add = (candidate: string) => {
+    const key = candidate.replace(/\\/g, '/').toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    files.push(candidate)
+  }
 
   for (const message of messages) {
-    if (message.type === 'user_text') {
-      referencedFiles.length = 0
-      seen.clear()
-      continue
-    }
-
     if (message.type === 'tool_use') {
       const candidates: string[] = []
       collectToolFilePaths(message.input, candidates)
-      for (const candidate of candidates) {
-        const key = candidate.replace(/\\/g, '/').toLowerCase()
-        if (seen.has(key)) continue
-        seen.add(key)
-        referencedFiles.push(candidate)
-      }
+      for (const candidate of candidates) add(candidate)
       continue
     }
 
-    if (message.type === 'assistant_text' && referencedFiles.length > 0) {
-      result.set(message.id, [...referencedFiles])
+    if (message.type === 'assistant_text') {
+      const candidates: string[] = []
+      collectAbsoluteFilePathsFromText(message.content, candidates)
+      for (const candidate of candidates) add(candidate)
+    }
+  }
+
+  return files
+}
+
+export function buildTurnReferencedFilesByMessageId(messages: UIMessage[]): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+  const sessionKnownFiles = collectSessionKnownFiles(messages)
+
+  for (const message of messages) {
+    if (message.type === 'assistant_text' && sessionKnownFiles.length > 0) {
+      result.set(message.id, sessionKnownFiles)
     }
   }
 

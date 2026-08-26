@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import {
   MessageList,
+  buildTurnReferencedFilesByMessageId,
   buildRenderModel,
   buildVirtualItemOffsets,
   getActiveConversationNavigationItemId,
@@ -73,6 +74,20 @@ function makeConversationNavigationMessages(): UIMessage[] {
     { id: 'assistant-4', type: 'assistant_text', content: 'Fourth answer', timestamp: 8 },
   ]
 }
+
+describe('buildTurnReferencedFilesByMessageId', () => {
+  it('keeps an explicit absolute HTML path available after a later user turn', () => {
+    const report = 'G:\\Jx3_Classic\\sword3-products\\trunk\\tools\\AITools\\项目大脑\\看板\\2026-08-26-项目大脑使用态势综合分析.html'
+    const messages: UIMessage[] = [
+      { id: 'user-1', type: 'user_text', content: '生成报告', timestamp: 1 },
+      { id: 'assistant-1', type: 'assistant_text', content: `已生成：${report}`, timestamp: 2 },
+      { id: 'user-2', type: 'user_text', content: '提交一下', timestamp: 3 },
+      { id: 'assistant-2', type: 'assistant_text', content: '未提交：看板/2026-08-26-项目大脑使用态势综合分析.html', timestamp: 4 },
+    ]
+
+    expect(buildTurnReferencedFilesByMessageId(messages).get('assistant-2')).toContain(report)
+  })
+})
 
 function findTextNodeContaining(container: Element, text: string) {
   const walker = document.createTreeWalker(container, 4)
