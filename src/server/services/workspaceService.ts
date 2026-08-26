@@ -18,9 +18,12 @@ const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
 const AUTO_ENCODING_SAMPLE_BYTES = 16 * 1024
-// `svn status --xml --no-ignore` emits one XML element for every changed or
-// unversioned path. Large legacy workspaces can legitimately exceed the Git
-// command buffer even though SVN completed successfully.
+// A status walk over a large legacy working copy can take longer than a small
+// Git command. Keep this scoped to status reads so diffs and mutating commands
+// still fail quickly when SVN is unavailable.
+const SVN_STATUS_TIMEOUT_MS = 30_000
+// SVN status XML still needs room for a large set of real changes, but must not
+// enumerate ignored build output just to discard it below.
 const MAX_SVN_STATUS_BUFFER_BYTES = 16 * 1024 * 1024
 const VCS_METADATA_DIRECTORY_NAMES = new Set(['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'])
 const PLAINTEXT_FILE_EXTENSIONS = new Set([
@@ -2096,13 +2099,14 @@ export class WorkspaceService {
   ): Promise<{ kind: 'ok'; entries: StatusEntry[] } | { kind: 'error'; message: string }> {
     const result = await this.runSvn(
       workspaceRoot,
-      ['status', '--xml', '--no-ignore'],
+      ['status', '--xml'],
       MAX_SVN_STATUS_BUFFER_BYTES,
+      SVN_STATUS_TIMEOUT_MS,
     )
     if (result.code !== 0) {
       return {
         kind: 'error',
-        message: this.formatSvnError('Failed to read SVN status', ['status', '--xml', '--no-ignore'], workspaceRoot, result),
+        message: this.formatSvnError('Failed to read SVN status', ['status', '--xml'], workspaceRoot, result),
       }
     }
     const entries: StatusEntry[] = []
@@ -2598,6 +2602,7 @@ export class WorkspaceService {
     workDir: string,
     args: string[],
     maxBuffer = MAX_GIT_BUFFER_BYTES,
+    timeout = GIT_TIMEOUT_MS,
   ): Promise<GitCommandResult> {
     let lastMissingExecutableError: NodeJS.ErrnoException | null = null
     const executables = this.resolveSvnExecutables()
@@ -2606,7 +2611,7 @@ export class WorkspaceService {
       try {
         const result = await execFile(executable, args, {
           cwd: workDir,
-          timeout: GIT_TIMEOUT_MS,
+          timeout,
           maxBuffer,
           encoding: 'buffer',
         })
@@ -2631,7 +2636,7 @@ export class WorkspaceService {
           stderr: decodeCommandOutput(err.stderr),
           code: typeof err.code === 'number' ? err.code : 1,
           failure: err.killed
-            ? `SVN command timed out after ${GIT_TIMEOUT_MS} ms.`
+            ? `SVN command timed out after ${timeout} ms.`
             : err.message || (typeof err.code === 'string' ? err.code : undefined),
         }
       }

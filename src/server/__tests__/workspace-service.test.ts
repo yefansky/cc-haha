@@ -198,7 +198,7 @@ describe('WorkspaceService', () => {
       undefined,
       () => ['cc-haha-definitely-missing-svn', 'svn'],
     ) as WorkspaceService & {
-      runSvn: (workDir: string, args: string[], maxBuffer?: number) => Promise<{
+      runSvn: (workDir: string, args: string[], maxBuffer?: number, timeout?: number) => Promise<{
         stdout: string
         stderr: string
         code: number
@@ -207,9 +207,11 @@ describe('WorkspaceService', () => {
     }
     const runSvn = service.runSvn.bind(service)
     const svnCalls: Array<{ workDir: string; args: string[] }> = []
-    service.runSvn = async (workDir, args, maxBuffer) => {
+    let statusOptions: { maxBuffer?: number; timeout?: number } | null = null
+    service.runSvn = async (workDir, args, maxBuffer, timeout) => {
       svnCalls.push({ workDir, args })
-      return await runSvn(workDir, args, maxBuffer)
+      if (args[0] === 'status') statusOptions = { maxBuffer, timeout }
+      return await runSvn(workDir, args, maxBuffer, timeout)
     }
 
     await expect(service.getStatus('session-1')).resolves.toMatchObject({
@@ -239,6 +241,11 @@ describe('WorkspaceService', () => {
       workDir: workspaceDir,
       args: ['diff', '--depth', 'files'],
     })
+    expect(svnCalls).toContainEqual({
+      workDir: workspaceDir,
+      args: ['status', '--xml'],
+    })
+    expect(statusOptions).toEqual({ maxBuffer: 16 * 1024 * 1024, timeout: 30_000 })
     expect(svnCalls.some((call) => call.args.includes('编译说明.md'))).toBe(false)
   })
 
@@ -879,7 +886,7 @@ describe('WorkspaceService', () => {
   it('allocates a larger output buffer for verbose SVN XML status', async () => {
     const workspaceDir = await createSvnWorkspace()
     const service = new WorkspaceService(async () => workspaceDir) as WorkspaceService & {
-      runSvn: (workDir: string, args: string[], maxBuffer?: number) => Promise<{
+      runSvn: (workDir: string, args: string[], maxBuffer?: number, timeout?: number) => Promise<{
         stdout: string
         stderr: string
         code: number
@@ -887,9 +894,9 @@ describe('WorkspaceService', () => {
     }
     const originalRunSvn = service.runSvn.bind(service)
     let statusBuffer: number | undefined
-    service.runSvn = async (workDir, args, maxBuffer) => {
+    service.runSvn = async (workDir, args, maxBuffer, timeout) => {
       if (args[0] === 'status') statusBuffer = maxBuffer
-      return originalRunSvn(workDir, args, maxBuffer)
+      return originalRunSvn(workDir, args, maxBuffer, timeout)
     }
 
     await expect(service.getStatus('session-1')).resolves.toMatchObject({ state: 'ok', isGitRepo: false })
@@ -908,7 +915,7 @@ describe('WorkspaceService', () => {
 
     const message = service.formatSvnError(
       'Failed to read SVN status',
-      ['status', '--xml', '--no-ignore'],
+      ['status', '--xml'],
       'F:\\Head',
       { stdout: '<?xml version="1.0"?><status><entry path="many-files" /></status>', stderr: '', code: 1 },
     )
