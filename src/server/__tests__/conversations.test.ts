@@ -1248,6 +1248,129 @@ describe('ConversationService', () => {
     }
   })
 
+  const transcriptMessage = (
+    role: 'user' | 'assistant',
+    content: unknown,
+    model?: string,
+    usage?: Record<string, unknown>,
+  ) => ({
+    type: role,
+    message: { role, content, ...(model ? { model } : {}), ...(usage ? { usage } : {}) },
+  })
+
+  async function withTranscriptContextFixture(run: (fixture: {
+    svc: SessionService
+    sessionId: string
+    appendEntries: (...entries: Record<string, unknown>[]) => Promise<void>
+  }) => Promise<void>): Promise<void> {
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousNodeEnv = process.env.NODE_ENV
+    const tmpConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-transcript-context-'))
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-workdir-context-'))
+    process.env.CLAUDE_CONFIG_DIR = tmpConfigDir
+    process.env.NODE_ENV = 'development'
+
+    try {
+      const svc = new SessionService()
+      const { sessionId } = await svc.createSession(workDir)
+      const found = await svc.findSessionFile(sessionId)
+      expect(found).not.toBeNull()
+      const appendEntries = async (...entries: Record<string, unknown>[]) => {
+        await fs.appendFile(
+          found!.filePath,
+          entries.map(entry => JSON.stringify(entry)).join('\n') + '\n',
+        )
+      }
+      await run({ svc, sessionId, appendEntries })
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = previousNodeEnv
+      await fs.rm(tmpConfigDir, { recursive: true, force: true })
+      await fs.rm(workDir, { recursive: true, force: true })
+    }
+  }
+
+  it('should reset context estimates at compact boundaries and ignore encrypted reasoning bytes', async () => {
+    await withTranscriptContextFixture(async ({ svc, sessionId, appendEntries }) => {
+      const encryptedReasoning =
+        `cc-haha:openai-reasoning:v1:${JSON.stringify({
+          summary: [{ type: 'summary_text', text: 's'.repeat(400) }],
+          encrypted_content: 'x'.repeat(400_000),
+        })}`
+      await appendEntries(
+        transcriptMessage('assistant', [{ type: 'redacted_thinking', data: encryptedReasoning }], 'gpt-5.6-terra', {
+          input_tokens: 8_000,
+          output_tokens: 1_000,
+          cache_read_input_tokens: 331_000,
+          cache_creation_input_tokens: 0,
+        }),
+        {
+          type: 'system',
+          subtype: 'compact_boundary',
+        },
+        transcriptMessage('user', [{ type: 'text', text: 'summary'.repeat(100) }]),
+        transcriptMessage('assistant', [{ type: 'text', text: 'continued' }], 'gpt-5.6-terra', {
+          input_tokens: 8_000,
+          output_tokens: 100,
+          cache_read_input_tokens: 2_000,
+          cache_creation_input_tokens: 0,
+        }),
+        transcriptMessage('assistant', [{ type: 'redacted_thinking', data: encryptedReasoning }], 'gpt-5.6-terra', {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        }),
+      )
+
+      const contextEstimate = await svc.getTranscriptContextEstimate(sessionId)
+      const inspectionSnapshot = await svc.getInspectionTranscriptSnapshot(sessionId)
+
+      expect(contextEstimate?.model).toBe('gpt-5.6-terra')
+      expect(contextEstimate?.totalTokens).toBe(10_200)
+      expect(contextEstimate?.percentage).toBe(3)
+      expect(contextEstimate?.categories.reduce(
+        (sum, category) => sum + category.tokens,
+        0,
+      )).toBe(contextEstimate?.rawMaxTokens)
+      expect(inspectionSnapshot?.contextEstimate).toEqual(contextEstimate)
+    })
+  })
+
+  it('should add user, tool, and assistant messages after the latest provider usage and clamp the estimate', async () => {
+    await withTranscriptContextFixture(async ({ svc, sessionId, appendEntries }) => {
+      await appendEntries(
+        transcriptMessage('assistant', [{ type: 'text', text: 'anchor' }], 'claude-sonnet-4-6', {
+          input_tokens: 100,
+          output_tokens: 20,
+        }),
+        transcriptMessage('user', [{ type: 'text', text: 'u'.repeat(400) }]),
+        transcriptMessage('user', [{
+          type: 'tool_result',
+          tool_use_id: 'tool-1',
+          content: 't'.repeat(400),
+        }]),
+        transcriptMessage('assistant', [{ type: 'text', text: 'a'.repeat(400) }], 'claude-sonnet-4-6'),
+      )
+
+      const contextEstimate = await svc.getTranscriptContextEstimate(sessionId)
+      const inspectionSnapshot = await svc.getInspectionTranscriptSnapshot(sessionId)
+
+      expect(contextEstimate?.totalTokens).toBe(420)
+      expect(inspectionSnapshot?.contextEstimate).toEqual(contextEstimate)
+
+      await appendEntries(transcriptMessage('user', [
+        { type: 'text', text: 'z'.repeat(1_000_000) },
+      ]))
+
+      const clampedEstimate = await svc.getTranscriptContextEstimate(sessionId)
+      expect(clampedEstimate?.totalTokens).toBe(clampedEstimate?.rawMaxTokens)
+      expect(clampedEstimate?.percentage).toBe(100)
+    })
+  })
+
   it('should use active provider model context windows for transcript estimates', async () => {
     const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
     const previousNodeEnv = process.env.NODE_ENV
