@@ -1112,6 +1112,96 @@ describe('MessageList nested tool calls', () => {
     )
   })
 
+  it('keeps an unresolved AskUserQuestion read-only after its pending request is gone', () => {
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [{
+            id: 'historical-ask',
+            type: 'tool_use',
+            toolName: 'AskUserQuestion',
+            toolUseId: 'historical-ask-tool',
+            input: {
+              questions: [{
+                question: 'Which historical option?',
+                options: [{ label: 'First' }, { label: 'Second' }],
+              }],
+            },
+            timestamp: 1,
+          }],
+          pendingPermission: null,
+          connectionSnapshotReady: true,
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByText('Which historical option?')).toBeTruthy()
+    expect(screen.getByText('Completed')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^First$/ })).toHaveProperty('disabled', true)
+    expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Submit$/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Chat about this/ })).toBeNull()
+  })
+
+  it('keeps an AskUserQuestion read-only while syncing, then activates it when permission arrives', () => {
+    const questionInput = {
+      questions: [{
+        question: 'Wait for the live request?',
+        options: [{ label: 'Wait' }, { label: 'Cancel' }],
+      }],
+    }
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [{
+            id: 'syncing-ask',
+            type: 'tool_use',
+            toolName: 'AskUserQuestion',
+            toolUseId: 'syncing-ask-tool',
+            input: questionInput,
+            timestamp: 1,
+          }],
+          pendingPermission: null,
+          connectionSnapshotReady: false,
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByRole('button', { name: /^Wait$/ })).toHaveProperty('disabled', true)
+    expect(screen.queryByText('Completed')).toBeNull()
+    expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Submit$/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Chat about this/ })).toBeNull()
+
+    act(() => {
+      useChatStore.setState((state) => ({
+        sessions: {
+          ...state.sessions,
+          [ACTIVE_TAB]: {
+            ...state.sessions[ACTIVE_TAB]!,
+            pendingPermission: {
+              requestId: 'syncing-ask-permission',
+              toolName: 'AskUserQuestion',
+              toolUseId: 'syncing-ask-tool',
+              input: questionInput,
+            },
+          },
+        },
+      }))
+    })
+
+    const liveOption = screen.getByRole('button', { name: /^Wait$/ }) as HTMLButtonElement
+    expect(liveOption.disabled).toBe(false)
+    expect(screen.getByPlaceholderText('Type your answer...')).toBeTruthy()
+    fireEvent.click(liveOption)
+    expect(screen.getByRole('button', { name: /Submit$/ })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: /Chat about this/ })).toHaveProperty('disabled', false)
+  })
+
   it('keeps resolved AskUserQuestion history visible when filtering active duplicates', () => {
     const messages: UIMessage[] = [
       {

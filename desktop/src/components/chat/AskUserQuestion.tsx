@@ -72,6 +72,9 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
     ? listPendingPermissions(s.sessions[targetSessionId])
       .find((permission) => permission.toolUseId === toolUseId) ?? null
     : null)
+  const connectionSnapshotReady = useChatStore((s) => targetSessionId
+    ? s.sessions[targetSessionId]?.connectionSnapshotReady === true
+    : false)
   const t = useTranslation()
   const questions = parseInput(input)
   const inputObject = (input && typeof input === 'object') ? input as Record<string, unknown> : {}
@@ -119,9 +122,12 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
 
   const submitted = hasTerminalResult || hasSubmitted || hasRequestedChat
   const terminalWithoutAnswers = submitted && !hasStructuredAnswers && resultText.length > 0
+  const readOnly = !submitted && !pendingRequest
+  const authoritativeHistory = readOnly && connectionSnapshotReady
+  const settled = submitted || readOnly
 
   const handleSelect = (qIndex: number, label: string) => {
-    if (submitted) return
+    if (settled) return
     setSelections((prev) => {
       const question = questions[qIndex]
       const selected = prev[qIndex] ?? []
@@ -153,7 +159,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   }
 
   const handleFreeTextChange = (qIndex: number, value: string) => {
-    if (submitted) return
+    if (settled) return
     setFreeTexts((prev) => {
       const next = { ...prev }
       if (value) {
@@ -246,13 +252,13 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
 
   return (
     <div className={`mb-4 rounded-[var(--radius-lg)] border overflow-hidden ${
-      submitted
+      settled
         ? 'border-[var(--color-border)] bg-[var(--color-surface-container-low)] opacity-70'
         : 'border-[var(--color-secondary)] bg-[var(--color-surface-container-lowest)]'
     }`}>
       {/* Header */}
       <div className={`flex items-center gap-3 px-4 py-3 ${
-        submitted
+        settled
           ? 'bg-[var(--color-surface-container-low)]'
           : 'bg-[var(--color-surface-container)]'
       }`}>
@@ -265,13 +271,15 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
           <span className="text-sm font-semibold text-[var(--color-text-primary)]">
             {t('question.needsInput')}
           </span>
-          {submitted && (
+          {(submitted || authoritativeHistory) && (
             <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[var(--color-surface-container-high)] text-[var(--color-text-tertiary)]">
               {/* handing the question back is not an answer — saying "answered"
                   there misreports what the user did */}
               {t(hasRequestedChat
                 ? 'question.chatBadge'
-                : terminalWithoutAnswers ? 'question.completed' : 'question.answered')}
+                : terminalWithoutAnswers || authoritativeHistory
+                  ? 'question.completed'
+                  : 'question.answered')}
             </span>
           )}
         </div>
@@ -323,12 +331,12 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
                 <button
                   key={optIndex}
                   onClick={() => handleSelect(safeActiveTab, opt.label)}
-                  disabled={submitted}
+                  disabled={settled}
                   className={`w-full text-left px-4 py-3 rounded-[var(--radius-md)] border transition-all duration-150 cursor-pointer ${
                     isSelected
                       ? 'border-[var(--color-secondary)] bg-[var(--color-secondary-container)]'
                       : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-outline)] hover:bg-[var(--color-surface-container-low)]'
-                  } ${submitted ? 'cursor-default' : ''}`}
+                  } ${settled ? 'cursor-default' : ''}`}
                 >
                   <div className="flex items-start gap-3">
                     {/* Selection indicator */}
@@ -365,7 +373,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
         )}
 
         {/* Free text input */}
-        {!submitted && (
+        {!settled && (
           <div>
             <label className="text-xs text-[var(--color-text-tertiary)] mb-1.5 block">
               {t('question.customResponse')}
@@ -409,7 +417,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
 
       {/* Action bar. Wraps rather than overflows: two buttons plus a translated
           label (kr/jp run long) can outgrow a narrow side-by-side pane. */}
-      {!submitted && (
+      {!settled && (
         <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-t border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
           <Button
             variant="primary"
