@@ -36,7 +36,9 @@ import {
   listSessionTurnCheckpoints,
   parseSessionRewindMode,
   previewSessionRewind,
+  replaceSessionMessage,
   type RewindTargetSelector,
+  type SessionMessageReplacementSelector,
 } from '../services/sessionRewindService.js'
 import { SessionStore } from '../../../adapters/common/session-store.js'
 import {
@@ -179,6 +181,16 @@ export async function handleSessionsApi(
         )
       }
       return await rewindSession(req, sessionId)
+    }
+
+    if (subResource === 'replace-message') {
+      if (req.method !== 'POST') {
+        return Response.json(
+          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+          { status: 405 }
+        )
+      }
+      return await replaceMessage(req, sessionId)
     }
 
     if (subResource === 'branch') {
@@ -1208,6 +1220,39 @@ async function rewindSession(req: Request, sessionId: string): Promise<Response>
     : await executeSessionRewind(sessionId, body, mode, paths)
 
   return Response.json(result)
+}
+
+/**
+ * Editing a sent prompt is a transcript replacement, not a file rewind. Keep
+ * this endpoint separate from /rewind so it cannot accidentally inherit
+ * checkpoint/diff work or its long client timeout.
+ */
+async function replaceMessage(req: Request, sessionId: string): Promise<Response> {
+  let body: Record<string, unknown>
+  try {
+    const parsed = await req.json()
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw ApiError.badRequest('Request body must be an object')
+    }
+    body = parsed as Record<string, unknown>
+  } catch {
+    throw ApiError.badRequest('Invalid JSON body')
+  }
+
+  if (typeof body.targetUserMessageId !== 'string' || body.targetUserMessageId.trim().length === 0) {
+    throw ApiError.badRequest(
+      'targetUserMessageId (non-empty string) is required; userMessageIndex is not supported for message replacement',
+    )
+  }
+  if (body.expectedContent !== undefined && typeof body.expectedContent !== 'string') {
+    throw ApiError.badRequest('expectedContent must be a string when provided')
+  }
+
+  const selector: SessionMessageReplacementSelector = {
+    targetUserMessageId: body.targetUserMessageId,
+    ...(body.expectedContent !== undefined ? { expectedContent: body.expectedContent } : {}),
+  }
+  return Response.json(await replaceSessionMessage(sessionId, selector))
 }
 
 async function branchSession(req: Request, sessionId: string): Promise<Response> {

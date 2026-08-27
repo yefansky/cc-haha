@@ -66,8 +66,17 @@ type RenderModel = {
 }
 
 type RewindTurnTarget = {
-  messageId: string
+  uiMessageId: string
+  targetUserMessageId: string | null
   userMessageIndex: number
+  content: string
+  expectedContent: string
+  attachments?: Extract<UIMessage, { type: 'user_text' }>['attachments']
+}
+
+type EditableTurnTarget = {
+  uiMessageId: string
+  targetUserMessageId: string
   content: string
   expectedContent: string
   attachments?: Extract<UIMessage, { type: 'user_text' }>['attachments']
@@ -874,7 +883,8 @@ export function getCompletedTurnTargets(messages: UIMessage[]): RewindTurnTarget
       }
       userMessageIndex += 1
       currentTarget = {
-        messageId: message.id,
+        uiMessageId: message.id,
+        targetUserMessageId: message.transcriptMessageId ?? null,
         userMessageIndex,
         content: message.content,
         expectedContent: message.modelContent ?? message.content,
@@ -896,16 +906,14 @@ export function getCompletedTurnTargets(messages: UIMessage[]): RewindTurnTarget
   return completedTurns
 }
 
-export function getEditableTurnTargets(messages: UIMessage[]): RewindTurnTarget[] {
-  let userMessageIndex = -1
-  const targets: RewindTurnTarget[] = []
+export function getEditableTurnTargets(messages: UIMessage[]): EditableTurnTarget[] {
+  const targets: EditableTurnTarget[] = []
 
   for (const message of messages) {
-    if (message.type !== 'user_text' || message.pending) continue
-    userMessageIndex += 1
+    if (message.type !== 'user_text' || message.pending || !message.transcriptMessageId) continue
     targets.push({
-      messageId: message.id,
-      userMessageIndex,
+      uiMessageId: message.id,
+      targetUserMessageId: message.transcriptMessageId,
       content: message.content,
       expectedContent: message.modelContent ?? message.content,
       attachments: message.attachments,
@@ -944,8 +952,8 @@ function buildTurnCardInsertionMap(
   turnChangeCards.forEach((card) => {
     if (card.checkpoint.code.filesChanged.length === 0) return
     const renderIndex =
-      lastResponseIndexByTurnId.get(card.target.messageId) ??
-      userIndexByTurnId.get(card.target.messageId)
+      lastResponseIndexByTurnId.get(card.target.uiMessageId) ??
+      userIndexByTurnId.get(card.target.uiMessageId)
     if (renderIndex === undefined) return
     const existing = cardsByRenderIndex.get(renderIndex)
     if (existing) {
@@ -970,7 +978,7 @@ function buildChangedFilesByRenderIndex(
 ): Map<number, string[]> {
   const filesByTurnId = new Map<string, string[]>()
   for (const card of turnChangeCards) {
-    filesByTurnId.set(card.target.messageId, card.checkpoint.code.filesChanged)
+    filesByTurnId.set(card.target.uiMessageId, card.checkpoint.code.filesChanged)
   }
   if (filesByTurnId.size === 0) return new Map()
 
@@ -1806,7 +1814,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   const [isLoadingTurnChangeCards, setIsLoadingTurnChangeCards] = useState(false)
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null)
   const [rewindingTurnId, setRewindingTurnId] = useState<string | null>(null)
-  const [editingTurn, setEditingTurn] = useState<{ target: RewindTurnTarget; content: string } | null>(null)
+  const [editingTurn, setEditingTurn] = useState<{ target: EditableTurnTarget; content: string } | null>(null)
   const [turnUndoConfirmTargetId, setTurnUndoConfirmTargetId] = useState<string | null>(null)
   const [isAwayFromLatest, setIsAwayFromLatest] = useState(false)
   const [virtualViewport, setVirtualViewport] = useState<VirtualViewport>({
@@ -2284,13 +2292,13 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   )
   const editableTurnTargets = useMemo(
     () => isMemberSession
-      ? new Map<string, RewindTurnTarget>()
-      : new Map(getEditableTurnTargets(deferredMessages).map((target) => [target.messageId, target])),
+      ? new Map<string, EditableTurnTarget>()
+      : new Map(getEditableTurnTargets(deferredMessages).map((target) => [target.uiMessageId, target])),
     [deferredMessages, isMemberSession],
   )
   const latestCompletedTurnId =
     completedTurnTargets.length > 0
-      ? completedTurnTargets[completedTurnTargets.length - 1]?.messageId ?? null
+      ? completedTurnTargets[completedTurnTargets.length - 1]?.uiMessageId ?? null
       : null
   const visibleTurnChangeCards = hasRunningBackgroundTasks ? EMPTY_TURN_CHANGE_CARDS : turnChangeCards
   const turnCardsByRenderIndex = useMemo(
@@ -2385,7 +2393,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
           ? 'px-7 py-4'
           : 'px-4 py-4'
   const confirmTurnCard = useMemo(
-    () => visibleTurnChangeCards.find((card) => card.target.messageId === turnUndoConfirmTargetId) ?? null,
+    () => visibleTurnChangeCards.find((card) => card.target.uiMessageId === turnUndoConfirmTargetId) ?? null,
     [turnUndoConfirmTargetId, visibleTurnChangeCards],
   )
   // Undo is not reversible, so the dialog — not just the card — has to say which
@@ -2458,9 +2466,12 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     ])
       .then(([checkpointResponse, workspaceStatus]) => {
         if (cancelled) return
-        const targetByMessageId = new Map(
-          completedTurnTargets.map((target) => [target.messageId, target] as const),
-        )
+        const targetByTranscriptMessageId = new Map<string, RewindTurnTarget>()
+        for (const target of completedTurnTargets) {
+          if (target.targetUserMessageId) {
+            targetByTranscriptMessageId.set(target.targetUserMessageId, target)
+          }
+        }
         const targetByUserMessageIndex = new Map(
           completedTurnTargets.map((target) => [target.userMessageIndex, target] as const),
         )
@@ -2468,7 +2479,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
         setTurnChangeCards(
           normalizeTurnCheckpoints(checkpointResponse).flatMap((checkpoint) => {
             const target =
-              targetByMessageId.get(checkpoint.target.targetUserMessageId) ??
+              targetByTranscriptMessageId.get(checkpoint.target.targetUserMessageId) ??
               targetByUserMessageIndex.get(checkpoint.target.userMessageIndex)
             if (!target || !checkpoint.code.available) {
               return []
@@ -2477,7 +2488,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
               target,
               checkpoint,
               workDir: checkpoint.workDir ?? workspaceStatus?.workDir ?? null,
-              isLatest: target.messageId === latestCompletedTurnId,
+              isLatest: target.uiMessageId === latestCompletedTurnId,
             }]
           }),
         )
@@ -2502,11 +2513,11 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     if (!resolvedSessionId || !confirmTurnCard || rewindingTurnId || hasRunningBackgroundTasks) return
 
     const target = confirmTurnCard.target
-    setRewindingTurnId(target.messageId)
+    setRewindingTurnId(target.uiMessageId)
     setTurnActionErrors((current) => {
-      if (!(target.messageId in current)) return current
+      if (!(target.uiMessageId in current)) return current
       const next = { ...current }
-      delete next[target.messageId]
+      delete next[target.uiMessageId]
       return next
     })
 
@@ -2552,7 +2563,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     } catch (error) {
       setTurnActionErrors((current) => ({
         ...current,
-        [target.messageId]: getApiErrorMessage(error),
+        [target.uiMessageId]: getApiErrorMessage(error),
       }))
       setTurnUndoConfirmTargetId(null)
     } finally {
@@ -2621,7 +2632,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     }
   }, [addToast, branchSession, branchingMessageId, resolvedSessionId, t])
 
-  const beginEditMessage = useCallback((target: RewindTurnTarget) => {
+  const beginEditMessage = useCallback((target: EditableTurnTarget) => {
     if (rewindingTurnId || isMemberSession) return
     setEditingTurn({ target, content: target.content })
   }, [isMemberSession, rewindingTurnId])
@@ -2638,20 +2649,19 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     if (!content) return
     const target = editingTurn.target
 
-    setRewindingTurnId(target.messageId)
+    setRewindingTurnId(target.uiMessageId)
     try {
       if (editRequiresActiveTurnStop) {
         stopGeneration(resolvedSessionId)
       }
-      const result = await sessionsApi.rewind(resolvedSessionId, {
-        userMessageIndex: target.userMessageIndex,
+      const result = await sessionsApi.replaceMessage(resolvedSessionId, {
+        targetUserMessageId: target.targetUserMessageId,
         expectedContent: target.expectedContent,
-        mode: 'conversation',
       })
       sendMessage(resolvedSessionId, content, target.attachments, {
         displayContent: content,
         displayAttachments: target.attachments,
-        replaceFromMessageId: target.messageId,
+        replaceFromMessageId: target.uiMessageId,
       })
       setEditingTurn(null)
       addToast({
@@ -2693,7 +2703,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     const result = new Map<string, { label: string; loading: boolean; onEdit: () => void }>()
     const label = t('chat.editMessage')
     for (const [messageId, target] of editableTurnTargets) {
-      if (editingTurn && editingTurn.target.messageId !== messageId) continue
+      if (editingTurn && editingTurn.target.uiMessageId !== messageId) continue
       result.set(messageId, {
         label,
         loading: rewindingTurnId === messageId,
@@ -2981,7 +2991,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
             }
             branchAction={branchActionByMessageId.get(item.message.id)}
             editAction={editActionByMessageId.get(item.message.id)}
-            editComposer={editingTurn?.target.messageId === item.message.id ? {
+            editComposer={editingTurn?.target.uiMessageId === item.message.id ? {
               value: editingTurn.content,
               submitLabel: t('common.send'),
               cancelLabel: t('chat.undoEdit'),
@@ -3002,15 +3012,15 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
 
         {resolvedSessionId && cardsForItem.map((card) => (
           <CurrentTurnChangeCard
-            key={`turn-change-${card.target.messageId}`}
+            key={`turn-change-${card.target.uiMessageId}`}
             sessionId={resolvedSessionId}
             checkpoint={card.checkpoint}
             workDir={card.workDir}
-            error={turnActionErrors[card.target.messageId] ?? null}
-            isUndoing={rewindingTurnId === card.target.messageId}
+            error={turnActionErrors[card.target.uiMessageId] ?? null}
+            isUndoing={rewindingTurnId === card.target.uiMessageId}
             isLatest={card.isLatest}
             onUndo={() => {
-              setTurnUndoConfirmTargetId(card.target.messageId)
+              setTurnUndoConfirmTargetId(card.target.uiMessageId)
             }}
           />
         ))}

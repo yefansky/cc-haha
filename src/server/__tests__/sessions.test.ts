@@ -5720,6 +5720,94 @@ describe('Sessions API', () => {
     expect(await service.getSessionMessages(sessionId)).toHaveLength(0)
   })
 
+  it('POST /api/sessions/:id/replace-message rejects an index-only target without mutating the transcript', async () => {
+    const sessionId = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeef2'
+    const workDir = path.join(tmpDir, 'replace-message-index-only-fixture')
+    const userId = crypto.randomUUID()
+    await writeSessionFile('-tmp-api-replace-message-index-only', sessionId, [
+      makeSessionMetaEntry(workDir),
+      { ...makeUserEntry('persisted prompt', userId), cwd: workDir, sessionId },
+      makeAssistantEntry('persisted reply', userId),
+    ])
+
+    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/replace-message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userMessageIndex: 0,
+        expectedContent: 'persisted prompt',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({
+      error: 'BAD_REQUEST',
+      message: expect.stringContaining('targetUserMessageId'),
+    })
+    expect((await service.getSessionMessages(sessionId)).map((message) => message.id)).toEqual([
+      userId,
+      expect.any(String),
+    ])
+  })
+
+  it('POST /api/sessions/:id/replace-message uses stable id despite position drift and skips file history', async () => {
+    const sessionId = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeef1'
+    const workDir = path.join(tmpDir, 'replace-message-lightweight-fixture')
+    const earlierUserId = crypto.randomUUID()
+    const userId = crypto.randomUUID()
+    const transcriptPath = await writeSessionFile('-tmp-api-replace-message', sessionId, [
+      makeSessionMetaEntry(workDir),
+      { ...makeUserEntry('repeated prompt', earlierUserId), cwd: workDir, sessionId },
+      makeAssistantEntry('earlier reply', earlierUserId),
+      { ...makeUserEntry('repeated prompt', userId), cwd: workDir, sessionId },
+      makeAssistantEntry('target reply', userId),
+    ])
+
+    const originalStopSessionAndWait = conversationService.stopSessionAndWait
+    const originalGetFileHistory = sessionService.getSessionFileHistorySnapshots
+    const stopTimeouts: Array<number | undefined> = []
+    let fileHistoryRead = false
+    conversationService.stopSessionAndWait = async (targetSessionId: string, timeoutMs?: number) => {
+      if (targetSessionId !== sessionId) return
+      stopTimeouts.push(timeoutMs)
+      await fs.appendFile(transcriptPath, `${JSON.stringify(makeAssistantEntry('late reply', userId))}\n`, 'utf-8')
+    }
+    sessionService.getSessionFileHistorySnapshots = async (...args) => {
+      fileHistoryRead = true
+      return originalGetFileHistory.apply(sessionService, args)
+    }
+
+    try {
+      const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/replace-message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetUserMessageId: userId,
+          // Simulate a stale UI position. Replacement must ignore it and use
+          // the authoritative transcript UUID, even for repeated text.
+          userMessageIndex: 0,
+          expectedContent: 'repeated prompt',
+        }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({
+        target: { targetUserMessageId: userId, userMessageIndex: 1, userMessageCount: 2 },
+        conversation: { messagesRemoved: 3 },
+        mode: 'edit',
+      })
+      expect(stopTimeouts).toEqual([250])
+      expect(fileHistoryRead).toBe(false)
+      expect((await service.getSessionMessages(sessionId)).map((message) => message.id)).toEqual([
+        earlierUserId,
+        expect.any(String),
+      ])
+    } finally {
+      conversationService.stopSessionAndWait = originalStopSessionAndWait
+      sessionService.getSessionFileHistorySnapshots = originalGetFileHistory
+    }
+  })
+
   it('POST /api/sessions/:id/rewind should resolve checkpoint paths from the target prompt cwd', async () => {
     const sessionId = 'bbbbbbbb-bbbb-cccc-dddd-ffffffffffff'
     const parentDir = path.join(tmpDir, 'nested-cwd-parent')

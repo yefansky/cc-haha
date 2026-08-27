@@ -98,6 +98,16 @@ export type RewindTargetSelector = {
   expectedContent?: string
 }
 
+/**
+ * Editing a persisted prompt requires its authoritative transcript identity.
+ * Positional selectors are intentionally excluded because renderer-only and
+ * optimistic messages can shift UI positions without existing in the JSONL.
+ */
+export type SessionMessageReplacementSelector = {
+  targetUserMessageId: string
+  expectedContent?: string
+}
+
 export type SessionRewindPreview = {
   target: {
     targetUserMessageId: string
@@ -124,6 +134,34 @@ export type SessionRewindExecuteResult = SessionRewindPreview & {
   /** What this rewind actually touched, so the client never overstates it. */
   mode: SessionRewindMode
 }
+
+/**
+ * The deliberately small result returned when a user edits an already-sent
+ * prompt.  This is not a file rewind: the user has explicitly chosen to
+ * discard the turn tail and submit a replacement prompt, so inspecting or
+ * restoring workspace state would only make that interaction wait behind
+ * unrelated filesystem work.
+ */
+export type SessionMessageReplacementResult = {
+  target: {
+    targetUserMessageId: string
+    userMessageIndex: number
+    userMessageCount: number
+  }
+  conversation: {
+    messagesRemoved: number
+    removedMessageIds: string[]
+  }
+  mode: 'edit'
+}
+
+/**
+ * Keep message replacement bounded by local process cleanup, rather than the
+ * provider request or the generic rewind's six-second graceful shutdown.
+ * `stopProcessAndWait` sends SIGKILL after this brief grace period and then
+ * waits at most another bounded interval for its output reader to drain.
+ */
+export const MESSAGE_REPLACEMENT_STOP_TIMEOUT_MS = 250
 
 export type SessionTurnCheckpointPreview = SessionRewindPreview & {
   workDir: string
@@ -252,6 +290,56 @@ async function resolveRewindTarget(
     userMessageIndex,
     userMessageCount: userMessages.length,
     messagesRemoved: activeMessages.length - activeMessageIndex,
+  }
+}
+
+/**
+ * Discard the transcript tail for an edited user prompt.
+ *
+ * This intentionally does *not* call any checkpoint, file-history, diff, or
+ * workspace-preview code.  It does retain the two correctness properties of
+ * rewind that matter here: stop the old runtime before mutating the
+ * transcript, then resolve the target again so output which arrived during
+ * shutdown is included in the discarded tail.
+ */
+export async function replaceSessionMessage(
+  sessionId: string,
+  selector: SessionMessageReplacementSelector,
+): Promise<SessionMessageReplacementResult> {
+  if (!selector.targetUserMessageId.trim()) {
+    throw ApiError.badRequest('targetUserMessageId must be a non-empty string')
+  }
+
+  const selectedTarget = await resolveRewindTarget(sessionId, {
+    targetUserMessageId: selector.targetUserMessageId,
+    expectedContent: selector.expectedContent,
+  })
+
+  await conversationService.stopSessionAndWait(
+    sessionId,
+    MESSAGE_REPLACEMENT_STOP_TIMEOUT_MS,
+  )
+
+  const target = await resolveRewindTarget(sessionId, {
+    targetUserMessageId: selectedTarget.targetUserMessageId,
+    expectedContent: selector.expectedContent,
+  })
+  const trimResult = await sessionService.trimSessionMessagesFrom(
+    sessionId,
+    target.targetUserMessageId,
+  )
+
+  return {
+    target: {
+      targetUserMessageId: target.targetUserMessageId,
+      userMessageIndex: target.userMessageIndex,
+      userMessageCount: target.userMessageCount,
+    },
+    conversation: {
+      messagesRemoved: trimResult.removedCount,
+      removedMessageIds: trimResult.removedMessageIds,
+    },
+    mode: 'edit',
   }
 }
 

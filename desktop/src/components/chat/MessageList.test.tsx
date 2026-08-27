@@ -7,6 +7,7 @@ import {
   buildVirtualItemOffsets,
   getActiveConversationNavigationItemId,
   getConversationNavigationTargetScrollTop,
+  getEditableTurnTargets,
   isRenderItemFullyVisibleInChatScroller,
   resetSessionScrollSnapshotsForTests,
   shouldVirtualizeRenderItems,
@@ -74,6 +75,42 @@ function makeConversationNavigationMessages(): UIMessage[] {
     { id: 'assistant-4', type: 'assistant_text', content: 'Fourth answer', timestamp: 8 },
   ]
 }
+
+describe('getEditableTurnTargets', () => {
+  it('only exposes persisted transcript users and keeps UI identity separate', () => {
+    const messages: UIMessage[] = [
+      { id: 'goal-ui', type: 'user_text', content: '/goal inspect the bug', timestamp: 1 },
+      {
+        id: 'first-ui',
+        type: 'user_text',
+        transcriptMessageId: 'first-transcript',
+        content: 'same prompt',
+        timestamp: 2,
+      },
+      { id: 'optimistic-ui', type: 'user_text', content: 'not persisted yet', timestamp: 3 },
+      {
+        id: 'second-ui',
+        type: 'user_text',
+        transcriptMessageId: 'second-transcript',
+        content: 'same prompt',
+        timestamp: 4,
+      },
+    ]
+
+    expect(getEditableTurnTargets(messages)).toEqual([
+      expect.objectContaining({
+        uiMessageId: 'first-ui',
+        targetUserMessageId: 'first-transcript',
+        content: 'same prompt',
+      }),
+      expect.objectContaining({
+        uiMessageId: 'second-ui',
+        targetUserMessageId: 'second-transcript',
+        content: 'same prompt',
+      }),
+    ])
+  })
+})
 
 describe('buildTurnReferencedFilesByMessageId', () => {
   it('keeps an explicit absolute HTML path available after a later user turn', () => {
@@ -6103,13 +6140,11 @@ describe('MessageList nested tool calls', () => {
     expect(reloadHistory).toHaveBeenCalledWith(ACTIVE_TAB)
   })
 
-  it('edits a completed prompt in place and rewinds only after sending', async () => {
-    vi.spyOn(sessionsApi, 'rewind').mockResolvedValue({
+  it('edits a completed prompt in place through the lightweight replacement path', async () => {
+    vi.spyOn(sessionsApi, 'replaceMessage').mockResolvedValue({
       target: { targetUserMessageId: 'user-1', userMessageIndex: 0, userMessageCount: 2 },
       conversation: { messagesRemoved: 4, removedMessageIds: ['user-1', 'assistant-1', 'user-2', 'assistant-2'] },
-      code: { available: true, filesChanged: ['src/App.tsx'], insertions: 1, deletions: 0 },
-      restoreAvailable: true,
-      mode: 'conversation',
+      mode: 'edit',
     })
     const reloadHistory = vi.fn(() => new Promise<void>(() => {}))
     const queueComposerPrefill = vi.fn()
@@ -6120,9 +6155,9 @@ describe('MessageList nested tool calls', () => {
       sendMessage,
       sessions: {
         [ACTIVE_TAB]: makeSessionState({ messages: [
-          { id: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
+          { id: 'first-ui', transcriptMessageId: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
           { id: 'assistant-1', type: 'assistant_text', content: 'first reply', timestamp: 2 },
-          { id: 'user-2', type: 'user_text', content: 'second prompt', timestamp: 3 },
+          { id: 'second-ui', transcriptMessageId: 'user-2', type: 'user_text', content: 'second prompt', timestamp: 3 },
           { id: 'assistant-2', type: 'assistant_text', content: 'second reply', timestamp: 4 },
         ] }),
       },
@@ -6138,42 +6173,39 @@ describe('MessageList nested tool calls', () => {
     expect(editShell?.className).toContain('lg:max-w-[640px]')
     expect(editor.parentElement?.className).toMatch(/(^|\s)w-full(\s|$)/)
     expect(screen.getByText('second prompt')).toBeTruthy()
-    expect(sessionsApi.rewind).not.toHaveBeenCalled()
+    expect(sessionsApi.replaceMessage).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
-    expect(sessionsApi.rewind).not.toHaveBeenCalled()
+    expect(sessionsApi.replaceMessage).not.toHaveBeenCalled()
     expect(screen.queryByRole('textbox', { name: 'Edit prompt' })).toBeNull()
 
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit this prompt' }))[0]!)
     fireEvent.keyDown(await screen.findByRole('textbox', { name: 'Edit prompt' }), { key: 'Escape' })
-    expect(sessionsApi.rewind).not.toHaveBeenCalled()
+    expect(sessionsApi.replaceMessage).not.toHaveBeenCalled()
     expect(screen.queryByRole('textbox', { name: 'Edit prompt' })).toBeNull()
 
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit this prompt' }))[0]!)
     fireEvent.change(await screen.findByRole('textbox', { name: 'Edit prompt' }), { target: { value: 'edited first prompt' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    await waitFor(() => expect(sessionsApi.rewind).toHaveBeenCalledWith(ACTIVE_TAB, {
-      userMessageIndex: 0,
+    await waitFor(() => expect(sessionsApi.replaceMessage).toHaveBeenCalledWith(ACTIVE_TAB, {
+      targetUserMessageId: 'user-1',
       expectedContent: 'first prompt',
-      mode: 'conversation',
     }))
     expect(reloadHistory).not.toHaveBeenCalled()
     expect(queueComposerPrefill).not.toHaveBeenCalled()
     expect(sendMessage).toHaveBeenCalledWith(ACTIVE_TAB, 'edited first prompt', undefined, {
       displayContent: 'edited first prompt',
       displayAttachments: undefined,
-      replaceFromMessageId: 'user-1',
+      replaceFromMessageId: 'first-ui',
     })
   })
 
   it('keeps every persisted prompt editable while the latest reply is streaming', async () => {
-    vi.spyOn(sessionsApi, 'rewind').mockResolvedValue({
+    vi.spyOn(sessionsApi, 'replaceMessage').mockResolvedValue({
       target: { targetUserMessageId: 'user-2', userMessageIndex: 1, userMessageCount: 2 },
       conversation: { messagesRemoved: 1, removedMessageIds: ['user-2'] },
-      code: { available: false, filesChanged: [], insertions: 0, deletions: 0 },
-      restoreAvailable: true,
-      mode: 'conversation',
+      mode: 'edit',
     })
     const realStopGeneration = useChatStore.getState().stopGeneration
     const stopGeneration = vi.fn(realStopGeneration)
@@ -6183,9 +6215,9 @@ describe('MessageList nested tool calls', () => {
       sendMessage,
       sessions: {
         [ACTIVE_TAB]: makeSessionState({ messages: [
-          { id: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
+          { id: 'first-ui', transcriptMessageId: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
           { id: 'assistant-1', type: 'assistant_text', content: 'first reply', timestamp: 2 },
-          { id: 'user-2', type: 'user_text', content: 'latest prompt', timestamp: 3 },
+          { id: 'latest-ui', transcriptMessageId: 'user-2', type: 'user_text', content: 'latest prompt', timestamp: 3 },
         ] }),
       },
     })
@@ -6205,16 +6237,15 @@ describe('MessageList nested tool calls', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    await waitFor(() => expect(sessionsApi.rewind).toHaveBeenCalledWith(ACTIVE_TAB, {
-      userMessageIndex: 1,
+    await waitFor(() => expect(sessionsApi.replaceMessage).toHaveBeenCalledWith(ACTIVE_TAB, {
+      targetUserMessageId: 'user-2',
       expectedContent: 'latest prompt',
-      mode: 'conversation',
     }))
     expect(stopGeneration).toHaveBeenCalledWith(ACTIVE_TAB)
     expect(sendMessage).toHaveBeenCalledWith(ACTIVE_TAB, 'edited latest prompt', undefined, {
       displayContent: 'edited latest prompt',
       displayAttachments: undefined,
-      replaceFromMessageId: 'user-2',
+      replaceFromMessageId: 'latest-ui',
     })
   })
 
