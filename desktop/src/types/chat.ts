@@ -8,7 +8,7 @@ import type { RuntimeSelection } from './runtime'
 export type ClientMessage =
   | { type: 'prewarm_session' }
   | { type: 'sync_state' }
-  | { type: 'user_message'; content: string; attachments?: AttachmentRef[] }
+  | { type: 'user_message'; messageUuid?: string; content: string; attachments?: AttachmentRef[] }
   | {
       type: 'permission_response'
       requestId: string
@@ -113,7 +113,7 @@ export type ServerMessage =
       computerUseRequestIds: string[]
       turnActive: boolean
     }
-  | { type: 'user_message_replay'; content: string }
+  | { type: 'user_message_replay'; messageUuid?: string; content: string }
   | { type: 'message_complete'; usage: TokenUsage }
   /** `complete` marks a whole thinking block; without it `text` is a stream fragment. */
   | { type: 'thinking'; text: string; complete?: boolean }

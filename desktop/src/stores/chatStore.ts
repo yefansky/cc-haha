@@ -66,6 +66,7 @@ export type RepositoryLaunchDraftState = {
 
 export type QueuedUserMessage = {
   id: string
+  messageUuid: string
   content: string
   attachments?: AttachmentRef[]
   displayContent: string
@@ -311,6 +312,7 @@ type ChatStore = {
       displayAttachments?: AttachmentRef[]
       hideDisplayContent?: boolean
       replaceFromMessageId?: string
+      messageUuid?: string
     },
   ) => void
   respondToPermission: (
@@ -357,7 +359,7 @@ type ChatStore = {
   clearRepositoryLaunchDraft: (sessionId: string) => void
   queueUserMessage: (
     sessionId: string,
-    message: Omit<QueuedUserMessage, 'id' | 'createdAt'>,
+    message: Omit<QueuedUserMessage, 'id' | 'messageUuid' | 'createdAt'>,
   ) => string
   updateQueuedUserMessage: (sessionId: string, messageId: string, content: string) => void
   removeQueuedUserMessage: (sessionId: string, messageId: string) => void
@@ -891,13 +893,29 @@ function mergeRestoredTranscriptMessageIds(
 
   if (restoredCandidates.length === 0) return messages
 
+  const restoredIdentities = new Set(restoredCandidates.map((message) => (
+    `${message.type}:${message.transcriptMessageId}`
+  )))
   let restoredCursor = 0
   let changed = false
   const merged = messages.map((message) => {
-    if (
-      (message.type !== 'user_text' && message.type !== 'assistant_text') ||
-      message.transcriptMessageId
-    ) {
+    if (message.type !== 'user_text' && message.type !== 'assistant_text') {
+      return message
+    }
+    if (message.transcriptMessageId) {
+      if (
+        message.type === 'user_text' &&
+        (message.pending || message.optimisticQueued) &&
+        restoredIdentities.has(`${message.type}:${message.transcriptMessageId}`)
+      ) {
+        const {
+          pending: _pending,
+          optimisticQueued: _optimisticQueued,
+          ...confirmedMessage
+        } = message
+        changed = true
+        return confirmedMessage
+      }
       return message
     }
 
@@ -1446,6 +1464,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   sendMessage: (sessionId, content, attachments, options) => {
     const isMemberSession = !!useTeamStore.getState().getMemberBySessionId(sessionId)
+    const messageUuid = isMemberSession
+      ? undefined
+      : options?.messageUuid ?? crypto.randomUUID()
     const hideDisplayContent = !isMemberSession && options?.hideDisplayContent === true
     const userFacingContent =
       hideDisplayContent
@@ -1513,10 +1534,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         id: nextId(),
         type: 'user_text',
         content: userFacingContent,
+        ...(messageUuid ? { transcriptMessageId: messageUuid } : {}),
         ...(userFacingContent !== modelFacingContent ? { modelContent: modelFacingContent } : {}),
         attachments: isMemberSession ? undefined : uiAttachments,
         timestamp: now,
-        ...(isMemberSession ? { pending: true } : {}),
+        pending: true,
       })
 
       if (!isMemberSession && session.elapsedTimer) clearInterval(session.elapsedTimer)
@@ -1575,7 +1597,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return
     }
 
-    wsManager.send(sessionId, { type: 'user_message', content, attachments })
+    wsManager.send(sessionId, { type: 'user_message', messageUuid, content, attachments })
   },
 
   respondToPermission: (sessionId, requestId, allowed, options) => {
@@ -2068,6 +2090,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   queueUserMessage: (sessionId, message) => {
     const id = `queued-user-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const messageUuid = crypto.randomUUID()
     set((state) => {
       const session = state.sessions[sessionId] ?? createDefaultSessionState()
       return {
@@ -2080,6 +2103,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               {
                 ...message,
                 id,
+                messageUuid,
                 createdAt: Date.now(),
               },
             ],
@@ -2129,6 +2153,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         {
           displayContent: queuedMessage.displayContent,
           displayAttachments: queuedMessage.displayAttachments,
+          messageUuid: queuedMessage.messageUuid,
         },
       )
       return
@@ -2154,6 +2179,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     wsManager.send(sessionId, {
       type: 'user_message',
+      messageUuid: queuedMessage.messageUuid,
       content: queuedMessage.content,
       attachments: queuedMessage.attachments,
     })
@@ -3056,7 +3082,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             ? appendAssistantTextMessage(session.messages, pendingText, Date.now())
             : session.messages
           return {
-            messages: appendReplayedUserMessage(baseMessages, msg.content, Date.now()),
+            messages: appendReplayedUserMessage(
+              baseMessages,
+              msg.content,
+              Date.now(),
+              msg.messageUuid,
+            ),
             ...(pendingText.trim() ? { streamingText: '' } : {}),
             activeThinkingId: null,
             suppressNextTaskNotificationResponse: false,
@@ -4534,7 +4565,17 @@ export function appendReplayedUserMessage(
   messages: UIMessage[],
   content: string,
   timestamp: number,
+  messageUuid?: string,
 ): UIMessage[] {
+  if (messageUuid) {
+    const replayedMessageIndex = messages.findIndex((message) => (
+      message.type === 'user_text' && message.transcriptMessageId === messageUuid
+    ))
+    if (replayedMessageIndex >= 0) {
+      return confirmReplayedUserMessage(messages, replayedMessageIndex)
+    }
+  }
+
   // The replayed text carries server-appended image-metadata lines that the
   // optimistic message never had. Normalize them away (same as the history
   // mapping) so the dedupe below can match the already-rendered message instead
@@ -4545,18 +4586,11 @@ export function appendReplayedUserMessage(
   if (!displayContent && !parsed.attachments?.length) return messages
 
   const modelContent = parsed.modelContent ?? sanitized
-  const currentTurnUserIndex = findCurrentTurnUserMessageIndex(messages, modelContent, parsed)
-  if (currentTurnUserIndex >= 0) {
-    const optimisticMessage = messages[currentTurnUserIndex]
-    if (optimisticMessage?.type === 'user_text' && optimisticMessage.optimisticQueued) {
-      const { optimisticQueued: _optimisticQueued, ...confirmedMessage } = optimisticMessage
-      return [
-        ...messages.slice(0, currentTurnUserIndex),
-        confirmedMessage,
-        ...messages.slice(currentTurnUserIndex + 1),
-      ]
+  if (!messageUuid) {
+    const currentTurnUserIndex = findCurrentTurnUserMessageIndex(messages, modelContent, parsed)
+    if (currentTurnUserIndex >= 0) {
+      return confirmReplayedUserMessage(messages, currentTurnUserIndex)
     }
-    return messages
   }
 
   return [
@@ -4565,10 +4599,28 @@ export function appendReplayedUserMessage(
       id: nextId(),
       type: 'user_text',
       content: displayContent,
+      ...(messageUuid ? { transcriptMessageId: messageUuid } : {}),
       ...(parsed.modelContent ? { modelContent: parsed.modelContent } : {}),
       ...(parsed.attachments ? { attachments: parsed.attachments } : {}),
       timestamp,
     },
+  ]
+}
+
+function confirmReplayedUserMessage(messages: UIMessage[], messageIndex: number): UIMessage[] {
+  const optimisticMessage = messages[messageIndex]
+  if (optimisticMessage?.type !== 'user_text') return messages
+  if (!optimisticMessage.pending && !optimisticMessage.optimisticQueued) return messages
+
+  const {
+    pending: _pending,
+    optimisticQueued: _optimisticQueued,
+    ...confirmedMessage
+  } = optimisticMessage
+  return [
+    ...messages.slice(0, messageIndex),
+    confirmedMessage,
+    ...messages.slice(messageIndex + 1),
   ]
 }
 
@@ -4588,9 +4640,11 @@ function appendOptimisticQueuedUserMessage(
       id: nextId(),
       type: 'user_text',
       content: displayContent,
+      transcriptMessageId: message.messageUuid,
       ...(modelContent && modelContent !== displayContent ? { modelContent } : {}),
       ...(attachments ? { attachments } : {}),
       timestamp,
+      pending: true,
       optimisticQueued: true,
     },
   ]

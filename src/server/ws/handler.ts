@@ -774,7 +774,10 @@ async function handleUserMessage(
   // Send thinking status
   sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
 
-  activeTurn.expectedReplayUuid = crypto.randomUUID()
+  activeTurn.expectedReplayUuid =
+    typeof message.messageUuid === 'string' && message.messageUuid.trim()
+      ? message.messageUuid
+      : crypto.randomUUID()
   activeTurn.expectedLocalCommand = desktopSlashCommand ?? undefined
   activeTurn.replacementAfterStop =
     sessionStopRequested.has(sessionId) || agentStopRequestedSessions.has(sessionId)
@@ -2897,9 +2900,14 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
 
       const replayText = extractReplayUserText(cliMsg)
       if (replayText) {
+        const replayUuid =
+          typeof cliMsg.uuid === 'string' && cliMsg.uuid.trim()
+            ? cliMsg.uuid
+            : undefined
         messages.push({
           type: 'user_message_replay',
           content: replayText,
+          ...(replayUuid ? { messageUuid: replayUuid } : {}),
         })
       }
 

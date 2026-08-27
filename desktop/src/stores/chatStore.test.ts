@@ -1559,6 +1559,59 @@ describe('chatStore history mapping', () => {
     })
   })
 
+  it('confirms only the pending user message whose UUID appears in restored history', async () => {
+    vi.mocked(sessionsApi.getMessages).mockResolvedValueOnce({
+      messages: [{
+        id: 'confirmed-transcript-id',
+        type: 'user',
+        timestamp: '2026-04-06T00:00:00.000Z',
+        content: 'server-normalized prompt',
+      }],
+    })
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: makeSession({
+          messages: [
+            {
+              id: 'confirmed-ui-id',
+              type: 'user_text',
+              content: 'same optimistic prompt',
+              transcriptMessageId: 'confirmed-transcript-id',
+              timestamp: 1,
+              pending: true,
+              optimisticQueued: true,
+            },
+            {
+              id: 'unconfirmed-ui-id',
+              type: 'user_text',
+              content: 'server-normalized prompt',
+              transcriptMessageId: 'different-transcript-id',
+              timestamp: 2,
+              pending: true,
+              optimisticQueued: true,
+            },
+          ],
+        }),
+      },
+    })
+
+    await useChatStore.getState().loadHistory(TEST_SESSION_ID)
+
+    const messages = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages
+    expect(messages?.[0]).toMatchObject({
+      id: 'confirmed-ui-id',
+      transcriptMessageId: 'confirmed-transcript-id',
+    })
+    expect(messages?.[0]).not.toHaveProperty('pending')
+    expect(messages?.[0]).not.toHaveProperty('optimisticQueued')
+    expect(messages?.[1]).toMatchObject({
+      id: 'unconfirmed-ui-id',
+      transcriptMessageId: 'different-transcript-id',
+      pending: true,
+      optimisticQueued: true,
+    })
+  })
+
   it('does not duplicate a hydrated assistant reply when live output replays after reconnect', () => {
     useChatStore.setState({
       sessions: {
@@ -2195,6 +2248,7 @@ describe('chatStore history mapping', () => {
       TEST_SESSION_ID,
       {
         type: 'user_message',
+        messageUuid: expect.any(String),
         content: 'Referenced workspace context:\n@"src/App.tsx:L4":\nComment: tighten this\n```tsx\nconst value = 1\n```',
         attachments: [{
           type: 'file',
@@ -2244,6 +2298,7 @@ describe('chatStore history mapping', () => {
     expect(session?.replaceHistoryOnCompletion).toBe(true)
     expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
       type: 'user_message',
+      messageUuid: expect.any(String),
       content: 'edited prompt',
       attachments: undefined,
     })
@@ -2289,6 +2344,7 @@ describe('chatStore history mapping', () => {
 
     expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
       type: 'user_message',
+      messageUuid: expect.any(String),
       content: 'Referenced workspace context:\n@"src/App.tsx:L4":\n```tsx\nconst value = 1\n```\n\ntighten this',
       attachments: [{
         type: 'file',
@@ -2365,6 +2421,7 @@ describe('chatStore history mapping', () => {
       TEST_SESSION_ID,
       {
         type: 'user_message',
+        messageUuid: expect.any(String),
         content: '请根据截图中编号 1 的 <h1> 修改：这个标题更轻一点',
         attachments: [{
           type: 'image',
@@ -4842,6 +4899,7 @@ describe('chatStore history mapping', () => {
           agentTaskNotifications: {},
           queuedUserMessages: [{
             id: 'queued-before-clear',
+            messageUuid: 'queued-before-clear-transcript-id',
             content: 'do not replay after clear',
             displayContent: 'do not replay after clear',
             attachments: [],
@@ -8192,6 +8250,7 @@ describe('chatStore history mapping', () => {
     expect(updateTabTitleMock).toHaveBeenCalledWith(TEST_SESSION_ID, '开始优化UI')
     expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
       type: 'user_message',
+      messageUuid: expect.any(String),
       content: '开始优化UI',
       attachments: undefined,
     })
@@ -8248,6 +8307,238 @@ describe('chatStore history mapping', () => {
     expect(session?.streamingResponseChars).toBe(0)
     if (session?.elapsedTimer) clearInterval(session.elapsedTimer)
     vi.useRealTimers()
+  })
+
+  it('uses one transcript UUID for a pending optimistic user message and its websocket request', () => {
+    vi.useFakeTimers()
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: makeSession({ chatState: 'idle' }),
+      },
+    })
+
+    useChatStore.getState().sendMessage(TEST_SESSION_ID, 'uuid-backed prompt')
+
+    const message = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages.at(-1)
+    expect(message).toMatchObject({
+      type: 'user_text',
+      content: 'uuid-backed prompt',
+      transcriptMessageId: expect.any(String),
+      pending: true,
+    })
+    if (!message || message.type !== 'user_text') throw new Error('expected optimistic user message')
+    expect(message.id).not.toBe(message.transcriptMessageId)
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
+      type: 'user_message',
+      messageUuid: message.transcriptMessageId,
+      content: 'uuid-backed prompt',
+      attachments: undefined,
+    })
+
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    if (session?.elapsedTimer) clearInterval(session.elapsedTimer)
+    vi.useRealTimers()
+  })
+
+  it('uses a fresh transcript UUID for a pending replacement message without reusing its UI id', () => {
+    vi.useFakeTimers()
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: makeSession({
+          chatState: 'idle',
+          messages: [
+            {
+              id: 'old-ui-id',
+              type: 'user_text',
+              content: 'old prompt',
+              transcriptMessageId: 'old-transcript-id',
+              timestamp: 1,
+            },
+          ],
+        }),
+      },
+    })
+
+    useChatStore.getState().sendMessage(
+      TEST_SESSION_ID,
+      'replacement prompt',
+      undefined,
+      { replaceFromMessageId: 'old-ui-id' },
+    )
+
+    const message = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages.at(-1)
+    expect(message).toMatchObject({
+      type: 'user_text',
+      content: 'replacement prompt',
+      transcriptMessageId: expect.any(String),
+      pending: true,
+    })
+    if (!message || message.type !== 'user_text') throw new Error('expected replacement user message')
+    expect(message.id).not.toBe(message.transcriptMessageId)
+    expect(message.transcriptMessageId).not.toBe('old-transcript-id')
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
+      type: 'user_message',
+      messageUuid: message.transcriptMessageId,
+      content: 'replacement prompt',
+      attachments: undefined,
+    })
+
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    if (session?.elapsedTimer) clearInterval(session.elapsedTimer)
+    vi.useRealTimers()
+  })
+
+  it.each(['idle', 'streaming'] as const)(
+    'keeps a queued message UUID stable when sending from %s state',
+    (chatState) => {
+      vi.useFakeTimers()
+      useChatStore.setState({
+        sessions: {
+          [TEST_SESSION_ID]: makeSession({ chatState }),
+        },
+      })
+
+      const queueId = useChatStore.getState().queueUserMessage(TEST_SESSION_ID, {
+        content: `queued from ${chatState}`,
+        displayContent: `queued from ${chatState}`,
+      })
+      const queuedMessage = useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.queuedUserMessages?.find((message) => message.id === queueId)
+      expect(queuedMessage?.messageUuid).toEqual(expect.any(String))
+
+      useChatStore.getState().sendQueuedUserMessage(TEST_SESSION_ID, queueId)
+
+      const optimisticMessage = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages.at(-1)
+      expect(optimisticMessage).toMatchObject({
+        type: 'user_text',
+        transcriptMessageId: queuedMessage?.messageUuid,
+        pending: true,
+        ...(chatState === 'streaming' ? { optimisticQueued: true } : {}),
+      })
+      expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
+        type: 'user_message',
+        messageUuid: queuedMessage?.messageUuid,
+        content: `queued from ${chatState}`,
+        attachments: undefined,
+      })
+
+      const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+      if (session?.elapsedTimer) clearInterval(session.elapsedTimer)
+      vi.useRealTimers()
+    },
+  )
+
+  it('confirms a replay strictly by UUID even when a later pending message has identical content', () => {
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: makeSession({
+          messages: [
+            {
+              id: 'first-ui-id',
+              type: 'user_text',
+              content: 'same prompt',
+              transcriptMessageId: 'first-transcript-id',
+              timestamp: 1,
+              pending: true,
+            },
+            {
+              id: 'second-ui-id',
+              type: 'user_text',
+              content: 'same prompt',
+              transcriptMessageId: 'second-transcript-id',
+              timestamp: 2,
+              pending: true,
+              optimisticQueued: true,
+            },
+          ],
+        }),
+      },
+    })
+
+    useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+      type: 'user_message_replay',
+      messageUuid: 'first-transcript-id',
+      content: 'same prompt',
+    })
+
+    const messages = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages
+    expect(messages).toEqual([
+      expect.objectContaining({
+        id: 'first-ui-id',
+        transcriptMessageId: 'first-transcript-id',
+      }),
+      expect.objectContaining({
+        id: 'second-ui-id',
+        transcriptMessageId: 'second-transcript-id',
+        pending: true,
+        optimisticQueued: true,
+      }),
+    ])
+    expect(messages?.[0]).not.toHaveProperty('pending')
+    expect(messages?.[0]).not.toHaveProperty('optimisticQueued')
+  })
+
+  it('appends an unknown replay UUID once even when its content matches another message', () => {
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: makeSession({
+          messages: [{
+            id: 'existing-ui-id',
+            type: 'user_text',
+            content: 'same prompt',
+            transcriptMessageId: 'existing-transcript-id',
+            timestamp: 1,
+          }],
+        }),
+      },
+    })
+
+    const replay = {
+      type: 'user_message_replay' as const,
+      messageUuid: 'new-transcript-id',
+      content: 'same prompt',
+    }
+    useChatStore.getState().handleServerMessage(TEST_SESSION_ID, replay)
+    useChatStore.getState().handleServerMessage(TEST_SESSION_ID, replay)
+
+    const userMessages = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages
+      .filter((message) => message.type === 'user_text')
+    expect(userMessages).toHaveLength(2)
+    expect(userMessages?.[1]).toMatchObject({
+      content: 'same prompt',
+      transcriptMessageId: 'new-transcript-id',
+    })
+  })
+
+  it('keeps content matching as the legacy replay fallback when no UUID is provided', () => {
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: makeSession({
+          messages: [{
+            id: 'legacy-ui-id',
+            type: 'user_text',
+            content: 'legacy prompt',
+            timestamp: 1,
+            pending: true,
+            optimisticQueued: true,
+          }],
+        }),
+      },
+    })
+
+    useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+      type: 'user_message_replay',
+      content: 'legacy prompt',
+    })
+
+    const messages = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages
+    expect(messages).toEqual([
+      expect.objectContaining({
+        id: 'legacy-ui-id',
+      }),
+    ])
+    expect(messages?.[0]).not.toHaveProperty('pending')
+    expect(messages?.[0]).not.toHaveProperty('optimisticQueued')
   })
 })
 

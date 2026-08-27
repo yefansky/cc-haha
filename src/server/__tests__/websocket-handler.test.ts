@@ -118,6 +118,25 @@ describe('translateCliMessage usage mapping', () => {
       allowed: false,
     }])
   })
+
+  it('carries the CLI replay UUID when present and keeps legacy replay payloads unchanged', () => {
+    const replayUuid = crypto.randomUUID()
+    const replayMessage = {
+      type: 'user',
+      isReplay: true,
+      message: { role: 'user', content: 'Replay this turn' },
+    }
+
+    expect(translateCliMessage({ ...replayMessage, uuid: replayUuid }, 'session-1')).toContainEqual({
+      type: 'user_message_replay',
+      content: 'Replay this turn',
+      messageUuid: replayUuid,
+    })
+    expect(translateCliMessage(replayMessage, 'session-1')).toContainEqual({
+      type: 'user_message_replay',
+      content: 'Replay this turn',
+    })
+  })
 })
 
 describe('WebSocket handler session title lifecycle', () => {
@@ -225,6 +244,55 @@ describe('WebSocket handler session isolation', () => {
     __resetWebSocketHandlerStateForTests()
     __resetDisconnectGraceMsForTests()
     mock.restore()
+  })
+
+  it('passes a client message UUID through to the CLI send boundary', async () => {
+    const sessionId = `client-message-uuid-${crypto.randomUUID()}`
+    const messageUuid = crypto.randomUUID()
+    const ws = makeClientSocket(sessionId)
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('Existing title')
+
+    handleWebSocket.open(ws)
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: 'Keep this turn identity',
+      messageUuid,
+    }))
+    await flushMicrotasks(30)
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      sessionId,
+      'Keep this turn identity',
+      undefined,
+      expect.objectContaining({ messageUuid }),
+    )
+  })
+
+  it('generates a non-empty fallback UUID for legacy client messages', async () => {
+    const sessionId = `fallback-message-uuid-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('Existing title')
+
+    handleWebSocket.open(ws)
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: 'Legacy client turn',
+    }))
+    await flushMicrotasks(30)
+
+    const options = sendMessage.mock.calls[0]?.[3]
+    expect(options?.messageUuid).toEqual(expect.any(String))
+    expect(options?.messageUuid?.trim()).not.toBe('')
   })
 
   it('ignores stale disconnects from an older socket for the same session', () => {

@@ -128,4 +128,26 @@ describe('MessageList edit replacement lifecycle', () => {
       },
     ))
   })
+
+  it('does not expose edit before a UUID-backed optimistic prompt is confirmed', async () => {
+    useChatStore.setState({
+      sessions: {
+        [SESSION_ID]: makeSessionState({
+          messages: [{
+            id: 'pending-ui-id',
+            transcriptMessageId: 'pending-transcript-id',
+            type: 'user_text',
+            content: 'pending prompt',
+            timestamp: 1,
+            pending: true,
+          }],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    expect(await screen.findByText('pending prompt')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit this prompt' })).toBeNull()
+  })
 })
