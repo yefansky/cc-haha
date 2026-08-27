@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { sessionsApi, type SessionContextSnapshot } from '../../api/sessions'
+import { sessionsApi, type SessionContextSnapshot, type SessionContextStatus } from '../../api/sessions'
 import { useTranslation } from '../../i18n'
 import type { ChatState } from '../../types/chat'
 import { useMobileViewport } from '../../hooks/useMobileViewport'
@@ -111,6 +111,7 @@ export function ContextUsageIndicator({
   const contextEnabled = shouldFetchContext(sessionId, draft, messageCount, chatState)
   const [context, setContext] = useState<SessionContextSnapshot | null>(null)
   const [contextSource, setContextSource] = useState<'live' | 'estimate' | null>(null)
+  const [contextStatus, setContextStatus] = useState<SessionContextStatus | null>(null)
   const [loading, setLoading] = useState(contextEnabled)
   const [error, setError] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
@@ -167,6 +168,7 @@ export function ContextUsageIndicator({
     })
       .then((inspection) => {
         if (seq !== requestSeq.current || activeContextIdentity !== contextIdentityRef.current) return false
+        setContextStatus(inspection.contextStatus ?? null)
         const nextContext = inspection.context ?? inspection.contextEstimate ?? null
         const nextSource = inspection.context ? 'live' : inspection.contextEstimate ? 'estimate' : null
         const usageModel = inspection.usage?.models.find((model) => firstNonEmpty(model.displayName, model.model)) ?? null
@@ -190,6 +192,7 @@ export function ContextUsageIndicator({
       })
       .catch((err) => {
         if (seq !== requestSeq.current || activeContextIdentity !== contextIdentityRef.current) return false
+        setContextStatus({ source: 'none', freshness: 'unavailable', refreshing: false })
         setError(err instanceof Error ? err.message : String(err))
         return false
       })
@@ -251,6 +254,7 @@ export function ContextUsageIndicator({
       requestSeq.current += 1
       lastAutoRefreshAtRef.current = 0
       setError(null)
+      setContextStatus(null)
       setInspectionModel(null)
       if (contextDataSessionIdRef.current !== sessionId) {
         contextDataSessionIdRef.current = undefined
@@ -277,6 +281,7 @@ export function ContextUsageIndicator({
     contextDataSessionIdRef.current = undefined
     setContext(null)
     setContextSource(null)
+    setContextStatus(null)
     setInspectionModel(null)
     setUpdatedAt(null)
     setError(null)
@@ -320,10 +325,18 @@ export function ContextUsageIndicator({
   }, [context])
 
   const displayContext = contextEnabled && contextDataSessionIdRef.current === sessionId ? context : null
+  const serverPending = contextStatus?.freshness === 'pending'
   const hasPlaceholderContext = !displayContext && (
-    draft || (!loading && messageCount === 0 && (!error || isCliNotRunningError(error)))
+    serverPending || draft || (!loading && messageCount === 0 && (!error || isCliNotRunningError(error)))
   )
   const isPendingContext = hasPlaceholderContext && !displayContext
+  const displayState: 'initial-loading' | 'ready' | 'refreshing' | 'pending' | 'unavailable' = displayContext
+    ? contextStatus?.refreshing ? 'refreshing' : 'ready'
+    : loading
+      ? 'initial-loading'
+      : isPendingContext
+        ? 'pending'
+        : 'unavailable'
   const percentage = displayContext ? Math.max(0, Math.min(100, displayContext.percentage)) : 0
   const usedTokens = displayContext?.totalTokens ?? 0
   const maxTokens = displayContext?.rawMaxTokens ?? 0
@@ -346,17 +359,17 @@ export function ContextUsageIndicator({
   const modelLabel = displayModel ?? t('contextIndicator.modelUnknown')
   const ariaLabel = displayContext
     ? t('contextIndicator.ariaLabel', { percent: formatPercent(percentage) })
-    : isPendingContext
+    : displayState === 'pending'
       ? t('contextIndicator.pendingAria')
-    : loading
+    : displayState === 'initial-loading'
       ? t('contextIndicator.loadingAria')
       : t('contextIndicator.unavailableAria')
 
   const detailsStatus: ContextUsageDetailsStatus = displayContext
     ? 'ready'
-    : isPendingContext
+    : displayState === 'pending'
       ? 'pending'
-      : loading
+      : displayState === 'initial-loading'
         ? 'loading'
         : 'unavailable'
 
@@ -466,7 +479,7 @@ export function ContextUsageIndicator({
         } ${compact ? 'px-2' : 'px-3'} ${detailsOpen ? 'border-[var(--color-outline)] bg-[var(--color-surface-hover)] text-[var(--color-text-primary)]' : ''}`}
       >
         <span className="relative grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full">
-          {loading && !displayContext ? (
+          {displayState === 'initial-loading' ? (
             <span className="absolute inset-[2px] rounded-full border-2 border-[var(--color-text-tertiary)] border-t-transparent motion-safe:animate-spin" />
           ) : (
             <span

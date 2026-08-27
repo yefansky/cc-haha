@@ -260,6 +260,12 @@ export type SessionContextSnapshot = {
   } | null
 }
 
+export type SessionContextStatus = {
+  source: 'live' | 'transcript' | 'none'
+  freshness: 'fresh' | 'stale' | 'estimated' | 'pending' | 'unavailable'
+  refreshing: boolean
+}
+
 export type SessionInspectionResponse = {
   active: boolean
   status: {
@@ -279,6 +285,7 @@ export type SessionInspectionResponse = {
   usage?: SessionUsageSnapshot
   context?: SessionContextSnapshot
   contextEstimate?: SessionContextSnapshot
+  contextStatus?: SessionContextStatus
   errors?: Record<string, string>
 }
 
