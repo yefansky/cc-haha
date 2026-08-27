@@ -55,6 +55,7 @@ import { localIndexCoordinator } from '../services/localIndex/coordinator.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { isPetAccessAuthorized } from '../localAccessAuth.js'
 import { PET_SESSION_LIMIT } from '../petAccessPolicy.js'
+import { sessionMutationCoordinator } from '../services/sessionMutationCoordinator.js'
 
 const DEFAULT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
 
@@ -1217,7 +1218,10 @@ async function rewindSession(req: Request, sessionId: string): Promise<Response>
   }
   const result = body.dryRun
     ? await previewSessionRewind(sessionId, body)
-    : await executeSessionRewind(sessionId, body, mode, paths)
+    : await sessionMutationCoordinator.enqueue(
+        sessionId,
+        () => executeSessionRewind(sessionId, body, mode, paths),
+      )
 
   return Response.json(result)
 }
@@ -1252,7 +1256,10 @@ async function replaceMessage(req: Request, sessionId: string): Promise<Response
     targetUserMessageId: body.targetUserMessageId,
     ...(body.expectedContent !== undefined ? { expectedContent: body.expectedContent } : {}),
   }
-  return Response.json(await replaceSessionMessage(sessionId, selector))
+  return Response.json(await sessionMutationCoordinator.enqueue(
+    sessionId,
+    () => replaceSessionMessage(sessionId, selector),
+  ))
 }
 
 async function branchSession(req: Request, sessionId: string): Promise<Response> {
