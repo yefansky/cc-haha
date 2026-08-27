@@ -50,6 +50,36 @@ async function rmWithRetry(targetPath: string): Promise<void> {
   }
 }
 
+function installPermissionSession(
+  svc: ConversationService,
+  sessionId: string,
+  sdkSocket: { send(data: string): void } | null,
+  trackedRequest = true,
+) {
+  const pendingPermissionRequests = new Map<
+    string,
+    {
+      toolName: string
+      input: Record<string, unknown>
+      permissionSuggestions: unknown[]
+    }
+  >()
+  if (trackedRequest) {
+    pendingPermissionRequests.set('req-1', {
+      toolName: 'Bash',
+      input: { command: 'echo ok' },
+      permissionSuggestions: [],
+    })
+  }
+  const session = {
+    sdkSocket,
+    pendingOutbound: [] as string[],
+    pendingPermissionRequests,
+  }
+  ;(svc as any).sessions.set(sessionId, session)
+  return session
+}
+
 // ============================================================================
 // ConversationService unit tests
 // ============================================================================
@@ -91,6 +121,83 @@ describe('ConversationService', () => {
     const svc = new ConversationService()
     const result = svc.respondToPermission('no-such-session', 'req-1', true)
     expect(result).toBe(false)
+  })
+
+  it('rejects a tracked permission response when the session is unavailable', () => {
+    const svc = new ConversationService()
+
+    expect(
+      svc.respondToTrackedPermission('no-such-session', 'req-1', true),
+    ).toEqual({ status: 'rejected', reason: 'session_unavailable' })
+  })
+
+  it('rejects an unknown tracked permission request without sending', () => {
+    const svc = new ConversationService()
+    const sent: string[] = []
+    installPermissionSession(
+      svc,
+      'session-1',
+      { send(data) { sent.push(data) } },
+      false,
+    )
+
+    expect(
+      svc.respondToTrackedPermission('session-1', 'req-1', true),
+    ).toEqual({ status: 'rejected', reason: 'unknown_request' })
+    expect(sent).toEqual([])
+  })
+
+  it('removes a tracked permission only after its socket send succeeds', () => {
+    const svc = new ConversationService()
+    let session: ReturnType<typeof installPermissionSession>
+    const sent: unknown[] = []
+    session = installPermissionSession(svc, 'session-1', {
+      send(data) {
+        expect(session.pendingPermissionRequests.has('req-1')).toBe(true)
+        sent.push(JSON.parse(data))
+      },
+    })
+
+    expect(
+      svc.respondToTrackedPermission('session-1', 'req-1', true),
+    ).toEqual({ status: 'accepted', transport: 'sent' })
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(false)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('retains a tracked permission when its socket send throws', () => {
+    const svc = new ConversationService()
+    const session = installPermissionSession(svc, 'session-1', {
+      send() {
+        throw new Error('socket closed')
+      },
+    })
+
+    expect(
+      svc.respondToTrackedPermission('session-1', 'req-1', false),
+    ).toEqual({
+      status: 'delivery_failed',
+      error: 'socket closed',
+    })
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(true)
+  })
+
+  it('accepts and queues a tracked permission while the socket is connecting', () => {
+    const svc = new ConversationService()
+    const session = installPermissionSession(svc, 'session-1', null)
+
+    expect(
+      svc.respondToTrackedPermission('session-1', 'req-1', true),
+    ).toEqual({ status: 'accepted', transport: 'queued' })
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(false)
+    expect(session.pendingOutbound).toHaveLength(1)
+    expect(JSON.parse(session.pendingOutbound[0])).toMatchObject({
+      type: 'control_response',
+      response: {
+        request_id: 'req-1',
+        response: { behavior: 'allow' },
+      },
+    })
   })
 
   it('should not queue control requests before the SDK socket connects', async () => {

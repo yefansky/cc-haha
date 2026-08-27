@@ -246,6 +246,11 @@ export type PendingPermissionRequest = {
   description?: string
 }
 
+export type PermissionResponseResult =
+  | { status: 'accepted'; transport: 'sent' | 'queued' }
+  | { status: 'rejected'; reason: 'session_unavailable' | 'unknown_request' }
+  | { status: 'delivery_failed'; error: string }
+
 export type TranscriptStartupPolicy = 'default' | 'preserve_existing'
 
 export type SessionStartOptions = {
@@ -704,13 +709,59 @@ export class ConversationService {
     denyMessage?: string,
     permissionUpdates?: unknown[],
   ): boolean {
+    return this.sendPermissionResponse(
+      sessionId,
+      requestId,
+      allowed,
+      rule,
+      updatedInput,
+      denyMessage,
+      permissionUpdates,
+      false,
+    ).status === 'accepted'
+  }
+
+  respondToTrackedPermission(
+    sessionId: string,
+    requestId: string,
+    allowed: boolean,
+    rule?: string,
+    updatedInput?: Record<string, unknown>,
+    denyMessage?: string,
+    permissionUpdates?: unknown[],
+  ): PermissionResponseResult {
+    return this.sendPermissionResponse(
+      sessionId,
+      requestId,
+      allowed,
+      rule,
+      updatedInput,
+      denyMessage,
+      permissionUpdates,
+      true,
+    )
+  }
+
+  private sendPermissionResponse(
+    sessionId: string,
+    requestId: string,
+    allowed: boolean,
+    rule: string | undefined,
+    updatedInput: Record<string, unknown> | undefined,
+    denyMessage: string | undefined,
+    permissionUpdates: unknown[] | undefined,
+    requireTrackedRequest: boolean,
+  ): PermissionResponseResult {
     const session = this.sessions.get(sessionId)
-    const pendingRequest = session?.pendingPermissionRequests.get(requestId)
-    if (session) {
-      session.pendingPermissionRequests.delete(requestId)
+    if (!session) {
+      return { status: 'rejected', reason: 'session_unavailable' }
+    }
+    const pendingRequest = session.pendingPermissionRequests.get(requestId)
+    if (requireTrackedRequest && !pendingRequest) {
+      return { status: 'rejected', reason: 'unknown_request' }
     }
 
-    return this.sendSdkMessage(sessionId, {
+    const payload = {
       type: 'control_response',
       response: {
         subtype: 'success',
@@ -746,7 +797,21 @@ export class ConversationService {
               message: buildDenyMessage(pendingRequest?.toolName, denyMessage),
             },
       },
-    })
+    }
+    const transport = session.sdkSocket ? 'sent' : 'queued'
+    try {
+      if (!this.sendSdkMessage(sessionId, payload)) {
+        return { status: 'rejected', reason: 'session_unavailable' }
+      }
+    } catch (error) {
+      return {
+        status: 'delivery_failed',
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+
+    session.pendingPermissionRequests.delete(requestId)
+    return { status: 'accepted', transport }
   }
 
   async setPermissionMode(sessionId: string, mode: string, timeoutMs = 10_000): Promise<boolean> {
