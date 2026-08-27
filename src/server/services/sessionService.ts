@@ -69,6 +69,22 @@ import type {
 import type { LocalIndexStatus } from './localIndex/types.js'
 import { diagnosticsService } from './diagnosticsService.js'
 import { isForkInheritedUsageRecord } from '../../utils/usageAccounting.js'
+import {
+  prepareReplaceUserTurnTranscript as prepareReplaceUserTurnTranscriptMutation,
+  type PrepareReplaceUserTurnTranscriptInput,
+  type PreparedReplaceUserTurnTranscript,
+} from './sessionReplaceUserTurnTranscript.js'
+
+export {
+  ReplaceUserTurnTranscriptError,
+  type PrepareReplaceUserTurnTranscriptInput,
+  type PreparedReplaceUserTurnTranscript,
+  type ReplaceUserTurnTranscriptCommitResult,
+  type ReplaceUserTurnTranscriptErrorCode,
+  type ReplaceUserTurnTranscriptRollbackResult,
+  type ReplaceUserTurnTranscriptState,
+  type ReplaceUserTurnTranscriptTrimResult,
+} from './sessionReplaceUserTurnTranscript.js'
 
 // ============================================================================
 // Types
@@ -4086,6 +4102,27 @@ export class SessionService {
     }
     if (removed > 0) this.invalidateSessionListCache()
     return removed
+  }
+
+  /**
+   * Prepare a recoverable replace-user-turn transcript mutation.
+   *
+   * Filesystems do not provide an atomic content-CAS-plus-rename primitive.
+   * The caller must therefore hold the per-session mutation coordinator slot
+   * and stop/drain the runtime for the entire prepare + trim interval. The
+   * writerQuiescence token makes that external precondition explicit; this
+   * method's digest checks detect accidents but cannot lock another process.
+   */
+  async prepareReplaceUserTurnTranscript(
+    input: PrepareReplaceUserTurnTranscriptInput,
+  ): Promise<PreparedReplaceUserTurnTranscript> {
+    return prepareReplaceUserTurnTranscriptMutation(input, {
+      findSessionFile: sessionId => this.findSessionFile(sessionId),
+      getProjectsDir: () => this.getProjectsDir(),
+      projectMessages: entries => this.entriesToMessages(entries as RawEntry[]),
+      now: this.now,
+      invalidateTranscriptCaches: () => this.invalidateSessionListCache(),
+    })
   }
 
   async trimSessionMessagesFrom(
