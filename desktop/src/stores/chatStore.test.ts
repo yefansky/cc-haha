@@ -3822,6 +3822,105 @@ describe('chatStore history mapping', () => {
     expect(pending?.responseState).toBe('submitting')
   })
 
+  it('restores a submitting AskUserQuestion after a retryable delivery failure', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'perm-ask-delivery',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'tool-ask-delivery',
+      input: { questions: [{ question: 'Retry?', options: [{ label: 'Yes' }] }] },
+    })
+    store.respondToPermission(TEST_SESSION_ID, 'perm-ask-delivery', true)
+
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_response_failed',
+      requestId: 'perm-ask-delivery',
+      permissionType: 'tool',
+      code: 'PERMISSION_DELIVERY_FAILED',
+      retryable: true,
+      message: 'delivery failed',
+    })
+
+    let session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    expect(session?.pendingPermissions?.['perm-ask-delivery']?.responseState).toBeUndefined()
+    expect(session?.pendingPermission?.responseState).toBeUndefined()
+    expect(session?.chatState).toBe('permission_pending')
+
+    store.respondToPermission(TEST_SESSION_ID, 'perm-ask-delivery', true)
+    session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    expect(sendMock).toHaveBeenCalledTimes(2)
+    expect(session?.pendingPermissions?.['perm-ask-delivery']?.responseState).toBe('submitting')
+  })
+
+  it.each([
+    'PERMISSION_REQUEST_NOT_FOUND',
+    'PERMISSION_SESSION_UNAVAILABLE',
+  ] as const)('authoritatively removes a submitting AskUserQuestion on %s', (code) => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'perm-read-remaining',
+      toolName: 'Read',
+      input: { file_path: '/tmp/file' },
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'perm-ask-terminal',
+      toolName: 'AskUserQuestion',
+      input: { questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }] },
+    })
+    store.respondToPermission(TEST_SESSION_ID, 'perm-ask-terminal', true)
+
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_response_failed',
+      requestId: 'perm-ask-terminal',
+      permissionType: 'tool',
+      code,
+      retryable: false,
+      message: 'request unavailable',
+    })
+
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    expect(session?.pendingPermissions).not.toHaveProperty('perm-ask-terminal')
+    expect(session?.pendingPermission?.requestId).toBe('perm-read-remaining')
+    expect(session?.chatState).toBe('permission_pending')
+    expect(session?.messages.some((message) => message.type === 'tool_result')).toBe(false)
+  })
+
+  it('ignores permission response failures outside a submitting AskUserQuestion', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'perm-ask-pending',
+      toolName: 'AskUserQuestion',
+      input: { questions: [{ question: 'Wait?', options: [{ label: 'Yes' }] }] },
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'perm-read-pending',
+      toolName: 'Read',
+      input: { file_path: '/tmp/file' },
+    })
+    const before = useChatStore.getState().sessions[TEST_SESSION_ID]?.pendingPermissions
+
+    for (const requestId of ['perm-ask-pending', 'perm-read-pending', 'missing']) {
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_response_failed',
+        requestId,
+        permissionType: 'tool',
+        code: 'PERMISSION_DELIVERY_FAILED',
+        retryable: true,
+        message: 'delivery failed',
+      })
+    }
+
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.pendingPermissions).toEqual(before)
+  })
+
   it('removes replayed or cancelled requests when the server resolves them', () => {
     useChatStore.setState({
       sessions: {

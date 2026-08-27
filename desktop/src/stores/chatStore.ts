@@ -2948,6 +2948,43 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         })
         break
 
+      case 'permission_response_failed':
+        update((session) => {
+          const pendingPermissions = getPendingPermissionRecord(session)
+          const current = pendingPermissions[msg.requestId]
+          if (
+            !current ||
+            current.toolName !== 'AskUserQuestion' ||
+            current.responseState !== 'submitting'
+          ) return {}
+
+          if (msg.retryable) {
+            const { responseState: _responseState, ...retryablePermission } = current
+            pendingPermissions[msg.requestId] = retryablePermission
+            return {
+              pendingPermissions,
+              pendingPermission: session.pendingPermission?.requestId === msg.requestId
+                ? retryablePermission
+                : session.pendingPermission ?? retryablePermission,
+              chatState: 'permission_pending',
+            }
+          }
+
+          delete pendingPermissions[msg.requestId]
+          const remainingPermissions = Object.values(pendingPermissions)
+          return {
+            pendingPermissions,
+            pendingPermission: remainingPermissions[remainingPermissions.length - 1] ?? null,
+            chatState: getChatStateAfterPermissionResolution(
+              session,
+              remainingPermissions.length > 0 ||
+                Object.keys(getPendingComputerUsePermissionRecord(session)).length > 0,
+              undefined,
+            ),
+          }
+        })
+        break
+
       case 'permission_resolved':
         update((session) => {
           if (msg.permissionType === 'computer_use') {

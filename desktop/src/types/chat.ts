@@ -108,6 +108,17 @@ export type ServerMessage =
       allowed?: boolean
     }
   | {
+      type: 'permission_response_failed'
+      requestId: string
+      permissionType: 'tool'
+      code:
+        | 'PERMISSION_REQUEST_NOT_FOUND'
+        | 'PERMISSION_SESSION_UNAVAILABLE'
+        | 'PERMISSION_DELIVERY_FAILED'
+      retryable: boolean
+      message: string
+    }
+  | {
       type: 'permission_requests_snapshot'
       toolRequestIds: string[]
       computerUseRequestIds: string[]

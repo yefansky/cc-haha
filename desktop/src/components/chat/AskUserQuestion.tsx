@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { listPendingPermissions, useChatStore } from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
@@ -94,6 +94,11 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   const resultText = typeof result === 'string' && result.trim().length > 0 ? result.trim() : ''
   const hasStructuredAnswers = Object.keys(resultAnswers).length > 0
   const hasTerminalResult = hasStructuredAnswers || resultText.length > 0
+  const submitting = pendingRequest?.responseState === 'submitting'
+
+  useEffect(() => {
+    if (pendingRequest && !submitting && hasRequestedChat) setHasRequestedChat(false)
+  }, [hasRequestedChat, pendingRequest, submitting])
 
   const answeredText = useMemo(() => {
     if (hasStructuredAnswers) {
@@ -119,8 +124,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   const safeActiveTab = Math.min(activeTab, questions.length - 1)
   const activeQuestion = questions[safeActiveTab]
 
-  const submitting = pendingRequest?.responseState === 'submitting'
-  const submitted = hasTerminalResult && !submitting
+  const submitted = hasTerminalResult && !pendingRequest
   const terminalWithoutAnswers = submitted && !hasStructuredAnswers && resultText.length > 0
   const readOnly = !submitted && !pendingRequest
   const authoritativeHistory = readOnly && connectionSnapshotReady

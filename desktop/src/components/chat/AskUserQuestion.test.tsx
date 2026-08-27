@@ -200,6 +200,41 @@ describe('AskUserQuestion', () => {
     expect(sendMock).toHaveBeenCalledTimes(2)
   })
 
+  it('restores the draft without claiming a terminal result after delivery fails', () => {
+    const input = {
+      questions: [{
+        question: 'Should we persist data?',
+        options: [{ label: 'No' }, { label: 'Yes' }],
+      }],
+    }
+    const { rerender } = render(<AskUserQuestion toolUseId="tool-1" input={input} />)
+    const option = screen.getByRole('button', { name: /^No$/ })
+    const textarea = screen.getByPlaceholderText('Type your answer...')
+    fireEvent.click(option)
+    fireEvent.change(textarea, { target: { value: 'Keep this draft' } })
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    rerender(<AskUserQuestion toolUseId="tool-1" input={input} result="premature result" />)
+
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_response_failed',
+        requestId: 'perm-1',
+        permissionType: 'tool',
+        code: 'PERMISSION_DELIVERY_FAILED',
+        retryable: true,
+        message: 'delivery failed',
+      })
+    })
+
+    expect(option).toHaveProperty('disabled', false)
+    expect(textarea).toHaveProperty('value', 'Keep this draft')
+    expect(screen.getByRole('button', { name: /submit/i })).toHaveProperty('disabled', false)
+    expect(screen.queryByText('Answered')).toBeNull()
+    expect(screen.queryByText('Completed')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    expect(sendMock).toHaveBeenCalledTimes(2)
+  })
+
   it('allows multiple selections when a question is marked multiSelect', () => {
     render(
       <AskUserQuestion
@@ -592,6 +627,43 @@ describe('AskUserQuestion', () => {
       expect(screen.getByText('Handed off')).toBeTruthy()
       expect(screen.getByText(/Handed back to Claude/)).toBeTruthy()
       expect(screen.queryByText('Answered')).toBeNull()
+    })
+
+    it('does not carry a failed handoff intent into a later successful answer', () => {
+      const { rerender } = render(
+        <AskUserQuestion toolUseId="tool-1" input={SCOPE_INPUT} />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /chat about this/i }))
+      act(() => {
+        useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+          type: 'permission_response_failed',
+          requestId: 'perm-1',
+          permissionType: 'tool',
+          code: 'PERMISSION_DELIVERY_FAILED',
+          retryable: true,
+          message: 'delivery failed',
+        })
+      })
+      fireEvent.click(screen.getByRole('button', { name: /^Tabs$/ }))
+      fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+      rerender(
+        <AskUserQuestion
+          toolUseId="tool-1"
+          input={SCOPE_INPUT}
+          result={{ answers: { 'Which scope?': 'Tabs' } }}
+        />,
+      )
+      act(() => {
+        useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+          type: 'permission_resolved',
+          requestId: 'perm-1',
+          permissionType: 'tool',
+          allowed: true,
+        })
+      })
+
+      expect(screen.getByText('Answered')).toBeTruthy()
+      expect(screen.queryByText('Handed off')).toBeNull()
     })
 
     it('ignores a second click once the handoff is sent', () => {
