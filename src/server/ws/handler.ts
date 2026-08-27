@@ -20,6 +20,7 @@ import {
   conversationService,
 } from '../services/conversationService.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
+import { sessionMutationCoordinator } from '../services/sessionMutationCoordinator.js'
 import {
   sessionService,
 } from '../services/sessionService.js'
@@ -445,10 +446,7 @@ function isPermissionMode(value: unknown): value is PermissionMode {
   return typeof value === 'string' && validPermissionModes.has(value as PermissionMode)
 }
 
-const runtimeTransitionPromises = new Map<string, Promise<void>>()
 const sessionStartupPromises = new Map<string, Promise<void>>()
-const runtimeOverrideVersions = new Map<string, number>()
-const sessionStartupRuntimeVersions = new Map<string, number>()
 const lastResolvedStartupWorkDirs = new Map<string, string>()
 const prewarmPendingSessions = new Set<string>()
 const prewarmedSessions = new Set<string>()
@@ -789,13 +787,17 @@ async function handleUserMessage(
   // request. Start the replacement on a clean runtime instead, so retry is
   // bounded by a short process restart rather than the upstream timeout.
   if (activeTurn.replacementAfterStop && conversationService.hasSession(sessionId)) {
-    console.log(`[WS] Restarting stopped CLI runtime before replacement turn: ${sessionId}`)
-    pendingInterruptedTurnResults.delete(sessionId)
-    runtimeExitStoppedSessions.add(sessionId)
-    await conversationService.stopSessionAndWait(
-      sessionId,
-      STOPPED_TURN_RESTART_SHUTDOWN_TIMEOUT_MS,
-    )
+    await enqueueRuntimeTransition(sessionId, async () => {
+      if (activeUserTurns.get(sessionId) !== activeTurn || activeTurn.cancelled) return
+      if (!conversationService.hasSession(sessionId)) return
+      console.log(`[WS] Restarting stopped CLI runtime before replacement turn: ${sessionId}`)
+      pendingInterruptedTurnResults.delete(sessionId)
+      runtimeExitStoppedSessions.add(sessionId)
+      await conversationService.stopSessionAndWait(
+        sessionId,
+        STOPPED_TURN_RESTART_SHUTDOWN_TIMEOUT_MS,
+      )
+    })
     if (activeUserTurns.get(sessionId) !== activeTurn || activeTurn.cancelled) return
   }
 
@@ -896,41 +898,54 @@ async function handleUserMessage(
   let userMessageSent = false
   const shouldForwardCurrentTurnLocalCommand =
     createCurrentTurnLocalCommandForwarder(desktopSlashCommand)
-  const removeTitleOutputCallback = titleTurnNumber === null
-    ? null
-    : bindTitleSessionOutput(ws, sessionId, activeTurn, () => userMessageSent)
+  let removeTitleOutputCallback: (() => void) | null = null
+  let removeActiveTurnOutputCallback = () => {}
+  const sent = await enqueueRuntimeTransition(sessionId, async () => {
+    if (activeUserTurns.get(sessionId) !== activeTurn || activeTurn.cancelled) return false
 
-  bindAllClientSessionOutputs(sessionId, {
-    shouldForward: (cliMsg) => {
-      if (userMessageSent || (cliMsg.type === 'result' && cliMsg.is_error)) {
-        return true
-      }
-      return shouldForwardCurrentTurnLocalCommand(cliMsg)
-    },
+    try {
+      removeTitleOutputCallback = titleTurnNumber === null
+        ? null
+        : bindTitleSessionOutput(ws, sessionId, activeTurn, () => userMessageSent)
+
+      bindAllClientSessionOutputs(sessionId, {
+        shouldForward: (cliMsg) => {
+          if (userMessageSent || (cliMsg.type === 'result' && cliMsg.is_error)) {
+            return true
+          }
+          return shouldForwardCurrentTurnLocalCommand(cliMsg)
+        },
+      })
+      removeActiveTurnOutputCallback = bindActiveUserTurnCompletion(ws, sessionId, activeTurn)
+
+      // The renderer may have left while the CLI was still starting, before this
+      // turn could flip messageSent=true. The disconnect handler cannot attach an
+      // effective output watcher until the ConversationService session exists, so
+      // refresh it here, immediately before sending the turn, to observe a
+      // permission request that arrives after the disconnect.
+      refreshDisconnectedTurnCleanupWatcher(sessionId)
+
+      activeTurn.sendStarted = true
+      return await conversationService.sendMessage(
+        sessionId,
+        message.content,
+        message.attachments,
+        {
+          canSend: () =>
+            activeUserTurns.get(sessionId) === activeTurn && !activeTurn.cancelled,
+          messageUuid: activeTurn.expectedReplayUuid,
+          onCommitted: () => {
+            activeTurn.messageSent = true
+          },
+        },
+      )
+    } catch (error) {
+      removeActiveTurnOutputCallback()
+      removeTitleOutputCallback?.()
+      discardActiveTitleTurn(sessionId, titleTurnNumber)
+      throw error
+    }
   })
-  const removeActiveTurnOutputCallback = bindActiveUserTurnCompletion(ws, sessionId, activeTurn)
-
-  // The renderer may have left while the CLI was still starting, before this
-  // turn could flip messageSent=true. The disconnect handler cannot attach an
-  // effective output watcher until the ConversationService session exists, so
-  // refresh it here, immediately before sending the turn, to observe a
-  // permission request that arrives after the disconnect.
-  refreshDisconnectedTurnCleanupWatcher(sessionId)
-
-  activeTurn.sendStarted = true
-  const sent = await conversationService.sendMessage(
-    sessionId,
-    message.content,
-    message.attachments,
-    {
-      canSend: () =>
-        activeUserTurns.get(sessionId) === activeTurn && !activeTurn.cancelled,
-      messageUuid: activeTurn.expectedReplayUuid,
-      onCommitted: () => {
-        activeTurn.messageSent = true
-      },
-    },
-  )
   if (activeUserTurns.get(sessionId) !== activeTurn || activeTurn.cancelled) {
     // Once onCommitted has run the SDK owns this turn and will still emit its
     // terminal result. Keep the completion callback long enough to consume
@@ -1188,7 +1203,6 @@ async function performDesktopClearCommand(
   if (turnToCancel) clearActiveUserTurn(sessionId, turnToCancel)
   const activeTitleState = sessionTitleState.get(sessionId)
   if (activeTitleState) activeTitleState.activeTurn = undefined
-  const pendingStartup = sessionStartupPromises.get(sessionId)
   conversationService.stopSession(sessionId)
   pendingInterruptedTurnResults.delete(sessionId)
   // Clearing replaces the transcript, so do not enqueue terminal bookends that
@@ -1197,15 +1211,6 @@ async function performDesktopClearCommand(
   // on an independent bounded retry path after the transcript replacement.
   conversationService.clearOutputCallbacks(sessionId)
   clearPrewarmState(sessionId)
-
-  if (pendingStartup) {
-    await pendingStartup.catch(() => undefined)
-    // The startup may have created a runtime after the first stopSession call.
-    // Keep the clear transition locked until that stale admission is drained.
-    conversationService.stopSession(sessionId)
-    conversationService.clearOutputCallbacks(sessionId)
-    clearPrewarmState(sessionId)
-  }
 
   try {
     await sessionService.clearSessionTranscript(sessionId, workDir || undefined, permissionMode)
@@ -1509,10 +1514,6 @@ async function handleSetRuntimeConfig(
     }
 
     runtimeOverrides.set(sessionId, nextOverride)
-    runtimeOverrideVersions.set(
-      sessionId,
-      (runtimeOverrideVersions.get(sessionId) ?? 0) + 1,
-    )
 
     if (shouldDeferRuntimeRestartForActiveTurn(sessionId)) {
       deferredRuntimeRestarts.set(sessionId, nextOverride)
@@ -1528,27 +1529,24 @@ async function handleSetRuntimeConfig(
 
     const pendingStartup = sessionStartupPromises.get(sessionId)
     if (pendingStartup) {
-      const startupRuntimeVersion = sessionStartupRuntimeVersions.get(sessionId) ?? 0
-      const currentRuntimeVersion = runtimeOverrideVersions.get(sessionId) ?? 0
-      if (startupRuntimeVersion >= currentRuntimeVersion) {
-        await persistSessionRuntimeConfig(sessionId, nextOverride)
-        await pendingStartup
-        broadcastAppliedRuntimeConfig(sessionId)
-        return
-      }
-
       await persistSessionRuntimeConfig(sessionId, nextOverride)
-      await pendingStartup.catch(() => undefined)
-      const currentOverride = runtimeOverrides.get(sessionId)
-      if (
-        currentOverride?.providerId !== nextOverride.providerId ||
-        currentOverride.modelId !== nextOverride.modelId ||
-        currentOverride.effort !== nextOverride.effort ||
-        !conversationService.hasSession(sessionId)
-      ) {
-        return
-      }
-      await restartSessionWithRuntimeConfig(ws, sessionId)
+      // Startup now owns a coordinator slot. If it is visible while this
+      // transition owns the same session, it is queued behind us and will read
+      // the override above when its slot starts; awaiting it here would self-lock.
+      void pendingStartup.then(
+        () => {
+          const currentOverride = runtimeOverrides.get(sessionId)
+          if (
+            currentOverride?.providerId === nextOverride.providerId &&
+            currentOverride.modelId === nextOverride.modelId &&
+            currentOverride.effort === nextOverride.effort &&
+            conversationService.hasSession(sessionId)
+          ) {
+            broadcastAppliedRuntimeConfig(sessionId)
+          }
+        },
+        () => undefined,
+      )
       return
     }
 
@@ -2583,7 +2581,6 @@ function cleanupSessionRuntimeState(
   interruptedSessionChats.delete(sessionId)
   deferredRuntimeRestarts.delete(sessionId)
   deferredPermissionModes.delete(sessionId)
-  runtimeTransitionPromises.delete(sessionId)
   sessionStartupPromises.delete(sessionId)
   lastResolvedStartupWorkDirs.delete(sessionId)
   taskNotificationPersistence.delete(sessionId)
@@ -2715,10 +2712,8 @@ async function ensureCliSessionStarted(
 
   if (conversationService.hasSession(sessionId)) return
 
-  const startupRuntimeVersion = runtimeOverrideVersions.get(sessionId) ?? 0
-  sessionStartupRuntimeVersions.set(sessionId, startupRuntimeVersion)
-
-  const startup = (async () => {
+  const startup = enqueueRuntimeTransition(sessionId, async () => {
+    if (conversationService.hasSession(sessionId)) return
     const workDir = await resolveSessionWorkDir(sessionId)
     lastResolvedStartupWorkDirs.set(sessionId, workDir)
     const runtimeSettings = await getRuntimeSettings(sessionId)
@@ -2730,7 +2725,7 @@ async function ensureCliSessionStarted(
     console.log(`[WS] Starting CLI for ${sessionId} due to ${reason}`)
     await conversationService.startSession(sessionId, workDir, sdkUrl, startupSettings)
     runtimeExitStoppedSessions.delete(sessionId)
-  })()
+  })
 
   sessionStartupPromises.set(sessionId, startup)
   try {
@@ -2738,7 +2733,6 @@ async function ensureCliSessionStarted(
   } finally {
     if (sessionStartupPromises.get(sessionId) === startup) {
       sessionStartupPromises.delete(sessionId)
-      sessionStartupRuntimeVersions.delete(sessionId)
     }
   }
 }
@@ -4302,61 +4296,39 @@ async function buildSessionStartupDiagnosticMessage(
   return lines.join('\n')
 }
 
-function enqueueRuntimeTransition(
+function enqueueRuntimeTransition<T>(
   sessionId: string,
-  transition: () => Promise<void>,
-): Promise<void> {
-  const previous = runtimeTransitionPromises.get(sessionId) ?? Promise.resolve()
-  const next = previous
-    .catch(() => {})
-    .then(transition)
-    .finally(() => {
-      if (runtimeTransitionPromises.get(sessionId) === next) {
-        runtimeTransitionPromises.delete(sessionId)
-      }
-    })
-  runtimeTransitionPromises.set(sessionId, next)
-  return next
+  transition: () => Promise<T>,
+): Promise<T> {
+  return sessionMutationCoordinator.enqueue(sessionId, transition)
 }
 
 async function waitForRuntimeTransitionBeforeUserTurn(
   ws: ServerWebSocket<WebSocketData>,
   sessionId: string,
 ): Promise<{ ok: boolean; waited: boolean }> {
-  let waited = false
-  let pendingRuntimeTransition = runtimeTransitionPromises.get(sessionId)
-  while (pendingRuntimeTransition) {
-    waited = true
-    try {
-      await pendingRuntimeTransition
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      void diagnosticsService.recordEvent({
-        type: 'runtime_transition_failed',
-        severity: 'error',
-        sessionId,
-        summary: errMsg,
-        details: err,
-      })
-      console.error(`[WS] Runtime transition failed before handling user message for ${sessionId}: ${errMsg}`)
-      sendMessage(ws, {
-        type: 'error',
-        message: `Failed to switch provider/model: ${errMsg}`,
-        code: 'CLI_RESTART_FAILED',
-      })
-      sendMessage(ws, { type: 'status', state: 'idle' })
-      failSessionChatActivity(sessionId)
-      return { ok: false, waited }
-    }
-
-    const nextTransition = runtimeTransitionPromises.get(sessionId)
-    pendingRuntimeTransition =
-      nextTransition && nextTransition !== pendingRuntimeTransition
-        ? nextTransition
-        : undefined
+  try {
+    const { waited } = await sessionMutationCoordinator.drain(sessionId)
+    return { ok: true, waited }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    void diagnosticsService.recordEvent({
+      type: 'runtime_transition_failed',
+      severity: 'error',
+      sessionId,
+      summary: errMsg,
+      details: err,
+    })
+    console.error(`[WS] Runtime transition failed before handling user message for ${sessionId}: ${errMsg}`)
+    sendMessage(ws, {
+      type: 'error',
+      message: `Failed to switch provider/model: ${errMsg}`,
+      code: 'CLI_RESTART_FAILED',
+    })
+    sendMessage(ws, { type: 'status', state: 'idle' })
+    failSessionChatActivity(sessionId)
+    return { ok: false, waited: true }
   }
-
-  return { ok: true, waited }
 }
 
 /**
@@ -4477,7 +4449,7 @@ export function __resetWebSocketHandlerStateForTests(): void {
   terminalSessionChatStates.clear()
   legacyQueuedSessionChats.clear()
   interruptedSessionChats.clear()
-  runtimeTransitionPromises.clear()
+  sessionMutationCoordinator.resetForTests()
   sessionStartupPromises.clear()
 }
 
@@ -4517,9 +4489,12 @@ export function __registerPendingSessionStartupForTests(
 /** Test hook: put a deterministic barrier ahead of user/clear admission. */
 export function __enqueueRuntimeTransitionForTests(
   sessionId: string,
-  transition: Promise<void>,
+  transition: Promise<void> | (() => Promise<void>),
 ): Promise<void> {
-  return enqueueRuntimeTransition(sessionId, () => transition)
+  return enqueueRuntimeTransition(
+    sessionId,
+    typeof transition === 'function' ? transition : () => transition,
+  )
 }
 
 export function __resolveRuntimeRestartWorkDirForTests(sessionId: string): Promise<string> {

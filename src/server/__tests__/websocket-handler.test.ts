@@ -23,6 +23,8 @@ import {
 import { conversationService } from '../services/conversationService.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
 import { sessionService } from '../services/sessionService.js'
+import { SettingsService } from '../services/settingsService.js'
+import { ProviderService } from '../services/providerService.js'
 import * as teleportApi from '../../utils/teleport/api.js'
 
 function makeClientSocket(sessionId: string, clientKind: 'full' | 'pet' = 'full') {
@@ -2053,56 +2055,68 @@ describe('WebSocket handler session isolation', () => {
     }
   })
 
-  it('drains a user admission already waiting on CLI startup before clear commits', async () => {
-    const sessionId = `clear-pending-startup-${crypto.randomUUID()}`
+  it('does not self-lock when clear is queued before a prewarm startup', async () => {
+    const sessionId = `clear-before-prewarm-startup-${crypto.randomUUID()}`
     const first = makeClientSocket(sessionId)
     const second = makeClientSocket(sessionId)
-    let resolveStartup!: () => void
+    let releaseEarlierMutation!: () => void
+    const earlierMutation = __enqueueRuntimeTransitionForTests(
+      sessionId,
+      new Promise<void>((resolve) => {
+        releaseEarlierMutation = resolve
+      }),
+    )
+    const order: string[] = []
     let runtimeReady = false
-    const pendingStartup = new Promise<void>((resolve) => {
-      resolveStartup = () => {
-        runtimeReady = true
-        resolve()
-      }
-    })
-    __registerPendingSessionStartupForTests(sessionId, pendingStartup)
     spyOn(conversationService, 'hasSession').mockImplementation(() => runtimeReady)
-    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue('/tmp/clear-pending-startup')
-    spyOn(conversationService, 'getSessionPermissionMode').mockReturnValue('default')
-    const stopSession = spyOn(conversationService, 'stopSession').mockImplementation(() => {})
+    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue('/tmp/clear-before-prewarm-startup')
+    spyOn(conversationService, 'stopSession').mockImplementation(() => {
+      runtimeReady = false
+    })
     spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
     spyOn(conversationService, 'onOutput').mockImplementation(() => {})
     spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
-    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('Existing title')
-    const clearTranscript = spyOn(sessionService, 'clearSessionTranscript').mockResolvedValue()
-    const sendMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    spyOn(sessionService, 'getSessionLaunchInfo').mockResolvedValue(null)
+    spyOn(sessionService, 'getSessionWorkDir').mockResolvedValue('/tmp/clear-before-prewarm-startup')
+    const clearTranscript = spyOn(sessionService, 'clearSessionTranscript').mockImplementation(async () => {
+      order.push('clear')
+    })
+    const startSession = spyOn(conversationService, 'startSession').mockImplementation(async () => {
+      order.push('startup')
+      runtimeReady = true
+    })
+    spyOn(ProviderService.prototype, 'listProviders').mockResolvedValue({
+      providers: [],
+      activeId: null,
+      providerOrder: [],
+    })
+    spyOn(SettingsService.prototype, 'getUserSettings').mockResolvedValue({})
+    spyOn(SettingsService.prototype, 'getPermissionMode').mockResolvedValue('default')
 
     handleWebSocket.open(first)
     handleWebSocket.open(second)
     handleWebSocket.message(first, JSON.stringify({
       type: 'user_message',
-      content: 'This admission is waiting for startup',
-    }))
-    await flushMicrotasks(20)
-
-    handleWebSocket.message(second, JSON.stringify({
-      type: 'user_message',
       content: '/clear',
     }))
-    await flushMicrotasks(20)
+    handleWebSocket.message(second, JSON.stringify({
+      type: 'prewarm_session',
+    }))
+    await flushMicrotasks(30)
     expect(clearTranscript).not.toHaveBeenCalled()
-    expect(sendMessage).not.toHaveBeenCalled()
+    expect(startSession).not.toHaveBeenCalled()
 
-    resolveStartup()
-    await flushMicrotasks(40)
+    releaseEarlierMutation()
+    await earlierMutation
+    await flushMicrotasks(80)
 
-    expect(stopSession).toHaveBeenCalledWith(sessionId)
     expect(clearTranscript).toHaveBeenCalledWith(
       sessionId,
-      '/tmp/clear-pending-startup',
+      '/tmp/clear-before-prewarm-startup',
       undefined,
     )
-    expect(sendMessage).not.toHaveBeenCalled()
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(order).toEqual(['clear', 'startup'])
     for (const client of [first, second]) {
       expect(client.sent.map((payload) => JSON.parse(payload))).toContainEqual({
         type: 'system_notification',
@@ -2874,6 +2888,202 @@ describe('WebSocket handler session isolation', () => {
       undefined,
       expect.objectContaining({ canSend: expect.any(Function) }),
     )
+  })
+
+  it('keeps the actual CLI startup body inside the session mutation barrier', async () => {
+    const sessionId = `mutation-startup-slot-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    let runtimeReady = false
+    let releaseStartup!: () => void
+    const startupGate = new Promise<void>((resolve) => {
+      releaseStartup = () => {
+        runtimeReady = true
+        resolve()
+      }
+    })
+    spyOn(conversationService, 'hasSession').mockImplementation(() => runtimeReady)
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    const startSession = spyOn(conversationService, 'startSession').mockImplementation(
+      () => startupGate,
+    )
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('Existing title')
+    spyOn(sessionService, 'getSessionWorkDir').mockResolvedValue('/tmp/mutation-startup-slot')
+    spyOn(sessionService, 'getSessionLaunchInfo').mockResolvedValue(null)
+    spyOn(ProviderService.prototype, 'listProviders').mockResolvedValue({
+      providers: [],
+      activeId: null,
+      providerOrder: [],
+    })
+    spyOn(SettingsService.prototype, 'getUserSettings').mockResolvedValue({})
+    spyOn(SettingsService.prototype, 'getPermissionMode').mockResolvedValue('default')
+
+    handleWebSocket.open(ws)
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: '',
+    }))
+    await flushMicrotasks(30)
+    expect(startSession).toHaveBeenCalledTimes(1)
+
+    let followingMutationStarted = false
+    const followingMutation = __enqueueRuntimeTransitionForTests(sessionId, async () => {
+      followingMutationStarted = true
+    })
+    await flushMicrotasks()
+    expect(followingMutationStarted).toBe(false)
+
+    releaseStartup()
+    await followingMutation
+    await flushMicrotasks(30)
+    expect(followingMutationStarted).toBe(true)
+    expect(conversationService.sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('holds the mutation barrier through callback binding and user admission', async () => {
+    const sessionId = `mutation-send-admission-slot-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    let resolveSend!: (sent: boolean) => void
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockImplementation(
+      () => new Promise<boolean>((resolve) => {
+        resolveSend = resolve
+      }),
+    )
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('Existing title')
+
+    handleWebSocket.open(ws)
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: '',
+    }))
+    await flushMicrotasks(30)
+    expect(sendMessage).toHaveBeenCalledTimes(1)
+
+    let followingMutationStarted = false
+    const followingMutation = __enqueueRuntimeTransitionForTests(sessionId, async () => {
+      followingMutationStarted = true
+    })
+    await flushMicrotasks()
+    expect(followingMutationStarted).toBe(false)
+
+    resolveSend(true)
+    await followingMutation
+    expect(followingMutationStarted).toBe(true)
+  })
+
+  it('removes turn callbacks when user admission throws', async () => {
+    const sessionId = `mutation-send-admission-rejection-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const outputCallbacks = new Set<(message: unknown) => void>()
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+    spyOn(conversationService, 'onOutput').mockImplementation((_sessionId, callback) => {
+      outputCallbacks.add(callback)
+    })
+    const removeOutputCallback = spyOn(
+      conversationService,
+      'removeOutputCallback',
+    ).mockImplementation((_sessionId, callback) => {
+      outputCallbacks.delete(callback)
+    })
+    let rejectAdmission!: (error: Error) => void
+    spyOn(conversationService, 'sendMessage').mockImplementation(
+      () => new Promise<boolean>((_resolve, reject) => {
+        rejectAdmission = reject
+      }),
+    )
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('Existing title')
+
+    handleWebSocket.open(ws)
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: 'Prompt whose admission fails',
+    }))
+    await flushMicrotasks(30)
+    expect(outputCallbacks.size).toBe(3)
+
+    rejectAdmission(new Error('simulated admission failure'))
+    await flushMicrotasks(30)
+
+    expect(outputCallbacks.size).toBe(1)
+    expect(removeOutputCallback).toHaveBeenCalled()
+    const messages = ws.sent.map((payload) => JSON.parse(payload))
+    expect(messages.filter((message) => message.code === 'USER_TURN_FAILED')).toHaveLength(1)
+    expect(messages).toContainEqual({
+      type: 'status',
+      state: 'idle',
+    })
+  })
+
+  it('keeps the bounded stopped-runtime restart inside the mutation barrier', async () => {
+    const sessionId = `mutation-stopped-restart-slot-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    let releaseStop!: () => void
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve
+    })
+    spyOn(globalThis, 'setTimeout').mockImplementation(() => 1 as any)
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'sendInterrupt').mockReturnValue(true)
+    const stopSessionAndWait = spyOn(conversationService, 'stopSessionAndWait')
+      .mockImplementation(() => stopGate)
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('Existing title')
+
+    handleWebSocket.open(ws)
+    __markActiveTurnForTests(sessionId)
+    handleWebSocket.message(ws, JSON.stringify({ type: 'stop_generation' }))
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: '',
+    }))
+    await flushMicrotasks(30)
+    expect(stopSessionAndWait).toHaveBeenCalledWith(sessionId, 250)
+
+    let followingMutationStarted = false
+    const followingMutation = __enqueueRuntimeTransitionForTests(sessionId, async () => {
+      followingMutationStarted = true
+    })
+    await flushMicrotasks()
+    expect(followingMutationStarted).toBe(false)
+
+    releaseStop()
+    await followingMutation
+    expect(followingMutationStarted).toBe(true)
+  })
+
+  it('revokes a pending admission immediately without waiting for the mutation barrier', async () => {
+    const sessionId = `mutation-stop-bypass-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    let releaseMutation!: () => void
+    const heldMutation = new Promise<void>((resolve) => {
+      releaseMutation = resolve
+    })
+    const mutation = __enqueueRuntimeTransitionForTests(sessionId, heldMutation)
+    spyOn(globalThis, 'setTimeout').mockImplementation(() => 1 as any)
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    const sendInterrupt = spyOn(conversationService, 'sendInterrupt').mockReturnValue(true)
+
+    handleWebSocket.open(ws)
+    __registerPendingUserTurnForTests(sessionId)
+    ws.sent.length = 0
+    handleWebSocket.message(ws, JSON.stringify({ type: 'stop_generation' }))
+
+    expect(sendInterrupt).toHaveBeenCalledWith(sessionId)
+    expect(ws.sent.map((payload) => JSON.parse(payload))).toContainEqual({
+      type: 'status',
+      state: 'idle',
+    })
+
+    releaseMutation()
+    await mutation
   })
 
   it('releases the Agent stop latch only after the replacement replay is attributed', async () => {

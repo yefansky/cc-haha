@@ -5,10 +5,10 @@ import { fileURLToPath } from 'node:url'
 /**
  * Session-state cleanup completeness.
  *
- * `src/server/ws/handler.ts` keeps ~30 module-level containers of per-session state
- * and one `cleanupSessionRuntimeState` that is supposed to release them. Nothing kept
- * the two in sync: adding a container, or moving one while splitting the file, drops
- * it out of the cleanup path silently, and the result is state that survives session
+ * The WebSocket handler and its extracted collaborators keep module-level containers
+ * of per-session state, while `cleanupSessionRuntimeState` releases the state owned by
+ * one runtime. Nothing kept the two in sync: adding or moving a container can drop it
+ * out of the cleanup policy silently, and the result is state that survives session
  * deletion and leaks into the next session under the same id.
  *
  * Every module-level container must therefore be classified here. `cleared` entries
@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 const SOURCE_PATHS = [
   fileURLToPath(new URL('../ws/handler.ts', import.meta.url)),
   fileURLToPath(new URL('../ws/agentTaskState.ts', import.meta.url)),
+  fileURLToPath(new URL('../services/sessionMutationCoordinator.ts', import.meta.url)),
 ]
 const CLEANUP_ENTRY = 'cleanupSessionRuntimeState'
 
@@ -57,7 +58,6 @@ const CONTAINERS: Record<string, Classification> = {
   prewarmedSessions: { kind: 'cleared' },
   runtimeExitStoppedSessions: { kind: 'cleared' },
   runtimeOverrides: { kind: 'cleared' },
-  runtimeTransitionPromises: { kind: 'cleared' },
   sessionDisconnectWatchers: { kind: 'cleared' },
   sessionSlashCommands: { kind: 'cleared' },
   sessionStartupPromises: { kind: 'cleared' },
@@ -92,21 +92,16 @@ const CONTAINERS: Record<string, Classification> = {
     kind: 'self-managed',
     reason: 'Re-entrancy guard added and removed around one awaited block.',
   },
-  sessionStartupRuntimeVersions: {
+  tails: {
     kind: 'self-managed',
     reason:
-      'Paired with sessionStartupPromises in a finally. A stale entry can outlive a cleanup that races an in-flight startup, but it is unreachable: the only read is gated on sessionStartupPromises, which cleanup does release.',
+      'The shared session-mutation coordinator removes each tail only after that operation settles. Runtime cleanup must not delete a pending tail, because doing so would let a new mutation overlap the old one.',
   },
 
-  runtimeOverrideVersions: {
-    kind: 'retained',
-    reason:
-      'Monotonic staleness guard for runtime overrides. Deleting it on cleanup would reset the counter, so an in-flight result captured before a bump could compare equal against a fresh 0 and be applied as current.',
-  },
   sessionTranscriptEpochs: {
     kind: 'retained',
     reason:
-      'Monotonic staleness guard for transcript loads (handler.ts checks the epoch after an await). Same reset hazard as runtimeOverrideVersions: a load that snapshotted epoch 0 before a clear bumped it to 1 would compare equal again once the entry is gone, and apply a stale transcript.',
+      'Monotonic staleness guard for transcript loads. Deleting it on cleanup would reset the counter, so a load that snapshotted epoch 0 before a clear bumped it to 1 could compare equal against a fresh 0 and apply stale history.',
   },
 }
 
@@ -116,7 +111,9 @@ const source = sources.join('\n')
 function declaredContainers(): string[] {
   return sources
     .flatMap((text) => [
-      ...text.matchAll(/^(?:export )?const ([a-zA-Z][a-zA-Z0-9]*) = new (?:Map|Set|WeakMap|WeakSet)\b/gm),
+      ...text.matchAll(
+        /^(?:(?:export )?const|[ \t]*private readonly) ([a-zA-Z][a-zA-Z0-9]*) = new (?:Map|Set|WeakMap|WeakSet)\b/gm,
+      ),
     ])
     .map((match) => match[1])
     .sort()
@@ -160,7 +157,7 @@ function clearedByCleanupClosure(): Set<string> {
 }
 
 describe('handler session-state cleanup', () => {
-  test('classifies every module-level container in handler.ts', () => {
+  test('classifies every module-level container in the registered session-state sources', () => {
     const declared = declaredContainers()
     const classified = Object.keys(CONTAINERS).sort()
 
@@ -223,5 +220,14 @@ describe('handler session-state cleanup', () => {
     expect(resetCleared.size).toBeGreaterThan(5)
     // Every container the reset clears must be a real container, not a stale name.
     expect([...resetCleared].filter((name) => !(name in CONTAINERS))).toEqual([])
+
+    // Production runtime cleanup deliberately leaves an in-flight mutation tail
+    // alone, but the suite-wide reset must be able to discard synthetic gates left
+    // by a failed test. Verify both sides of that delegation so moving the map behind
+    // the coordinator does not make the existing source audit blind to it.
+    expect(reset).toContain('sessionMutationCoordinator.resetForTests()')
+    expect(source).toMatch(
+      /resetForTests\(\): void \{[\s\S]*?this\.tails\.clear\(\)[\s\S]*?^  \}/m,
+    )
   })
 })
