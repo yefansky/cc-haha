@@ -78,6 +78,11 @@ export type AttachmentRef = {
 
 export const RUNTIME_CONFIG_APPLIED_EVENT = 'runtime_config_applied' as const
 
+export type PermissionResponseFailureCode =
+  | 'PERMISSION_REQUEST_NOT_FOUND'
+  | 'PERMISSION_SESSION_UNAVAILABLE'
+  | 'PERMISSION_DELIVERY_FAILED'
+
 export type ReplaceUserTurnState =
   | 'queued'
   | 'running'
@@ -142,6 +147,14 @@ export type ServerMessage =
       requestId: string
       permissionType: 'tool' | 'computer_use'
       allowed?: boolean
+    }
+  | {
+      type: 'permission_response_failed'
+      requestId: string
+      permissionType: 'tool'
+      code: PermissionResponseFailureCode
+      retryable: boolean
+      message: string
     }
   | {
       type: 'permission_requests_snapshot'

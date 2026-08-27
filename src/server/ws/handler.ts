@@ -1317,7 +1317,7 @@ function handlePermissionResponse(
   message: Extract<ClientMessage, { type: 'permission_response' }>
 ) {
   const { sessionId } = ws.data
-  const resolved = conversationService.respondToPermission(
+  const result = conversationService.respondToTrackedPermission(
     sessionId,
     message.requestId,
     message.allowed,
@@ -1326,15 +1326,45 @@ function handlePermissionResponse(
     message.denyMessage,
     message.permissionUpdates,
   )
-  if (resolved) {
+  if (result.status === 'accepted') {
     sendToSession(sessionId, {
       type: 'permission_resolved',
       requestId: message.requestId,
       permissionType: 'tool',
       allowed: message.allowed,
     })
+    console.log(`[WS] Permission response for ${message.requestId}: ${message.allowed}`)
+    return
   }
-  console.log(`[WS] Permission response for ${message.requestId}: ${message.allowed}`)
+
+  if (result.status === 'delivery_failed') {
+    console.warn(
+      `[WS] Permission response transport failed for ${message.requestId} in ${sessionId}: ${result.error}`,
+    )
+    sendMessage(ws, {
+      type: 'permission_response_failed',
+      requestId: message.requestId,
+      permissionType: 'tool',
+      code: 'PERMISSION_DELIVERY_FAILED',
+      retryable: true,
+      message: 'Permission response could not be sent.',
+    })
+    return
+  }
+
+  const requestMissing = result.reason === 'unknown_request'
+  sendMessage(ws, {
+    type: 'permission_response_failed',
+    requestId: message.requestId,
+    permissionType: 'tool',
+    code: requestMissing
+      ? 'PERMISSION_REQUEST_NOT_FOUND'
+      : 'PERMISSION_SESSION_UNAVAILABLE',
+    retryable: false,
+    message: requestMissing
+      ? 'Permission request was not found.'
+      : 'Permission session is unavailable.',
+  })
 }
 
 function handleComputerUsePermissionResponse(

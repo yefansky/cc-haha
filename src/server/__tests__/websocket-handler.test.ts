@@ -3890,7 +3890,10 @@ describe('WebSocket handler session isolation', () => {
     const sessionId = `permission-resolution-${crypto.randomUUID()}`
     const first = makeClientSocket(sessionId)
     const second = makeClientSocket(sessionId)
-    spyOn(conversationService, 'respondToPermission').mockReturnValue(true)
+    spyOn(conversationService, 'respondToTrackedPermission').mockReturnValue({
+      status: 'accepted',
+      transport: 'sent',
+    })
     spyOn(computerUseApprovalService, 'resolveApproval').mockReturnValue(true)
 
     handleWebSocket.open(first)
@@ -3936,6 +3939,59 @@ describe('WebSocket handler session isolation', () => {
         permissionType: 'computer_use',
         allowed: false,
       })
+    }
+  })
+
+  it('returns tracked tool permission failures only to the initiating client', () => {
+    const cases = [
+      {
+        result: { status: 'rejected', reason: 'unknown_request' } as const,
+        code: 'PERMISSION_REQUEST_NOT_FOUND',
+        retryable: false,
+        message: 'Permission request was not found.',
+      },
+      {
+        result: { status: 'rejected', reason: 'session_unavailable' } as const,
+        code: 'PERMISSION_SESSION_UNAVAILABLE',
+        retryable: false,
+        message: 'Permission session is unavailable.',
+      },
+      {
+        result: { status: 'delivery_failed', error: 'private socket detail' } as const,
+        code: 'PERMISSION_DELIVERY_FAILED',
+        retryable: true,
+        message: 'Permission response could not be sent.',
+      },
+    ]
+
+    for (const [index, failure] of cases.entries()) {
+      const sessionId = `permission-failure-${index}-${crypto.randomUUID()}`
+      const initiating = makeClientSocket(sessionId)
+      const observer = makeClientSocket(sessionId)
+      spyOn(conversationService, 'respondToTrackedPermission').mockReturnValue(failure.result)
+
+      handleWebSocket.open(initiating)
+      handleWebSocket.open(observer)
+      initiating.sent.length = 0
+      observer.sent.length = 0
+
+      handleWebSocket.message(initiating, JSON.stringify({
+        type: 'permission_response',
+        requestId: `permission-${index}`,
+        allowed: true,
+      }))
+
+      expect(initiating.sent.map((payload) => JSON.parse(payload))).toEqual([{
+        type: 'permission_response_failed',
+        requestId: `permission-${index}`,
+        permissionType: 'tool',
+        code: failure.code,
+        retryable: failure.retryable,
+        message: failure.message,
+      }])
+      expect(observer.sent).toEqual([])
+      expect(initiating.sent.join('\n')).not.toContain('private socket detail')
+      expect(initiating.sent.join('\n')).not.toContain('PARSE_ERROR')
     }
   })
 
