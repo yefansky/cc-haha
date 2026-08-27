@@ -22,10 +22,15 @@ import { fileURLToPath } from 'node:url'
  * containers live in `agentTaskState.ts` while `cleanupSessionRuntimeState` still
  * calls it from `handler.ts`. Add a file here when a further cut moves state out.
  */
+const REPLACE_OPERATION_REGISTRY_PATH = fileURLToPath(
+  new URL('../ws/replaceUserTurnOperationRegistry.ts', import.meta.url),
+)
+
 const SOURCE_PATHS = [
   fileURLToPath(new URL('../ws/handler.ts', import.meta.url)),
   fileURLToPath(new URL('../ws/agentTaskState.ts', import.meta.url)),
   fileURLToPath(new URL('../services/sessionMutationCoordinator.ts', import.meta.url)),
+  REPLACE_OPERATION_REGISTRY_PATH,
 ]
 const CLEANUP_ENTRY = 'cleanupSessionRuntimeState'
 
@@ -97,13 +102,34 @@ const CONTAINERS: Record<string, Classification> = {
     reason:
       'The shared session-mutation coordinator removes each tail only after that operation settles. Runtime cleanup must not delete a pending tail, because doing so would let a new mutation overlap the old one.',
   },
+  activeOperationBySession: {
+    kind: 'self-managed',
+    reason:
+      'The replace-operation registry releases the active-operation claim only when the operation settles. Runtime cleanup must not release queued, running, admitted, or indeterminate work.',
+  },
+  targetClaimsBySession: {
+    kind: 'self-managed',
+    reason:
+      'The replace-operation registry releases target claims through settlement or terminal-record eviction. Runtime cleanup must preserve them so conflicting replacements stay rejected.',
+  },
 
   sessionTranscriptEpochs: {
     kind: 'retained',
     reason:
       'Monotonic staleness guard for transcript loads. Deleting it on cleanup would reset the counter, so a load that snapshotted epoch 0 before a clear bumped it to 1 could compare equal against a fresh 0 and apply stale history.',
   },
+  recordsBySession: {
+    kind: 'retained',
+    reason:
+      'The replace-operation registry retains active work and bounded terminal acknowledgements for retry recovery and idempotency. Runtime cleanup must not erase either lifetime.',
+  },
 }
+
+const REPLACE_OPERATION_REGISTRY_CONTAINERS = [
+  'recordsBySession',
+  'targetClaimsBySession',
+  'activeOperationBySession',
+] as const
 
 const sources = SOURCE_PATHS.map((path) => readFileSync(path, 'utf8'))
 const source = sources.join('\n')
@@ -229,5 +255,22 @@ describe('handler session-state cleanup', () => {
     expect(source).toMatch(
       /resetForTests\(\): void \{[\s\S]*?this\.tails\.clear\(\)[\s\S]*?^  \}/m,
     )
+  })
+
+  test('leaves replace-operation recovery state to the registry lifecycle', () => {
+    const cleared = clearedByCleanupClosure()
+    expect(
+      REPLACE_OPERATION_REGISTRY_CONTAINERS.filter(name => cleared.has(name)),
+      'ordinary handler cleanup must preserve active operations and terminal acknowledgements',
+    ).toEqual([])
+
+    const registrySource = readFileSync(REPLACE_OPERATION_REGISTRY_PATH, 'utf8')
+    for (const name of REPLACE_OPERATION_REGISTRY_CONTAINERS) {
+      const clearCalls = [...registrySource.matchAll(new RegExp(`this\\.${name}\\.clear\\(\\)`, 'g'))]
+      expect(clearCalls.length, `${name} must only be cleared by the registry test reset`).toBe(1)
+      expect(registrySource).toMatch(
+        new RegExp(`resetForTests\\(\\): void \\{[\\s\\S]*?this\\.${name}\\.clear\\(\\)[\\s\\S]*?^  \\}`, 'm'),
+      )
+    }
   })
 })

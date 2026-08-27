@@ -16,6 +16,22 @@ export type PermissionMode =
   | 'dontAsk'
   | 'auto'
 
+export type ReplaceUserTurnRequest = {
+  type: 'replace_user_turn'
+  operationId: string
+  targetUserMessageId: string
+  expectedLatestUserMessageId: string
+  expectedContent: string
+  replacementMessageUuid: string
+  content: string
+  attachments?: AttachmentRef[]
+}
+
+export type ReplaceUserTurnStatusRequest = {
+  type: 'replace_user_turn_status'
+  operationId: string
+}
+
 export type ClientMessage =
   | { type: 'prewarm_session' }
   | { type: 'sync_state' }
@@ -43,6 +59,8 @@ export type ClientMessage =
   | { type: 'set_runtime_config'; providerId: string | null; modelId: string; effortLevel?: string }
   | { type: 'stop_generation' }
   | { type: 'stop_background_task'; taskId: string }
+  | ReplaceUserTurnRequest
+  | ReplaceUserTurnStatusRequest
   | { type: 'ping' }
 
 export type AttachmentRef = {
@@ -59,6 +77,45 @@ export type AttachmentRef = {
 // ============================================================================
 
 export const RUNTIME_CONFIG_APPLIED_EVENT = 'runtime_config_applied' as const
+
+export type ReplaceUserTurnState =
+  | 'queued'
+  | 'running'
+  | 'admitted'
+  | 'committed'
+  | 'failed'
+  | 'indeterminate'
+
+export type ReplaceUserTurnPhase =
+  | 'preflight'
+  | 'stopping'
+  | 'trimmed'
+  | 'starting_runtime'
+  | 'admitting'
+  | 'awaiting_replay'
+
+export type ReplaceUserTurnError = {
+  code: string
+  message: string
+  retryable: boolean
+  newOperationRequired: boolean
+}
+
+export type ReplaceUserTurnResult = {
+  messagesRemoved: number
+}
+
+export type ReplaceUserTurnAck = {
+  type: 'replace_user_turn_ack'
+  operationId: string
+  targetUserMessageId: string
+  replacementMessageUuid: string
+  state: ReplaceUserTurnState
+  phase?: ReplaceUserTurnPhase
+  result?: ReplaceUserTurnResult
+  error?: ReplaceUserTurnError
+  updatedAt: number
+}
 
 export type ServerMessage =
   | { type: 'connected'; sessionId: string }
@@ -133,6 +190,7 @@ export type ServerMessage =
   | { type: 'team_deleted'; teamName: string }
   | { type: 'task_update'; taskId: string; status: string; progress?: string }
   | { type: 'session_title_updated'; sessionId: string; title: string }
+  | ReplaceUserTurnAck
 
 export type TokenUsage = {
   input_tokens: number
