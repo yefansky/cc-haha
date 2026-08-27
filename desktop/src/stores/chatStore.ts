@@ -94,7 +94,11 @@ export type PendingPermission = {
   toolUseId?: string
   input: unknown
   description?: string
+  /** The response was handed to the local websocket manager, not yet accepted by the server. */
+  responseState?: 'submitting'
 }
+
+export type PermissionResponseDispatchResult = 'dispatched' | 'not-dispatched'
 
 type PendingPermissions = Record<string, PendingPermission>
 
@@ -325,7 +329,7 @@ type ChatStore = {
       denyMessage?: string
       permissionUpdates?: PermissionUpdate[]
     },
-  ) => void
+  ) => PermissionResponseDispatchResult
   respondToComputerUsePermission: (
     sessionId: string,
     requestId: string,
@@ -1601,7 +1605,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   respondToPermission: (sessionId, requestId, allowed, options) => {
-    wsManager.send(sessionId, {
+    const pendingPermission = getPendingPermission(get().sessions[sessionId], requestId)
+    // AskUserQuestion keeps its card until an authoritative server event settles it.
+    // Other permission dialogs retain their existing optimistic cleanup in this phase.
+    const keepUntilResolved = pendingPermission?.toolName === 'AskUserQuestion'
+    if (keepUntilResolved && pendingPermission.responseState === 'submitting') {
+      return 'not-dispatched'
+    }
+
+    const response = {
       type: 'permission_response',
       requestId,
       allowed,
@@ -1609,7 +1621,38 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ...(options?.updatedInput ? { updatedInput: options.updatedInput } : {}),
       ...(options?.denyMessage ? { denyMessage: options.denyMessage } : {}),
       ...(options?.permissionUpdates?.length ? { permissionUpdates: options.permissionUpdates } : {}),
-    })
+    } as const
+
+    if (keepUntilResolved) {
+      try {
+        wsManager.send(sessionId, response)
+      } catch {
+        return 'not-dispatched'
+      }
+      set((s) => ({
+        sessions: updateSessionIn(s.sessions, sessionId, (session) => {
+          const pendingPermissions = getPendingPermissionRecord(session)
+          const current = pendingPermissions[requestId]
+          if (!current || current.toolName !== 'AskUserQuestion') return {}
+
+          const submittingPermission: PendingPermission = {
+            ...current,
+            responseState: 'submitting',
+          }
+          pendingPermissions[requestId] = submittingPermission
+          return {
+            pendingPermissions,
+            pendingPermission: session.pendingPermission?.requestId === requestId
+              ? submittingPermission
+              : session.pendingPermission ?? submittingPermission,
+            chatState: 'permission_pending',
+          }
+        }),
+      }))
+      return 'dispatched'
+    }
+
+    wsManager.send(sessionId, response)
     set((s) => ({
       sessions: updateSessionIn(s.sessions, sessionId, (session) => {
         const pendingPermissions = getPendingPermissionRecord(session)
@@ -1626,6 +1669,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
       }),
     }))
+    return 'dispatched'
   },
 
   respondToComputerUsePermission: (sessionId, requestId, response) => {
@@ -2811,12 +2855,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         update((s) => {
           const askUserQuestionToolUseId =
             msg.toolName === 'AskUserQuestion' ? msg.toolUseId : undefined
+          const previousPermission = getPendingPermissionRecord(s)[msg.requestId]
           const pendingPermission: PendingPermission = {
             requestId: msg.requestId,
             toolName: msg.toolName,
             toolUseId: msg.toolUseId,
             input: msg.input,
             description: msg.description,
+            ...(previousPermission?.responseState
+              ? { responseState: previousPermission.responseState }
+              : {}),
           }
           const pendingPermissions = {
             ...getPendingPermissionRecord(s),

@@ -3712,6 +3712,116 @@ describe('chatStore history mapping', () => {
     expect(session?.chatState).toBe('tool_executing')
   })
 
+  it('keeps AskUserQuestion pending as submitting until the server resolves it', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    const request = {
+      type: 'permission_request' as const,
+      requestId: 'perm-ask-submit',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'tool-ask-submit',
+      input: { questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }] },
+    }
+
+    store.handleServerMessage(TEST_SESSION_ID, request)
+    store.respondToPermission(TEST_SESSION_ID, request.requestId, true)
+
+    let session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    expect(session?.pendingPermissions?.[request.requestId]).toMatchObject({
+      requestId: request.requestId,
+      responseState: 'submitting',
+    })
+    expect(session?.pendingPermission).toMatchObject({
+      requestId: request.requestId,
+      responseState: 'submitting',
+    })
+    expect(session?.chatState).toBe('permission_pending')
+
+    store.respondToPermission(TEST_SESSION_ID, request.requestId, true)
+    expect(sendMock).toHaveBeenCalledTimes(1)
+
+    store.handleServerMessage(TEST_SESSION_ID, {
+      ...request,
+      input: { questions: [{ question: 'Ship now?', options: [{ label: 'Yes' }] }] },
+    })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+      ?.pendingPermissions?.[request.requestId]).toMatchObject({
+      input: { questions: [{ question: 'Ship now?', options: [{ label: 'Yes' }] }] },
+      responseState: 'submitting',
+    })
+
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: [request.requestId],
+      computerUseRequestIds: [],
+      turnActive: true,
+    })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+      ?.pendingPermissions?.[request.requestId]?.responseState).toBe('submitting')
+
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_resolved',
+      requestId: request.requestId,
+      permissionType: 'tool',
+      allowed: true,
+    })
+    session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    expect(session?.pendingPermissions).not.toHaveProperty(request.requestId)
+    expect(session?.pendingPermission).toBeNull()
+  })
+
+  it('removes a submitting AskUserQuestion when the authoritative snapshot excludes it', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'perm-ask-snapshot',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'tool-ask-snapshot',
+      input: { questions: [{ question: 'Keep?', options: [{ label: 'Yes' }] }] },
+    })
+    store.respondToPermission(TEST_SESSION_ID, 'perm-ask-snapshot', true)
+
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: [],
+      computerUseRequestIds: [],
+      turnActive: true,
+    })
+
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    expect(session?.pendingPermissions).not.toHaveProperty('perm-ask-snapshot')
+    expect(session?.pendingPermission).toBeNull()
+  })
+
+  it('keeps AskUserQuestion retryable when the local websocket send throws', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'perm-ask-retry',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'tool-ask-retry',
+      input: { questions: [{ question: 'Retry?', options: [{ label: 'Yes' }] }] },
+    })
+    sendMock.mockImplementationOnce(() => { throw new Error('socket write failed') })
+
+    expect(() => {
+      store.respondToPermission(TEST_SESSION_ID, 'perm-ask-retry', true)
+    }).not.toThrow()
+
+    let pending = useChatStore.getState().sessions[TEST_SESSION_ID]
+      ?.pendingPermissions?.['perm-ask-retry']
+    expect(pending).toBeDefined()
+    expect(pending?.responseState).toBeUndefined()
+
+    store.respondToPermission(TEST_SESSION_ID, 'perm-ask-retry', true)
+    pending = useChatStore.getState().sessions[TEST_SESSION_ID]
+      ?.pendingPermissions?.['perm-ask-retry']
+    expect(sendMock).toHaveBeenCalledTimes(2)
+    expect(pending?.responseState).toBe('submitting')
+  })
+
   it('removes replayed or cancelled requests when the server resolves them', () => {
     useChatStore.setState({
       sessions: {

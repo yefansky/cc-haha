@@ -81,7 +81,6 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   const [activeTab, setActiveTab] = useState(0)
   const [selections, setSelections] = useState<QuestionSelections>({})
   const [freeTexts, setFreeTexts] = useState<QuestionFreeTexts>({})
-  const [hasSubmitted, setHasSubmitted] = useState(false)
   const [hasRequestedChat, setHasRequestedChat] = useState(false)
   const composingRef = useRef(false)
 
@@ -120,14 +119,15 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   const safeActiveTab = Math.min(activeTab, questions.length - 1)
   const activeQuestion = questions[safeActiveTab]
 
-  const submitted = hasTerminalResult || hasSubmitted || hasRequestedChat
+  const submitting = pendingRequest?.responseState === 'submitting'
+  const submitted = hasTerminalResult && !submitting
   const terminalWithoutAnswers = submitted && !hasStructuredAnswers && resultText.length > 0
   const readOnly = !submitted && !pendingRequest
   const authoritativeHistory = readOnly && connectionSnapshotReady
   const settled = submitted || readOnly
 
   const handleSelect = (qIndex: number, label: string) => {
-    if (settled) return
+    if (settled || submitting) return
     setSelections((prev) => {
       const question = questions[qIndex]
       const selected = prev[qIndex] ?? []
@@ -159,7 +159,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   }
 
   const handleFreeTextChange = (qIndex: number, value: string) => {
-    if (settled) return
+    if (settled || submitting) return
     setFreeTexts((prev) => {
       const next = { ...prev }
       if (value) {
@@ -180,7 +180,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   }
 
   const handleSubmit = () => {
-    if (submitted) return
+    if (submitted || submitting) return
 
     const parts: string[] = []
     for (let i = 0; i < questions.length; i++) {
@@ -203,7 +203,6 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
       return acc
     }, {})
 
-    setHasSubmitted(true)
     respondToPermission(targetSessionId, pendingRequest.requestId, true, {
       updatedInput: {
         ...inputObject,
@@ -223,7 +222,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
    * question in any of the options is exactly when nothing is filled in.
    */
   const handleChatAboutThis = () => {
-    if (submitted) return
+    if (submitted || submitting) return
     if (!targetSessionId || !pendingRequest) return
 
     // Carry whatever was already picked, so switching to a conversation isn't
@@ -237,10 +236,10 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
       })
       .join('\n')
 
-    setHasRequestedChat(true)
-    respondToPermission(targetSessionId, pendingRequest.requestId, false, {
+    const dispatchResult = respondToPermission(targetSessionId, pendingRequest.requestId, false, {
       denyMessage: questionsWithAnswers,
     })
+    if (dispatchResult === 'dispatched') setHasRequestedChat(true)
   }
 
   // All questions must be answered (via selection or free text) to enable submit
@@ -331,12 +330,12 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
                 <button
                   key={optIndex}
                   onClick={() => handleSelect(safeActiveTab, opt.label)}
-                  disabled={settled}
+                  disabled={settled || submitting}
                   className={`w-full text-left px-4 py-3 rounded-[var(--radius-md)] border transition-all duration-150 cursor-pointer ${
                     isSelected
                       ? 'border-[var(--color-secondary)] bg-[var(--color-secondary-container)]'
                       : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-outline)] hover:bg-[var(--color-surface-container-low)]'
-                  } ${settled ? 'cursor-default' : ''}`}
+                  } ${settled || submitting ? 'cursor-default' : ''}`}
                 >
                   <div className="flex items-start gap-3">
                     {/* Selection indicator */}
@@ -380,12 +379,13 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
             </label>
             <textarea
               value={freeTexts[safeActiveTab] ?? ''}
+              disabled={submitting}
               onChange={(e) => handleFreeTextChange(safeActiveTab, e.target.value)}
               onCompositionStart={() => { composingRef.current = true }}
               onCompositionEnd={() => { composingRef.current = false }}
               onKeyDown={(e) => {
                 if (composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229) return
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && allAnswered) {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && allAnswered && !submitting) {
                   e.preventDefault()
                   handleSubmit()
                 }
@@ -422,7 +422,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
           <Button
             variant="primary"
             size="sm"
-            disabled={!allAnswered || !pendingRequest}
+            disabled={!allAnswered || !pendingRequest || submitting}
             onClick={handleSubmit}
             icon={
               <span className="material-symbols-outlined text-[14px]">send</span>
@@ -433,7 +433,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
           <Button
             variant="secondary"
             size="sm"
-            disabled={!pendingRequest}
+            disabled={!pendingRequest || submitting}
             onClick={handleChatAboutThis}
             title={t('question.chatAboutThisHint')}
             icon={

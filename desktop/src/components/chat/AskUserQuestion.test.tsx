@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 
 const { sendMock } = vi.hoisted(() => ({
   sendMock: vi.fn(),
@@ -143,6 +143,61 @@ describe('AskUserQuestion', () => {
         },
       },
     })
+  })
+
+  it('keeps a dispatched answer in submitting state without claiming it was accepted', () => {
+    render(
+      <AskUserQuestion
+        toolUseId="tool-1"
+        input={{
+          questions: [{
+            question: 'Should we persist data?',
+            options: [{ label: 'No' }, { label: 'Yes' }],
+          }],
+        }}
+      />,
+    )
+
+    const option = screen.getByRole('button', { name: /^No$/ })
+    fireEvent.click(option)
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+    expect(useChatStore.getState().sessions[ACTIVE_TAB]
+      ?.pendingPermissions?.['perm-1']).toMatchObject({ responseState: 'submitting' })
+    expect(option).toHaveProperty('disabled', true)
+    expect(screen.getByPlaceholderText('Type your answer...')).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: /submit/i })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: /chat about this/i })).toHaveProperty('disabled', true)
+    expect(screen.queryByText('Answered')).toBeNull()
+    expect(screen.queryByText('Completed')).toBeNull()
+  })
+
+  it('stays actionable when the local websocket send throws', () => {
+    sendMock.mockImplementationOnce(() => { throw new Error('socket write failed') })
+    render(
+      <AskUserQuestion
+        toolUseId="tool-1"
+        input={{
+          questions: [{
+            question: 'Should we persist data?',
+            options: [{ label: 'No' }, { label: 'Yes' }],
+          }],
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^No$/ }))
+    expect(() => {
+      fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    }).not.toThrow()
+
+    expect(screen.getByRole('button', { name: /^No$/ })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: /submit/i })).toHaveProperty('disabled', false)
+    expect(screen.queryByText('Answered')).toBeNull()
+    expect(screen.queryByText('Completed')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    expect(sendMock).toHaveBeenCalledTimes(2)
   })
 
   it('allows multiple selections when a question is marked multiSelect', () => {
@@ -482,26 +537,60 @@ describe('AskUserQuestion', () => {
       })
     })
 
-    it('reports the handoff instead of claiming the question was answered', () => {
+    it('does not report the handoff as accepted while the response is only submitting', () => {
       render(<AskUserQuestion toolUseId="tool-1" input={SCOPE_INPUT} />)
 
       fireEvent.click(screen.getByRole('button', { name: /^Tabs$/ }))
       fireEvent.click(screen.getByRole('button', { name: /chat about this/i }))
 
-      expect(screen.getByText(/Handed back to Claude/)).toBeTruthy()
+      expect(screen.queryByText(/Handed back to Claude/)).toBeNull()
       expect(screen.queryByText(/Answered:/)).toBeNull()
-      expect(screen.queryByRole('button', { name: /chat about this/i })).toBeNull()
+      expect(screen.getByRole('button', { name: /chat about this/i })).toHaveProperty(
+        'disabled',
+        true,
+      )
     })
 
     // Regression: the status badge is rendered from its own branch, so it kept
     // reading "Answered" after a handoff even while the body said otherwise.
-    it('does not badge the handoff as answered', () => {
+    it('does not badge a submitting handoff as answered or handed off', () => {
       render(<AskUserQuestion toolUseId="tool-1" input={SCOPE_INPUT} />)
 
       fireEvent.click(screen.getByRole('button', { name: /^Tabs$/ }))
       fireEvent.click(screen.getByRole('button', { name: /chat about this/i }))
 
+      expect(screen.queryByText('Handed off')).toBeNull()
+      expect(screen.queryByText('Answered')).toBeNull()
+    })
+
+    it('reports the handoff only after a terminal tool result arrives', () => {
+      const { rerender } = render(
+        <AskUserQuestion toolUseId="tool-1" input={SCOPE_INPUT} />,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: /chat about this/i }))
+      expect(screen.queryByText(/Handed back to Claude/)).toBeNull()
+
+      rerender(
+        <AskUserQuestion
+          toolUseId="tool-1"
+          input={SCOPE_INPUT}
+          result="Continue by asking the user for clarification."
+        />,
+      )
+
+      expect(screen.queryByText(/Handed back to Claude/)).toBeNull()
+      act(() => {
+        useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+          type: 'permission_resolved',
+          requestId: 'perm-1',
+          permissionType: 'tool',
+          allowed: false,
+        })
+      })
+
       expect(screen.getByText('Handed off')).toBeTruthy()
+      expect(screen.getByText(/Handed back to Claude/)).toBeTruthy()
       expect(screen.queryByText('Answered')).toBeNull()
     })
 
