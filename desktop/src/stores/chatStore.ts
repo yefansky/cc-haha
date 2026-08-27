@@ -2764,6 +2764,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
 
       case 'permission_request':
+        if (msg.toolName === 'AskUserQuestion' && msg.toolUseId) {
+          // canUseTool may run before the stream emits tool_use_complete. The
+          // permission request already carries the authoritative, fully parsed
+          // input, so leaving the matching tool block pending hides the actual
+          // question behind a generic "Preparing tool" card until the turn is
+          // stopped. Cancel any delayed partial-input flush before promoting it.
+          clearPendingToolInputDelta(sessionId)
+        }
         notifyDesktop({
           dedupeKey: `permission:${msg.requestId}`,
           cooldownScope: 'permission-prompt',
@@ -2775,6 +2783,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           target: { type: 'session', sessionId },
         })
         update((s) => {
+          const askUserQuestionToolUseId =
+            msg.toolName === 'AskUserQuestion' ? msg.toolUseId : undefined
           const pendingPermission: PendingPermission = {
             requestId: msg.requestId,
             toolName: msg.toolName,
@@ -2788,6 +2798,30 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
           const hasPermissionMessage = s.messages.some((message) =>
             message.type === 'permission_request' && message.requestId === msg.requestId)
+          const messages = askUserQuestionToolUseId
+            ? upsertToolUseMessage(s.messages, askUserQuestionToolUseId, (existing) => ({
+                id: existing?.id ?? nextId(),
+                type: 'tool_use',
+                toolName: msg.toolName,
+                toolUseId: askUserQuestionToolUseId,
+                originalToolUseId: existing?.originalToolUseId,
+                input: msg.input,
+                timestamp: existing?.timestamp ?? Date.now(),
+                parentToolUseId: existing?.parentToolUseId,
+                isPending: false,
+              }))
+            : hasPermissionMessage
+              ? s.messages
+              : [...s.messages, {
+                  id: nextId(),
+                  type: 'permission_request' as const,
+                  requestId: msg.requestId,
+                  toolName: msg.toolName,
+                  toolUseId: msg.toolUseId,
+                  input: msg.input,
+                  description: msg.description,
+                  timestamp: Date.now(),
+                }]
 
           return {
             pendingPermission,
@@ -2796,19 +2830,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             activeThinkingId: null,
             apiRetry: null,
             streamingFallback: null,
-            messages:
-              msg.toolName === 'AskUserQuestion' || hasPermissionMessage
-                ? s.messages
-                : [...s.messages, {
-                    id: nextId(),
-                    type: 'permission_request',
-                    requestId: msg.requestId,
-                    toolName: msg.toolName,
-                    toolUseId: msg.toolUseId,
-                    input: msg.input,
-                    description: msg.description,
-                    timestamp: Date.now(),
-                  }],
+            messages,
+            ...(askUserQuestionToolUseId && s.activeToolUseId === askUserQuestionToolUseId
+              ? {
+                  activeToolUseId: null,
+                  activeToolName: null,
+                  streamingToolInput: '',
+                }
+              : {}),
           }
         })
         break

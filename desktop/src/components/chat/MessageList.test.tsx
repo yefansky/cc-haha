@@ -1028,6 +1028,53 @@ describe('MessageList nested tool calls', () => {
     })
   })
 
+  it('shows an actionable AskUserQuestion as soon as its permission request arrives', () => {
+    const questionInput = {
+      questions: [
+        {
+          question: 'How should this change proceed?',
+          options: [
+            { label: 'Create a task' },
+            { label: 'Discuss only' },
+          ],
+        },
+      ],
+    }
+    const store = useChatStore.getState()
+
+    // The SDK can ask for permission before the trailing tool_use_complete event.
+    // Drive that real ordering instead of constructing an already-consistent card.
+    store.handleServerMessage(ACTIVE_TAB, {
+      type: 'content_start',
+      blockType: 'tool_use',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'ask-race-tool',
+    })
+    store.handleServerMessage(ACTIVE_TAB, {
+      type: 'permission_request',
+      requestId: 'ask-race-permission',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'ask-race-tool',
+      input: questionInput,
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByText('How should this change proceed?')).toBeTruthy()
+    const option = screen.getByRole('button', { name: /Create a task/ }) as HTMLButtonElement
+    expect(option.disabled).toBe(false)
+    fireEvent.click(option)
+    expect((screen.getByRole('button', { name: /Submit/ }) as HTMLButtonElement).disabled).toBe(false)
+    expect(useChatStore.getState().sessions[ACTIVE_TAB]?.messages).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_use',
+        toolUseId: 'ask-race-tool',
+        input: questionInput,
+        isPending: false,
+      }),
+    )
+  })
+
   it('keeps resolved AskUserQuestion history visible when filtering active duplicates', () => {
     const messages: UIMessage[] = [
       {
