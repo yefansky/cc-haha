@@ -1101,7 +1101,11 @@ describe('MessageList nested tool calls', () => {
     const option = screen.getByRole('button', { name: /Create a task/ }) as HTMLButtonElement
     expect(option.disabled).toBe(false)
     fireEvent.click(option)
-    expect((screen.getByRole('button', { name: /Submit/ }) as HTMLButtonElement).disabled).toBe(false)
+    const submit = screen.getByRole('button', { name: /Submit/ }) as HTMLButtonElement
+    expect(submit.disabled).toBe(false)
+    fireEvent.click(submit)
+    expect(useChatStore.getState().sessions[ACTIVE_TAB]
+      ?.pendingPermissions?.['ask-race-permission']?.responseState).toBe('submitting')
     expect(useChatStore.getState().sessions[ACTIVE_TAB]?.messages).toContainEqual(
       expect.objectContaining({
         type: 'tool_use',
