@@ -406,9 +406,32 @@ describe('user_decision_response websocket route', () => {
 
     expect(start).not.toHaveBeenCalled()
     expect(orphan).not.toHaveBeenCalled()
-    expect(ws.sent.map((payload) => JSON.parse(payload))).toContainEqual(
-      expect.objectContaining({ state: 'already_resolved' }),
-    )
+    const messages = ws.sent.map((payload) => JSON.parse(payload) as {
+      type?: string
+      state?: string
+      [key: string]: unknown
+    })
+    const resultIndex = messages.findIndex((message) =>
+      message.type === 'user_decision_response_result' &&
+      message.state === 'already_resolved')
+    const snapshotIndex = messages.findIndex((message) =>
+      message.type === 'permission_requests_snapshot')
+    expect(resultIndex).toBeGreaterThanOrEqual(0)
+    expect(snapshotIndex).toBe(resultIndex + 1)
+    expect(messages[snapshotIndex]).toMatchObject({
+      toolRequestIds: [],
+      computerUseRequestIds: [],
+      turnActive: false,
+      userDecisions: {
+        transcriptEvidenceComplete: true,
+        userDecisionResponseProtocol: 'orphaned-permission-v1',
+        decisions: [{
+          decisionId: toolUseId,
+          semanticState: { status: 'answered' },
+          runtimeBinding: { status: 'detached' },
+        }],
+      },
+    })
   })
 
   test('retains delivery holds on ordinary close and clears them only for permanent deletion', async () => {

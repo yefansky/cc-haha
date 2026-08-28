@@ -4494,6 +4494,48 @@ describe('chatStore history mapping', () => {
       }
     })
 
+    it('clears an already-resolved hold from the following authoritative terminal snapshot', () => {
+      const store = useChatStore.getState()
+      const decisionId = 'decision-already-resolved'
+      receiveProtocolSnapshot(decisionId)
+      respondWithAnswer(decisionId)
+      const { attemptId } = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId,
+        attemptId,
+        state: 'already_resolved',
+      } as never)
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]).toMatchObject({ submitting: true, terminal: false })
+
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: false,
+        userDecisions: protocolSnapshot(decisionId, {
+          semanticState: { status: 'answered' },
+          response: {
+            kind: 'answer',
+            answers: { [`Question for ${decisionId}?`]: 'Continue' },
+          },
+        }),
+      } as never)
+
+      const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+      expect(session?.userDecisionResponseAttempts).not.toHaveProperty(decisionId)
+      expect(selectAskUserDecisionProjection(session).views[0]).toMatchObject({
+        submitting: false,
+        terminal: true,
+        readOnly: true,
+      })
+      expect(sendMock.mock.calls.some(([, message]) =>
+        (message as { type?: string }).type === 'sync_state')).toBe(false)
+    })
+
     it('lets terminal evidence clear a hold before its ack and ignores that late ack', () => {
       const store = useChatStore.getState()
       for (const evidence of ['tool_result', 'snapshot'] as const) {

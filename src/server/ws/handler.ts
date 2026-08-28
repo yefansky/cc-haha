@@ -1453,7 +1453,8 @@ async function handleUserDecisionResponse(
 
   const { sessionId } = ws.data
   await enqueueRuntimeTransition(sessionId, async () => {
-    const snapshot = await readFreshUserDecisionSnapshot(sessionId)
+    const freshSnapshot = await readFreshPermissionRequestsSnapshot(sessionId)
+    const snapshot = freshSnapshot.userDecisions
     const capability = selectUserDecisionDeliveryCapability(
       snapshot,
       validated.decisionId,
@@ -1470,6 +1471,7 @@ async function handleUserDecisionResponse(
         attemptId: validated.attemptId,
         state: 'already_resolved',
       })
+      sendMessage(ws, buildPermissionRequestsSnapshotMessage(freshSnapshot))
       return
     }
     if (capability.status === 'unavailable') {
@@ -1625,18 +1627,59 @@ function isResponseCompleteForDecision(
     answers.every(([question, answer]) => expected.has(question) && answer.trim().length > 0)
 }
 
-async function readFreshUserDecisionSnapshot(
+type FreshPermissionRequestsSnapshot = Readonly<{
+  pendingRequests: ReturnType<typeof conversationService.getPendingPermissionRequests>
+  computerUseRequests: ReturnType<typeof computerUseApprovalService.getPendingRequests>
+  turnActive: boolean
+  userDecisions: SessionUserDecisionSnapshot
+}>
+
+async function readFreshPermissionRequestsSnapshot(
   sessionId: string,
-): Promise<SessionUserDecisionSnapshot> {
+): Promise<FreshPermissionRequestsSnapshot> {
   const transcript = await sessionService.getSessionMessagesWithEvidence(sessionId)
-  const snapshot = projectUserDecisions({
+  return sampleFreshPermissionRequestsSnapshot(
     sessionId,
-    messages: transcript.messages,
-    pendingRequests: conversationService.getPendingPermissionRequests(sessionId),
-    transcriptEvidenceComplete: transcript.transcriptEvidenceComplete,
+    transcript.messages,
+    transcript.transcriptEvidenceComplete,
+  )
+}
+
+function sampleFreshPermissionRequestsSnapshot(
+  sessionId: string,
+  messages: Awaited<ReturnType<typeof sessionService.getSessionMessagesWithEvidence>>['messages'],
+  transcriptEvidenceComplete: boolean,
+): FreshPermissionRequestsSnapshot {
+  // Capture all mutable runtime projections without an await so the request ID
+  // lists and UserDecision bindings describe one authoritative boundary.
+  const pendingRequests = conversationService.getPendingPermissionRequests(sessionId)
+  const computerUseRequests = computerUseApprovalService.getPendingRequests(sessionId)
+  const turnActive = hasLiveUserTurnForClient(sessionId)
+  const userDecisions = projectUserDecisions({
+    sessionId,
+    messages,
+    pendingRequests,
+    transcriptEvidenceComplete,
   })
-  reconcileTerminalUserDecisionDeliveries(snapshot)
-  return snapshot
+  reconcileTerminalUserDecisionDeliveries(userDecisions)
+  return {
+    pendingRequests,
+    computerUseRequests,
+    turnActive,
+    userDecisions,
+  }
+}
+
+function buildPermissionRequestsSnapshotMessage(
+  snapshot: FreshPermissionRequestsSnapshot,
+): Extract<ServerMessage, { type: 'permission_requests_snapshot' }> {
+  return {
+    type: 'permission_requests_snapshot',
+    toolRequestIds: snapshot.pendingRequests.map(request => request.requestId),
+    computerUseRequestIds: snapshot.computerUseRequests.map(request => request.requestId),
+    turnActive: snapshot.turnActive,
+    userDecisions: toUserDecisionSnapshot(snapshot.userDecisions),
+  }
 }
 
 function reconcileTerminalUserDecisionDeliveries(
@@ -1873,9 +1916,9 @@ async function deliverDetachedUserDecision(
     return
   }
 
-  let snapshot: SessionUserDecisionSnapshot
+  let freshSnapshot: FreshPermissionRequestsSnapshot
   try {
-    snapshot = await readFreshUserDecisionSnapshot(sessionId)
+    freshSnapshot = await readFreshPermissionRequestsSnapshot(sessionId)
   } catch (error) {
     console.error('[WS] Could not read decision evidence after runtime shutdown:', error)
     failDetachedUserDecision(ws, request, lease, {
@@ -1884,6 +1927,7 @@ async function deliverDetachedUserDecision(
     })
     return
   }
+  const snapshot = freshSnapshot.userDecisions
   const capability = selectUserDecisionDeliveryCapability(snapshot, request.decisionId)
   if (capability.status === 'already_resolved') {
     userDecisionDeliveryCoordinator.reconcileTerminal(
@@ -1897,6 +1941,7 @@ async function deliverDetachedUserDecision(
       attemptId: request.attemptId,
       state: 'already_resolved',
     })
+    sendMessage(ws, buildPermissionRequestsSnapshotMessage(freshSnapshot))
     return
   }
   if (capability.status !== 'orphaned_recovery') {
@@ -4150,27 +4195,15 @@ function finalizeConnectionSnapshot(
     return
   }
 
-  // This capture and the projection run without an await between them. The ID
-  // lists and decisions therefore describe the same pending-request boundary.
-  const pendingRequests = conversationService.getPendingPermissionRequests(sessionId)
-  const computerUseRequests = computerUseApprovalService.getPendingRequests(sessionId)
-  const projected = projectUserDecisions({
+  const snapshot = sampleFreshPermissionRequestsSnapshot(
     sessionId,
     messages,
-    pendingRequests,
     transcriptEvidenceComplete,
-  })
-  reconcileTerminalUserDecisionDeliveries(projected)
+  )
 
-  replayPendingPermissionRequests(ws, pendingRequests, true)
-  replayPendingComputerUsePermissionRequests(ws, computerUseRequests, true)
-  sendMessageImmediately(ws, {
-    type: 'permission_requests_snapshot',
-    toolRequestIds: pendingRequests.map(request => request.requestId),
-    computerUseRequestIds: computerUseRequests.map(request => request.requestId),
-    turnActive: hasLiveUserTurnForClient(sessionId),
-    userDecisions: toUserDecisionSnapshot(projected),
-  })
+  replayPendingPermissionRequests(ws, snapshot.pendingRequests, true)
+  replayPendingComputerUsePermissionRequests(ws, snapshot.computerUseRequests, true)
+  sendMessageImmediately(ws, buildPermissionRequestsSnapshotMessage(snapshot))
 
   connectionSnapshotBarriers.delete(ws)
   // Preserve the established reconnect order: startup stop failures belong to
