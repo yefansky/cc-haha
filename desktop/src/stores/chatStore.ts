@@ -30,7 +30,6 @@ import type {
   BackgroundAgentTask,
   BackgroundAgentTaskUsage,
   ChatState,
-  ClientMessage,
   ComputerUsePermissionRequest,
   ComputerUsePermissionResponse,
   GoalEventAction,
@@ -350,6 +349,30 @@ function reconcileUserDecisionResponseAttempts(
   )
 }
 
+function resyncUserDecisionAttemptsAfterConnectionLoss(
+  attempts: UserDecisionResponseAttempts | undefined,
+): UserDecisionResponseAttempts {
+  if (!attempts) return {}
+  let changed = false
+  const reconciled = Object.fromEntries(
+    Object.entries(attempts).map(([decisionId, attempt]) => {
+      if (
+        attempt.state !== 'submitting' &&
+        attempt.state !== 'accepted' &&
+        attempt.state !== 'indeterminate'
+      ) return [decisionId, attempt]
+      changed = true
+      return [decisionId, Object.freeze({
+        attemptId: attempt.attemptId,
+        response: attempt.response,
+        state: 'rejected' as const,
+        nextAction: 'resync' as const,
+      })]
+    }),
+  )
+  return changed ? reconciled : attempts
+}
+
 function removeUserDecisionResponseAttempts(
   attempts: UserDecisionResponseAttempts | undefined,
   decisionIds: readonly (string | undefined)[],
@@ -450,30 +473,11 @@ export type AskUserDecisionProjection = {
   views: AskUserDecisionView[]
 }
 
-function canAutoReplayUserDecisionResponse(
-  snapshot: UserDecisionSnapshot,
-  decision: UserDecisionSnapshotEntry,
-  pendingRequest: PendingPermission | null,
-): boolean {
-  if (snapshot.userDecisionResponseProtocol !== 'orphaned-permission-v1') return false
-  const capability = decision.responseCapability
-  if (
-    capability?.status === 'runtime_callback' ||
-    capability?.status === 'orphaned_recovery'
-  ) {
-    return true
-  }
-  // Older v1 sidecars did not publish responseCapability. Automatic replay is
-  // allowed only when one exact live request independently proves the route.
-  return capability === undefined &&
-    decision.runtimeBinding.status === 'attached' &&
-    pendingRequest?.requestId === decision.runtimeBinding.requestId
-}
-
 function selectModernUserDecisionInteraction(
   attempt: UserDecisionResponseAttempt | undefined,
 ): AskUserDecisionInteraction {
   if (!attempt) return { mode: 'editing', channel: 'modern' }
+  if (attempt.state === 'already_resolved') return { mode: 'settled' }
   if (attempt.nextAction === 'edit_response') return { mode: 'editing', channel: 'modern' }
   if (attempt.nextAction === 'retry_new_attempt') return { mode: 'retryable' }
   if (attempt.nextAction === 'verify_same_attempt') return { mode: 'verifiable' }
@@ -1889,15 +1893,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     wsManager.onConnectionState(sessionId, (connectionState) => {
       if (!get().sessions[sessionId]) return
       set((s) => ({
-        sessions: updateSessionIn(s.sessions, sessionId, (session) => ({
-          connectionState,
-          connectionSnapshotReady: false,
-          userDecisionSnapshot: undefined,
-          stoppingBackgroundTaskIds:
-            connectionState === 'connected' || session.stopAllSubagentsRequested
-              ? session.stoppingBackgroundTaskIds
-              : {},
-        })),
+        sessions: updateSessionIn(s.sessions, sessionId, (session) => {
+          const leftConnected = session.connectionState === 'connected' &&
+            connectionState !== 'connected'
+          return {
+            connectionState,
+            connectionSnapshotReady: false,
+            userDecisionSnapshot: undefined,
+            userDecisionResponseAttempts: leftConnected
+              ? resyncUserDecisionAttemptsAfterConnectionLoss(
+                  session.userDecisionResponseAttempts,
+                )
+              : session.userDecisionResponseAttempts,
+            stoppingBackgroundTaskIds:
+              connectionState === 'connected' || session.stopAllSubagentsRequested
+                ? session.stoppingBackgroundTaskIds
+                : {},
+          }
+        }),
       }))
     })
     wsManager.onMessage(sessionId, (msg) => {
@@ -2135,11 +2148,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     } as const
 
     if (keepUntilResolved) {
-      try {
-        wsManager.send(sessionId, response)
-      } catch {
-        return 'not-dispatched'
-      }
+      if (!wsManager.sendIfOpen(sessionId, response)) return 'not-dispatched'
       set((s) => ({
         sessions: updateSessionIn(s.sessions, sessionId, (session) => {
           const pendingPermissions = getPendingPermissionRecord(session)
@@ -2238,14 +2247,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }))
     if (!claimed || !attemptId || !responseToSend) return 'not-dispatched'
 
-    try {
-      wsManager.send(sessionId, {
+    const dispatched = wsManager.sendIfOpen(sessionId, {
         type: 'user_decision_response',
         decisionId,
         attemptId,
         response: responseToSend,
       })
-    } catch {
+    if (!dispatched) {
       set((state) => ({
         sessions: updateSessionIn(state.sessions, sessionId, (session) => {
           const attempts = session.userDecisionResponseAttempts ?? {}
@@ -3584,6 +3592,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const attempts = session.userDecisionResponseAttempts ?? {}
           const current = attempts[msg.decisionId]
           if (!current || current.attemptId !== msg.attemptId) return {}
+          if (
+            current.state === 'rejected' &&
+            current.nextAction === 'resync' &&
+            msg.state !== 'already_resolved'
+          ) return {}
           const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
             attemptId: current.attemptId,
             response: current.response,
@@ -3681,9 +3694,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break
 
       case 'permission_requests_snapshot': {
-        const replayMessages: Array<Extract<ClientMessage, {
-          type: 'user_decision_response'
-        }>> = []
         update((session) => {
           const freshConnectionSnapshot = session.connectionSnapshotReady === false
           const toolRequestIds = new Set(msg.toolRequestIds)
@@ -3711,38 +3721,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             freshConnectionSnapshot,
           )
 
-          if (
-            freshConnectionSnapshot &&
-            msg.userDecisions?.userDecisionResponseProtocol === 'orphaned-permission-v1'
-          ) {
-            for (const decision of msg.userDecisions.decisions) {
-              const attempt = reconciledAttempts[decision.decisionId]
-              const canReplay =
-                decision.semanticState.status === 'open' &&
-                !decision.conflicted &&
-                attempt !== undefined &&
-                (
-                  attempt.state === 'submitting' ||
-                  attempt.state === 'accepted' ||
-                  attempt.state === 'indeterminate'
-                ) &&
-                canAutoReplayUserDecisionResponse(
-                  msg.userDecisions,
-                  decision,
-                  decision.runtimeBinding.status === 'attached'
-                    ? pendingPermissions[decision.runtimeBinding.requestId] ?? null
-                    : null,
-                )
-              if (!canReplay) continue
-              replayMessages.push({
-                type: 'user_decision_response',
-                decisionId: decision.decisionId,
-                attemptId: attempt.attemptId,
-                response: attempt.response,
-              })
-            }
-          }
-
           return {
             connectionSnapshotReady: true,
             userDecisionSnapshot: msg.userDecisions,
@@ -3763,13 +3741,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                   : session.chatState,
           }
         })
-        for (const response of replayMessages) {
-          try {
-            wsManager.send(sessionId, response)
-          } catch {
-            // Keep the same attempt for the next connection epoch.
-          }
-        }
         break
       }
 

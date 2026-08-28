@@ -28,6 +28,7 @@ class FakeWebSocket {
   onclose: SocketHandler | null = null
   onerror: SocketHandler | null = null
   sent: string[] = []
+  sendError: Error | null = null
 
   constructor(url: string) {
     this.url = url
@@ -35,6 +36,7 @@ class FakeWebSocket {
   }
 
   send(data: string) {
+    if (this.sendError) throw this.sendError
     this.sent.push(data)
   }
 
@@ -106,6 +108,39 @@ describe('wsManager reconnect buffering', () => {
       JSON.stringify({ type: 'sync_state' }),
     ])
     expect(states).toEqual(['connecting', 'connected', 'reconnecting', 'reconnecting', 'connected'])
+  })
+
+  it.each([
+    ['CONNECTING', FakeWebSocket.CONNECTING],
+    ['CLOSING', FakeWebSocket.CLOSING],
+    ['CLOSED', FakeWebSocket.CLOSED],
+  ] as const)('does not queue sendIfOpen while the socket is %s', (_label, readyState) => {
+    wsManager.connect('session-current-epoch')
+    const socket = FakeWebSocket.instances[0]!
+    socket.readyState = readyState
+
+    expect(wsManager.sendIfOpen('session-current-epoch', {
+      type: 'user_decision_response',
+      decisionId: 'decision-current-epoch',
+      attemptId: 'attempt-current-epoch',
+      response: { kind: 'clarify', message: 'current epoch only' },
+    })).toBe(false)
+
+    socket.open()
+    expect(socket.sent).toEqual([])
+  })
+
+  it('sends sendIfOpen immediately on OPEN and reports a synchronous send failure', () => {
+    wsManager.connect('session-open-send')
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    const message = { type: 'user_message', content: 'immediate' } as const
+
+    expect(wsManager.sendIfOpen('session-open-send', message)).toBe(true)
+    expect(socket.sent).toContain(JSON.stringify(message))
+
+    socket.sendError = new Error('send failed')
+    expect(wsManager.sendIfOpen('session-open-send', message)).toBe(false)
   })
 
   it('force reconnect preserves handlers and queued messages', async () => {

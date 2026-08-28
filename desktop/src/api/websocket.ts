@@ -175,6 +175,22 @@ class WebSocketManager {
     }
   }
 
+  /**
+   * Sends only through the socket that is open in the current connection
+   * epoch. Unlike send(), this never creates a connection or queues work for a
+   * later socket.
+   */
+  sendIfOpen(sessionId: string, message: ClientMessage): boolean {
+    const conn = this.connections.get(sessionId)
+    if (!conn || conn.ws.readyState !== WebSocket.OPEN) return false
+    try {
+      conn.ws.send(JSON.stringify(message))
+      return true
+    } catch {
+      return false
+    }
+  }
+
   onMessage(sessionId: string, handler: MessageHandler): () => void {
     const conn = this.connections.get(sessionId)
     if (!conn) return () => {}

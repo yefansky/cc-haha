@@ -18,6 +18,14 @@ vi.mock('../../api/websocket', () => ({
     onMessage: vi.fn(() => () => {}),
     clearHandlers: vi.fn(),
     send: sendMock,
+    sendIfOpen: vi.fn((sessionId: string, message: unknown) => {
+      try {
+        sendMock(sessionId, message)
+        return true
+      } catch {
+        return false
+      }
+    }),
   },
 }))
 

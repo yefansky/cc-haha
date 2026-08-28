@@ -26,6 +26,7 @@ const {
   cliTaskStoreSnapshot,
   connectionStateHandlers,
   forceReconnectMock,
+  sendIfOpenMock,
 } = vi.hoisted(() => ({
   sendMock: vi.fn(),
   getMemberBySessionIdMock: vi.fn<(sessionId: string) => any>(() => null),
@@ -63,6 +64,7 @@ const {
   },
   connectionStateHandlers: new Map<string, (state: 'connecting' | 'connected' | 'reconnecting' | 'disconnected') => void>(),
   forceReconnectMock: vi.fn(() => true),
+  sendIfOpenMock: vi.fn<(sessionId: string, message: unknown) => boolean>(() => true),
 }))
 
 vi.mock('../lib/desktopNotifications', () => ({
@@ -82,6 +84,11 @@ vi.mock('../api/websocket', () => ({
     onMessage: vi.fn(() => () => {}),
     clearHandlers: vi.fn(),
     send: sendMock,
+    sendIfOpen: vi.fn((sessionId: string, message: unknown) => {
+      const sent = sendIfOpenMock(sessionId, message)
+      if (sent) sendMock(sessionId, message)
+      return sent
+    }),
   },
 }))
 
@@ -225,6 +232,8 @@ describe('stripGeneratedImageMetadataLines', () => {
 describe('chatStore tool settlement', () => {
   beforeEach(() => {
     sendMock.mockReset()
+    sendIfOpenMock.mockReset()
+    sendIfOpenMock.mockReturnValue(true)
     forceReconnectMock.mockClear()
     updateTabStatusMock.mockReset()
     notifyDesktopMock.mockReset()
@@ -408,6 +417,8 @@ describe('chatStore background agent activity interleaving', () => {
 describe('chatStore history mapping', () => {
   beforeEach(() => {
     sendMock.mockReset()
+    sendIfOpenMock.mockReset()
+    sendIfOpenMock.mockReturnValue(true)
     getMemberBySessionIdMock.mockReset()
     getMemberBySessionIdMock.mockReturnValue(null)
     sendMessageToMemberMock.mockReset()
@@ -4158,7 +4169,7 @@ describe('chatStore history mapping', () => {
     expect(projection.views.some((view) => view.terminal)).toBe(false)
   })
 
-  it('keeps AskUserQuestion retryable when the local websocket send throws', () => {
+  it('keeps a legacy Ask editable when the current socket cannot send', () => {
     useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
     const store = useChatStore.getState()
     store.handleServerMessage(TEST_SESSION_ID, {
@@ -4168,11 +4179,10 @@ describe('chatStore history mapping', () => {
       toolUseId: 'tool-ask-retry',
       input: { questions: [{ question: 'Retry?', options: [{ label: 'Yes' }] }] },
     })
-    sendMock.mockImplementationOnce(() => { throw new Error('socket write failed') })
+    sendIfOpenMock.mockReturnValueOnce(false)
 
-    expect(() => {
-      store.respondToPermission(TEST_SESSION_ID, 'perm-ask-retry', true)
-    }).not.toThrow()
+    expect(store.respondToPermission(TEST_SESSION_ID, 'perm-ask-retry', true))
+      .toBe('not-dispatched')
 
     let pending = useChatStore.getState().sessions[TEST_SESSION_ID]
       ?.pendingPermissions?.['perm-ask-retry']
@@ -4182,7 +4192,7 @@ describe('chatStore history mapping', () => {
     store.respondToPermission(TEST_SESSION_ID, 'perm-ask-retry', true)
     pending = useChatStore.getState().sessions[TEST_SESSION_ID]
       ?.pendingPermissions?.['perm-ask-retry']
-    expect(sendMock).toHaveBeenCalledTimes(2)
+    expect(sendMock).toHaveBeenCalledTimes(1)
     expect(pending?.responseState).toBe('submitting')
   })
 
@@ -4289,6 +4299,8 @@ describe('chatStore history mapping', () => {
     beforeEach(() => {
       useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
       sendMock.mockReset()
+      sendIfOpenMock.mockReset()
+      sendIfOpenMock.mockReturnValue(true)
       forceReconnectMock.mockClear()
     })
 
@@ -4462,7 +4474,7 @@ describe('chatStore history mapping', () => {
         ['none', undefined, 'editing'],
         ['submitting', { state: 'submitting' }, 'syncing'],
         ['accepted', { state: 'accepted' }, 'syncing'],
-        ['already_resolved', { state: 'already_resolved' }, 'syncing'],
+        ['already_resolved', { state: 'already_resolved' }, 'settled'],
         ['indeterminate', {
           state: 'indeterminate', nextAction: 'verify_same_attempt',
         }, 'verifiable'],
@@ -4543,7 +4555,7 @@ describe('chatStore history mapping', () => {
       ] as const
       const legalModes = new Map<string, AskUserDecisionInteraction['mode']>([
         ['accepted/undefined', 'syncing'],
-        ['already_resolved/undefined', 'syncing'],
+        ['already_resolved/undefined', 'settled'],
         ['retryable_failed/retry_new_attempt', 'retryable'],
         ['indeterminate/verify_same_attempt', 'verifiable'],
         ['rejected/edit_response', 'editing'],
@@ -5007,7 +5019,7 @@ describe('chatStore history mapping', () => {
         error: { code: 'UNKNOWN', message: 'outcome unknown' },
         nextAction: 'verify_same_attempt',
       }],
-    ] as const)('replays one %s attempt once on a fresh capable snapshot', (
+    ] as const)('does not replay one %s attempt on a fresh capable snapshot', (
       _label,
       result,
     ) => {
@@ -5028,13 +5040,10 @@ describe('chatStore history mapping', () => {
 
       startFreshConnectionEpoch()
       receiveProtocolSnapshot(decisionId)
-      expect(sentDecisionResponses().map(([, message]) => message)).toEqual([
-        original,
-        original,
-      ])
+      expect(sentDecisionResponses().map(([, message]) => message)).toEqual([original])
 
       receiveProtocolSnapshot(decisionId)
-      expect(sentDecisionResponses()).toHaveLength(2)
+      expect(sentDecisionResponses()).toHaveLength(1)
     })
 
     it('does not automatically replay when the fresh capability is unavailable', () => {
@@ -5096,7 +5105,36 @@ describe('chatStore history mapping', () => {
       ).views[0]).toMatchObject({ interaction: { mode: 'syncing' } })
     })
 
-    it('replays one unacknowledged submitting attempt once at a fresh capable connection snapshot', () => {
+    it.each([
+      ['normal', undefined],
+      ['edit', { state: 'rejected', nextAction: 'edit_response' }],
+      ['retry', { state: 'retryable_failed', nextAction: 'retry_new_attempt' }],
+      ['verify', { state: 'indeterminate', nextAction: 'verify_same_attempt' }],
+    ] as const)('rolls back %s dispatch when the current socket is not open', (
+      label,
+      previousState,
+    ) => {
+      const decisionId = `decision-current-socket-${label}`
+      receiveProtocolSnapshot(decisionId)
+      const previousAttempt = previousState ? {
+        attemptId: `attempt-${label}`,
+        response: Object.freeze({ kind: 'clarify' as const, message: `frozen-${label}` }),
+        ...previousState,
+      } : undefined
+      patchSession({
+        userDecisionResponseAttempts: previousAttempt
+          ? { [decisionId]: previousAttempt }
+          : {},
+      })
+      sendIfOpenMock.mockReturnValue(false)
+
+      expect(respondWithAnswer(decisionId)).toBe('not-dispatched')
+      expect(sendMock).not.toHaveBeenCalled()
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.userDecisionResponseAttempts?.[decisionId]).toEqual(previousAttempt)
+    })
+
+    it('does not replay an unacknowledged submitting attempt on a fresh snapshot', () => {
       const store = useChatStore.getState()
       const snapshot = {
         type: 'permission_requests_snapshot' as const,
@@ -5114,13 +5152,71 @@ describe('chatStore history mapping', () => {
 
       startFreshConnectionEpoch()
       store.handleServerMessage(TEST_SESSION_ID, snapshot as never)
-      expect(sentDecisionResponses()).toEqual([
-        [TEST_SESSION_ID, original],
-        [TEST_SESSION_ID, original],
-      ])
+      expect(sentDecisionResponses()).toEqual([[TEST_SESSION_ID, original]])
 
       store.handleServerMessage(TEST_SESSION_ID, snapshot as never)
-      expect(sentDecisionResponses()).toHaveLength(2)
+      expect(sentDecisionResponses()).toHaveLength(1)
+    })
+
+    it('turns only in-flight attempts into resync when a connected epoch ends', () => {
+      patchSession({ connectionState: 'disconnected' })
+      useChatStore.getState().connectToSession(TEST_SESSION_ID, {
+        prewarm: false,
+        applyRuntimeSelection: false,
+        minimalBootstrap: true,
+      })
+      const setConnectionState = connectionStateHandlers.get(TEST_SESSION_ID)!
+      setConnectionState('connected')
+      const response = Object.freeze({ kind: 'clarify' as const, message: 'frozen response' })
+      const states = ['submitting', 'accepted', 'indeterminate', 'already_resolved'] as const
+      patchSession({
+        userDecisionResponseAttempts: Object.fromEntries(states.map((state) => [state, {
+          attemptId: `attempt-${state}`,
+          response,
+          state,
+          ...(state === 'indeterminate'
+            ? { nextAction: 'verify_same_attempt' as const }
+            : {}),
+        }])),
+      })
+
+      setConnectionState('reconnecting')
+      const attempts = useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.userDecisionResponseAttempts
+      for (const state of ['submitting', 'accepted', 'indeterminate'] as const) {
+        expect(attempts?.[state]).toMatchObject({
+          attemptId: `attempt-${state}`,
+          response,
+          state: 'rejected',
+          nextAction: 'resync',
+        })
+      }
+      expect(attempts?.already_resolved).toMatchObject({ state: 'already_resolved', response })
+
+      // A result from the socket epoch that just ended must not reopen the hold.
+      useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId: 'accepted',
+        attemptId: 'attempt-accepted',
+        state: 'accepted',
+        route: 'orphaned_recovery',
+      } as never)
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.userDecisionResponseAttempts?.accepted).toMatchObject({
+          state: 'rejected',
+          nextAction: 'resync',
+        })
+
+      useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId: 'accepted',
+        attemptId: 'attempt-accepted',
+        state: 'already_resolved',
+      } as never)
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.userDecisionResponseAttempts?.accepted).toMatchObject({
+          state: 'already_resolved',
+        })
     })
 
     it('correlates results by decision and attempt, then retries with a new id and frozen response', () => {
@@ -5210,7 +5306,7 @@ describe('chatStore history mapping', () => {
         ).views.find((view) => view.toolUseId === decisionId)).toMatchObject({
           interaction: result.state === 'rejected'
             ? { mode: 'blocked', reason: 'delivery_rejected' }
-            : { mode: 'syncing' },
+            : { mode: 'settled' },
         })
       }
     })
@@ -5231,7 +5327,7 @@ describe('chatStore history mapping', () => {
       expect(selectAskUserDecisionProjection(
         useChatStore.getState().sessions[TEST_SESSION_ID],
       ).views[0]).toMatchObject({
-        interaction: { mode: 'syncing' },
+        interaction: { mode: 'settled' },
         terminal: false,
       })
 
