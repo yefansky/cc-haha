@@ -6,6 +6,7 @@ import {
   createUserDecision,
   detachRuntime,
   failDeliveryAttempt,
+  markDeliveryAttemptIndeterminate,
   markDecisionAnswered,
   selectSubmissionRoute,
   startDeliveryAttempt,
@@ -120,6 +121,28 @@ describe('UserDecision', () => {
     expect(answered.semanticState).toEqual({ status: 'answered' })
     expect(answered.response).toEqual(answer)
     expect(answered.deliveryAttempt).toEqual(accepted.deliveryAttempt)
+  })
+
+  it('keeps an indeterminate delivery distinct from accepted and blocks resubmission', () => {
+    const sending = startDeliveryAttempt(
+      createUserDecision({ decisionId: 'decision-unknown', requestId: 'request-unknown' }),
+      'attempt-unknown',
+      answer,
+    )
+
+    const indeterminate = markDeliveryAttemptIndeterminate(sending, 'attempt-unknown')
+
+    expect(indeterminate.deliveryAttempt).toEqual({
+      status: 'indeterminate',
+      attemptId: 'attempt-unknown',
+      route: { status: 'runtime_callback', requestId: 'request-unknown' },
+    })
+    expect(indeterminate.semanticState).toEqual({ status: 'open' })
+    expect(() => startDeliveryAttempt(indeterminate, 'attempt-later', answer)).toThrow(
+      'Cannot submit while delivery is indeterminate',
+    )
+    expect(markDeliveryAttemptIndeterminate(sending, 'attempt-stale')).toBe(sending)
+    expect(acceptDeliveryAttempt(indeterminate, 'attempt-unknown')).toBe(indeterminate)
   })
 
   it('hydrates terminal evidence even when a historical response is unavailable', () => {
@@ -248,6 +271,9 @@ describe('UserDecision', () => {
       code: 'LATE_FAILURE',
       message: 'stale after terminal',
     })).toBe(answeredWhileSending)
+    expect(
+      markDeliveryAttemptIndeterminate(answeredWhileSending, 'attempt-before-terminal'),
+    ).toBe(answeredWhileSending)
   })
 
   it('keeps one immutable response and unique attempt ids across retries', () => {
@@ -275,19 +301,23 @@ describe('UserDecision', () => {
     )
   })
 
-  it('does not allow a sending or accepted attempt to be submitted again', () => {
+  it('does not allow a sending, accepted, or indeterminate attempt to be submitted again', () => {
     const sending = startDeliveryAttempt(
       createUserDecision({ decisionId: 'decision-8', requestId: 'request-8' }),
       'attempt-1',
       answer,
     )
     const accepted = acceptDeliveryAttempt(sending, 'attempt-1')
+    const indeterminate = markDeliveryAttemptIndeterminate(sending, 'attempt-1')
 
     expect(() => startDeliveryAttempt(sending, 'attempt-2', answer)).toThrow(
       'Cannot submit while delivery is sending',
     )
     expect(() => startDeliveryAttempt(accepted, 'attempt-2', answer)).toThrow(
       'Cannot submit while delivery is accepted',
+    )
+    expect(() => startDeliveryAttempt(indeterminate, 'attempt-2', answer)).toThrow(
+      'Cannot submit while delivery is indeterminate',
     )
   })
 })

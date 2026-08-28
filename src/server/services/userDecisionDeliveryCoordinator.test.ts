@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import type { RuntimeBinding, UserDecisionResponse } from '../userDecision.js'
-import { UserDecisionDeliveryCoordinator } from './userDecisionDeliveryCoordinator.js'
+import {
+  UserDecisionDeliveryCoordinator,
+  type UserDecisionDeliveryLease,
+} from './userDecisionDeliveryCoordinator.js'
 
 const ANSWER: UserDecisionResponse = {
   kind: 'answer',
@@ -91,22 +94,51 @@ describe('UserDecisionDeliveryCoordinator', () => {
   })
 
   test('keeps other attempts busy while sending, accepted, or indeterminate', () => {
-    const target = coordinator()
-    const first = claim(target, { runtimeBinding: DETACHED })
-    if (first.status !== 'claimed') throw new Error('expected claim')
+    const holds: ReadonlyArray<{
+      status: 'sending' | 'accepted' | 'indeterminate'
+      transition: (
+        target: UserDecisionDeliveryCoordinator,
+        lease: UserDecisionDeliveryLease,
+      ) => void
+    }> = [
+      { status: 'sending', transition: () => {} },
+      {
+        status: 'accepted',
+        transition: (
+          target: UserDecisionDeliveryCoordinator,
+          lease: UserDecisionDeliveryLease,
+        ) => {
+          target.accept(lease)
+        },
+      },
+      {
+        status: 'indeterminate',
+        transition: (
+          target: UserDecisionDeliveryCoordinator,
+          lease: UserDecisionDeliveryLease,
+        ) => {
+          target.markIndeterminate(lease)
+        },
+      },
+    ]
 
-    expect(claim(target, { attemptId: 'attempt-2' })).toMatchObject({
-      status: 'busy',
-      shouldDeliver: false,
-    })
-    expect(target.accept(first.lease)).toMatchObject({
-      status: 'updated',
-      delivery: { deliveryAttempt: { status: 'accepted' } },
-    })
-    expect(claim(target, { attemptId: 'attempt-2' })).toMatchObject({
-      status: 'busy',
-      shouldDeliver: false,
-    })
+    for (const hold of holds) {
+      const target = coordinator()
+      const first = claim(target, { runtimeBinding: DETACHED })
+      if (first.status !== 'claimed') throw new Error('expected claim')
+      hold.transition(target, first.lease)
+
+      expect(claim(target)).toMatchObject({
+        status: 'replayed',
+        shouldDeliver: false,
+        delivery: { deliveryAttempt: { status: hold.status } },
+      })
+      expect(claim(target, { attemptId: 'attempt-2' })).toMatchObject({
+        status: 'busy',
+        shouldDeliver: false,
+        delivery: { deliveryAttempt: { status: hold.status } },
+      })
+    }
   })
 
   test('allows only the same response on a new attempt after retryable failure', () => {
@@ -180,6 +212,10 @@ describe('UserDecisionDeliveryCoordinator', () => {
       code: 'LATE_FAILURE',
       message: 'must not overwrite attempt-2',
     })).toEqual({
+      status: 'ignored',
+      reason: 'stale_lease',
+    })
+    expect(target.markIndeterminate(first.lease)).toEqual({
       status: 'ignored',
       reason: 'stale_lease',
     })

@@ -153,38 +153,80 @@ describe('user_decision_response websocket route', () => {
     }))
   })
 
-  test('redacts uncertain transport detail and keeps later attempts busy without stopping runtime', async () => {
-    const sessionId = `decision-indeterminate-${crypto.randomUUID()}`
-    const toolUseId = 'ask-indeterminate'
-    const ws = socket(sessionId)
-    installAttachedEvidence(sessionId, toolUseId)
-    const respond = spyOn(conversationService, 'respondToTrackedPermission').mockReturnValue({
-      status: 'delivery_failed',
-      error: 'private socket and filesystem detail',
-    })
-    const stop = spyOn(conversationService, 'stopSessionForReplacementAndConfirm')
-    const response = { kind: 'answer', answers: { 'Ship?': 'Yes', 'Notify?': 'No' } }
+  for (const mode of ['delivery_failed', 'throw'] as const) {
+    test(`records attached ${mode} as indeterminate and never redelivers it`, async () => {
+      const sessionId = `decision-attached-${mode}-${crypto.randomUUID()}`
+      const toolUseId = `ask-attached-${mode}`
+      const ws = socket(sessionId)
+      installAttachedEvidence(sessionId, toolUseId)
+      const respond = spyOn(conversationService, 'respondToTrackedPermission')
+        .mockImplementation(() => {
+          if (mode === 'throw') throw new Error('private callback detail')
+          return {
+            status: 'delivery_failed',
+            error: 'private socket and filesystem detail',
+          }
+        })
+      const stop = spyOn(conversationService, 'stopSessionForReplacementAndConfirm')
+      const response = { kind: 'answer', answers: { 'Ship?': 'Yes', 'Notify?': 'No' } }
 
-    await submitAndDrain(ws, {
-      type: 'user_decision_response',
-      decisionId: toolUseId,
-      attemptId: 'attempt-unknown',
-      response,
+      const first = await submitAndDrain(ws, {
+        type: 'user_decision_response', decisionId: toolUseId,
+        attemptId: 'attempt-unknown', response,
+      })
+      const replay = await submitAndDrain(ws, {
+        type: 'user_decision_response', decisionId: toolUseId,
+        attemptId: 'attempt-unknown', response,
+      })
+      const later = await submitAndDrain(ws, {
+        type: 'user_decision_response', decisionId: toolUseId,
+        attemptId: 'attempt-later', response,
+      })
+
+      expect(respond).toHaveBeenCalledTimes(1)
+      expect(stop).not.toHaveBeenCalled()
+      expect(first).toContainEqual(expect.objectContaining({
+        attemptId: 'attempt-unknown',
+        state: 'indeterminate',
+      }))
+      expect(replay).toContainEqual(expect.objectContaining({
+        attemptId: 'attempt-unknown',
+        state: 'indeterminate',
+        error: expect.objectContaining({ code: 'PERMISSION_DELIVERY_INDETERMINATE' }),
+      }))
+      expect(JSON.stringify([...first, ...replay, ...later])).not.toContain('private')
+      expect(later).toContainEqual(expect.objectContaining({
+        attemptId: 'attempt-later',
+        state: 'rejected',
+        error: expect.objectContaining({ code: 'USER_DECISION_DELIVERY_BUSY' }),
+      }))
     })
+  }
+
+  test('reports an unexpected outer processing failure as indeterminate', async () => {
+    const sessionId = `decision-outer-failure-${crypto.randomUUID()}`
+    const toolUseId = 'ask-outer-failure'
+    const ws = socket(sessionId)
+    spyOn(sessionService, 'getSessionMessagesWithEvidence')
+      .mockRejectedValue(new Error('private evidence I/O detail'))
+    const respond = spyOn(conversationService, 'respondToTrackedPermission')
+
     const messages = await submitAndDrain(ws, {
       type: 'user_decision_response',
       decisionId: toolUseId,
-      attemptId: 'attempt-later',
-      response,
+      attemptId: 'attempt-outer-failure',
+      response: {
+        kind: 'answer',
+        answers: { 'Ship?': 'Yes', 'Notify?': 'No' },
+      },
     })
 
-    expect(respond).toHaveBeenCalledTimes(1)
-    expect(stop).not.toHaveBeenCalled()
-    expect(JSON.stringify(messages)).not.toContain('private socket')
+    expect(respond).not.toHaveBeenCalled()
+    expect(JSON.stringify(messages)).not.toContain('private evidence')
     expect(messages).toContainEqual(expect.objectContaining({
-      attemptId: 'attempt-later',
-      state: 'rejected',
-      error: expect.objectContaining({ code: 'USER_DECISION_DELIVERY_BUSY' }),
+      attemptId: 'attempt-outer-failure',
+      state: 'indeterminate',
+      error: expect.objectContaining({ code: 'USER_DECISION_RESPONSE_FAILED' }),
     }))
   })
 
@@ -306,6 +348,60 @@ describe('user_decision_response websocket route', () => {
       route: 'orphaned_recovery',
     }))
   })
+
+  for (const mode of ['delivery_failed', 'throw'] as const) {
+    test(`records orphaned ${mode} as indeterminate and never redelivers it`, async () => {
+      const sessionId = `decision-orphan-${mode}-${crypto.randomUUID()}`
+      const toolUseId = `ask-orphan-${mode}`
+      const ws = socket(sessionId)
+      installDetachedRuntimePreparation()
+      spyOn(sessionService, 'getSessionMessagesWithEvidence').mockResolvedValue({
+        messages: [askMessage(toolUseId)],
+        transcriptEvidenceComplete: true,
+      })
+      const stop = spyOn(conversationService, 'stopSessionForReplacementAndConfirm')
+        .mockResolvedValue('stopped')
+      const start = spyOn(conversationService, 'startSession').mockResolvedValue(undefined)
+      const orphan = spyOn(conversationService, 'respondToOrphanedPermission')
+        .mockImplementation(() => {
+          if (mode === 'throw') throw new Error('private orphan callback detail')
+          return { status: 'delivery_failed', error: 'private orphan transport detail' }
+        })
+      const response = { kind: 'answer', answers: { 'Ship?': 'Yes', 'Notify?': 'No' } }
+
+      const first = await submitAndDrain(ws, {
+        type: 'user_decision_response', decisionId: toolUseId,
+        attemptId: 'attempt-unknown', response,
+      })
+      const replay = await submitAndDrain(ws, {
+        type: 'user_decision_response', decisionId: toolUseId,
+        attemptId: 'attempt-unknown', response,
+      })
+      const later = await submitAndDrain(ws, {
+        type: 'user_decision_response', decisionId: toolUseId,
+        attemptId: 'attempt-later', response,
+      })
+
+      expect(stop).toHaveBeenCalledTimes(1)
+      expect(start).toHaveBeenCalledTimes(1)
+      expect(orphan).toHaveBeenCalledTimes(1)
+      expect(first).toContainEqual(expect.objectContaining({
+        attemptId: 'attempt-unknown',
+        state: 'indeterminate',
+      }))
+      expect(replay).toContainEqual(expect.objectContaining({
+        attemptId: 'attempt-unknown',
+        state: 'indeterminate',
+        error: expect.objectContaining({ code: 'ORPHANED_DELIVERY_INDETERMINATE' }),
+      }))
+      expect(JSON.stringify([...first, ...replay, ...later])).not.toContain('private')
+      expect(later).toContainEqual(expect.objectContaining({
+        attemptId: 'attempt-later',
+        state: 'rejected',
+        error: expect.objectContaining({ code: 'USER_DECISION_DELIVERY_BUSY' }),
+      }))
+    })
+  }
 
   test('keeps unconfirmed and thrown stops retryable without duplicate same-attempt stops', async () => {
     installDetachedRuntimePreparation()

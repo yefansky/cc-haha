@@ -4,6 +4,7 @@ import {
   createUserDecision,
   detachRuntime,
   failDeliveryAttempt,
+  markDeliveryAttemptIndeterminate,
   startDeliveryAttempt,
   type DeliveryAttempt,
   type DeliveryFailure,
@@ -163,7 +164,11 @@ export class UserDecisionDeliveryCoordinator {
       }
     }
 
-    if (currentAttempt.status === 'sending' || currentAttempt.status === 'accepted') {
+    if (
+      currentAttempt.status === 'sending' ||
+      currentAttempt.status === 'accepted' ||
+      currentAttempt.status === 'indeterminate'
+    ) {
       return {
         status: 'busy',
         shouldDeliver: false,
@@ -210,8 +215,8 @@ export class UserDecisionDeliveryCoordinator {
 
   /**
    * Records only a failure known to have happened before any side effect. An
-   * unknown or timed-out transport outcome must use accept() instead. Oversized
-   * detail is replaced with one fixed, bounded retryable failure.
+   * unknown or timed-out transport outcome must use markIndeterminate() instead.
+   * Oversized detail is replaced with one fixed, bounded retryable failure.
    */
   failRetryable(
     lease: UserDecisionDeliveryLease,
@@ -243,11 +248,35 @@ export class UserDecisionDeliveryCoordinator {
     return { status: 'updated', delivery: current.delivery }
   }
 
-  /** Indeterminate transport also uses this conservative accepted hold. */
   accept(lease: UserDecisionDeliveryLease): UserDecisionDeliveryTransitionResult {
     const current = this.currentEntryForLease(lease)
     if (!current) return { status: 'ignored', reason: 'stale_lease' }
     const decision = acceptDeliveryAttempt(
+      temporaryDecision(
+        lease.decisionId,
+        current.delivery,
+        bindingForDelivery(current.delivery),
+      ),
+      lease.attemptId,
+    )
+    if (decision.deliveryAttempt === current.delivery.deliveryAttempt) {
+      return {
+        status: 'ignored',
+        reason: 'stale_lease',
+        delivery: current.delivery,
+      }
+    }
+    current.delivery = freezeDelivery(decision)
+    return { status: 'updated', delivery: current.delivery }
+  }
+
+  /** Records an attempted delivery whose externally visible outcome is unknown. */
+  markIndeterminate(
+    lease: UserDecisionDeliveryLease,
+  ): UserDecisionDeliveryTransitionResult {
+    const current = this.currentEntryForLease(lease)
+    if (!current) return { status: 'ignored', reason: 'stale_lease' }
+    const decision = markDeliveryAttemptIndeterminate(
       temporaryDecision(
         lease.decisionId,
         current.delivery,

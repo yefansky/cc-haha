@@ -700,7 +700,7 @@ export const handleWebSocket = {
               type: 'user_decision_response_result',
               decisionId: typeof message.decisionId === 'string' ? message.decisionId : '',
               attemptId: typeof message.attemptId === 'string' ? message.attemptId : '',
-              state: 'retryable_failed',
+              state: 'indeterminate',
               error: {
                 code: 'USER_DECISION_RESPONSE_FAILED',
                 message: 'User decision response could not be processed.',
@@ -1752,6 +1752,24 @@ function sendReplayedUserDecisionResult(
     })
     return
   }
+  if (attempt.status === 'indeterminate') {
+    const attached = attempt.route.status === 'runtime_callback'
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'indeterminate',
+      error: {
+        code: attached
+          ? 'PERMISSION_DELIVERY_INDETERMINATE'
+          : 'ORPHANED_DELIVERY_INDETERMINATE',
+        message: attached
+          ? 'The live delivery outcome could not be confirmed.'
+          : 'The recovery delivery outcome could not be confirmed.',
+      },
+    })
+    return
+  }
   sendUserDecisionResponseResult(ws, {
     type: 'user_decision_response_result',
     decisionId: request.decisionId,
@@ -1788,7 +1806,7 @@ function deliverAttachedUserDecision(
     )
   } catch (error) {
     console.error('[WS] Live user decision delivery outcome is unknown:', error)
-    userDecisionDeliveryCoordinator.accept(lease)
+    userDecisionDeliveryCoordinator.markIndeterminate(lease)
     sendUserDecisionResponseResult(ws, {
       type: 'user_decision_response_result',
       decisionId: request.decisionId,
@@ -1820,7 +1838,7 @@ function deliverAttachedUserDecision(
   }
   if (result.status === 'delivery_failed') {
     console.error('[WS] Live user decision delivery outcome is unknown:', result.error)
-    userDecisionDeliveryCoordinator.accept(lease)
+    userDecisionDeliveryCoordinator.markIndeterminate(lease)
     sendUserDecisionResponseResult(ws, {
       type: 'user_decision_response_result',
       decisionId: request.decisionId,
@@ -1993,7 +2011,7 @@ async function deliverDetachedUserDecision(
     )
   } catch (error) {
     console.error('[WS] Orphaned user decision delivery outcome is unknown:', error)
-    userDecisionDeliveryCoordinator.accept(lease)
+    userDecisionDeliveryCoordinator.markIndeterminate(lease)
     sendUserDecisionResponseResult(ws, {
       type: 'user_decision_response_result',
       decisionId: request.decisionId,
@@ -2019,7 +2037,7 @@ async function deliverDetachedUserDecision(
   }
   if (result.status === 'delivery_failed') {
     console.error('[WS] Orphaned user decision delivery outcome is unknown:', result.error)
-    userDecisionDeliveryCoordinator.accept(lease)
+    userDecisionDeliveryCoordinator.markIndeterminate(lease)
     sendUserDecisionResponseResult(ws, {
       type: 'user_decision_response_result',
       decisionId: request.decisionId,

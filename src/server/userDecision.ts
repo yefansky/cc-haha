@@ -45,6 +45,11 @@ export type DeliveryAttempt =
       attemptId: string
       route: DeliveryRoute
     }
+  | {
+      status: 'indeterminate'
+      attemptId: string
+      route: DeliveryRoute
+    }
 
 export type UserDecision = {
   decisionId: string
@@ -168,6 +173,23 @@ export function acceptDeliveryAttempt(
     ...decision,
     deliveryAttempt: {
       status: 'accepted',
+      attemptId,
+      route: current.route,
+    },
+  }
+}
+
+export function markDeliveryAttemptIndeterminate(
+  decision: UserDecision,
+  attemptId: string,
+): UserDecision {
+  if (decision.semanticState.status !== 'open') return decision
+  const current = decision.deliveryAttempt
+  if (current.status !== 'sending' || current.attemptId !== attemptId) return decision
+  return {
+    ...decision,
+    deliveryAttempt: {
+      status: 'indeterminate',
       attemptId,
       route: current.route,
     },
