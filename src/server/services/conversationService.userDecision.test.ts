@@ -99,7 +99,7 @@ describe('ConversationService orphaned Ask permission response', () => {
     )).toEqual({ status: 'delivery_failed', error: 'socket status unknown' })
   })
 
-  test('queues for a starting runtime and rejects a missing session without side effects', () => {
+  test('rejects a starting runtime and a missing session without queueing side effects', () => {
     const service = new ConversationService()
     ;(service as unknown as { sessions: Map<string, unknown> }).sessions.set('session-1', {
       sdkSocket: null,
@@ -113,7 +113,8 @@ describe('ConversationService orphaned Ask permission response', () => {
       'ask-root',
       true,
       { answers: { 'Ship it?': 'Yes' } },
-    )).toEqual({ status: 'accepted', transport: 'queued' })
+    )).toEqual({ status: 'rejected', reason: 'session_unavailable' })
+    expect((service as any).sessions.get('session-1').pendingOutbound).toEqual([])
     expect(service.respondToOrphanedPermission(
       'missing-session',
       'ask-root',

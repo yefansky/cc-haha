@@ -753,6 +753,10 @@ export class ConversationService {
     if (!session) {
       return { status: 'rejected', reason: 'session_unavailable' }
     }
+    const sdkSocket = session.sdkSocket
+    if (!sdkSocket) {
+      return { status: 'rejected', reason: 'session_unavailable' }
+    }
 
     // The CLI deliberately routes an *unexpected* control_response into its
     // transcript-based orphan recovery. A client attempt id could collide with
@@ -783,18 +787,15 @@ export class ConversationService {
             },
       },
     }
-    const transport = session.sdkSocket ? 'sent' : 'queued'
     try {
-      if (!this.sendSdkMessage(sessionId, payload)) {
-        return { status: 'rejected', reason: 'session_unavailable' }
-      }
+      sdkSocket.send(JSON.stringify(payload) + '\n')
     } catch (error) {
       return {
         status: 'delivery_failed',
         error: error instanceof Error ? error.message : String(error),
       }
     }
-    return { status: 'accepted', transport }
+    return { status: 'accepted', transport: 'sent' }
   }
 
   private sendPermissionResponse(
@@ -814,6 +815,11 @@ export class ConversationService {
     const pendingRequest = session.pendingPermissionRequests.get(requestId)
     if (requireTrackedRequest && !pendingRequest) {
       return { status: 'rejected', reason: 'unknown_request' }
+    }
+    const isTrackedAsk = requireTrackedRequest && pendingRequest?.toolName === 'AskUserQuestion'
+    const askSocket = isTrackedAsk ? session.sdkSocket : null
+    if (isTrackedAsk && !askSocket) {
+      return { status: 'rejected', reason: 'session_unavailable' }
     }
 
     const payload = {
@@ -855,7 +861,9 @@ export class ConversationService {
     }
     const transport = session.sdkSocket ? 'sent' : 'queued'
     try {
-      if (!this.sendSdkMessage(sessionId, payload)) {
+      if (askSocket) {
+        askSocket.send(JSON.stringify(payload) + '\n')
+      } else if (!this.sendSdkMessage(sessionId, payload)) {
         return { status: 'rejected', reason: 'session_unavailable' }
       }
     } catch (error) {

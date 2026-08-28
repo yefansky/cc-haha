@@ -55,6 +55,7 @@ function installPermissionSession(
   sessionId: string,
   sdkSocket: { send(data: string): void } | null,
   trackedRequest = true,
+  toolName = 'Bash',
 ) {
   const pendingPermissionRequests = new Map<
     string,
@@ -66,7 +67,7 @@ function installPermissionSession(
   >()
   if (trackedRequest) {
     pendingPermissionRequests.set('req-1', {
-      toolName: 'Bash',
+      toolName,
       input: { command: 'echo ok' },
       permissionSuggestions: [],
     })
@@ -182,7 +183,7 @@ describe('ConversationService', () => {
     expect(session.pendingPermissionRequests.has('req-1')).toBe(true)
   })
 
-  it('accepts and queues a tracked permission while the socket is connecting', () => {
+  it('keeps queueing a non-Ask tracked permission while the socket is connecting', () => {
     const svc = new ConversationService()
     const session = installPermissionSession(svc, 'session-1', null)
 
@@ -198,6 +199,77 @@ describe('ConversationService', () => {
         response: { behavior: 'allow' },
       },
     })
+  })
+
+  it('rejects a tracked Ask before queueing when the current SDK socket is absent', () => {
+    const svc = new ConversationService()
+    const session = installPermissionSession(
+      svc,
+      'session-1',
+      null,
+      true,
+      'AskUserQuestion',
+    )
+
+    expect(
+      svc.respondToTrackedPermission(
+        'session-1',
+        'req-1',
+        true,
+        undefined,
+        { answers: { choice: 'yes' } },
+      ),
+    ).toEqual({ status: 'rejected', reason: 'session_unavailable' })
+    expect(session.pendingOutbound).toEqual([])
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(true)
+  })
+
+  it('reports a tracked Ask socket send failure without queueing or consuming it', () => {
+    const svc = new ConversationService()
+    const session = installPermissionSession(
+      svc,
+      'session-1',
+      { send() { throw new Error('socket closed') } },
+      true,
+      'AskUserQuestion',
+    )
+
+    expect(
+      svc.respondToTrackedPermission(
+        'session-1',
+        'req-1',
+        true,
+        undefined,
+        { answers: { choice: 'yes' } },
+      ),
+    ).toEqual({ status: 'delivery_failed', error: 'socket closed' })
+    expect(session.pendingOutbound).toEqual([])
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(true)
+  })
+
+  it('sends a tracked Ask only through the current SDK socket', () => {
+    const svc = new ConversationService()
+    const sent: unknown[] = []
+    const session = installPermissionSession(
+      svc,
+      'session-1',
+      { send(data) { sent.push(JSON.parse(data)) } },
+      true,
+      'AskUserQuestion',
+    )
+
+    expect(
+      svc.respondToTrackedPermission(
+        'session-1',
+        'req-1',
+        true,
+        undefined,
+        { answers: { choice: 'yes' } },
+      ),
+    ).toEqual({ status: 'accepted', transport: 'sent' })
+    expect(sent).toHaveLength(1)
+    expect(session.pendingOutbound).toEqual([])
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(false)
   })
 
   it('should not queue control requests before the SDK socket connects', async () => {
