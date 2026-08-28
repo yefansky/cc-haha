@@ -3,7 +3,12 @@ import { createPortal } from 'react-dom'
 import { ArrowDown, BookMarked, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleStop, FileStack, LoaderCircle, MessageCircle, Settings, Target, XCircle } from 'lucide-react'
 import { ApiError } from '../../api/client'
 import { sessionsApi, type SessionRewindMode, type SessionTurnCheckpoint } from '../../api/sessions'
-import { listPendingPermissions, useChatStore } from '../../stores/chatStore'
+import {
+  listPendingPermissions,
+  selectAskUserDecisionProjection,
+  useChatStore,
+  type AskUserDecisionProjection,
+} from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { useWorkspacePanelStore, type WorkspacePanelOrigin } from '../../stores/workspacePanelStore'
@@ -632,7 +637,11 @@ function appendChildToolCall(
   }
 }
 
-export function buildRenderModel(messages: UIMessage[], activeAskUserQuestionToolUseId?: string | null): RenderModel {
+export function buildRenderModel(
+  messages: UIMessage[],
+  activeAskUserQuestionToolUseId?: string | null,
+  preserveAllUnresolvedAskUserQuestions = false,
+): RenderModel {
   const items: RenderItem[] = []
   const toolResultMap = new Map<string, ToolResult>()
   const childToolCallsByParent = new Map<string, ToolCall[]>()
@@ -708,6 +717,7 @@ export function buildRenderModel(messages: UIMessage[], activeAskUserQuestionToo
           continue
         }
         if (
+          !preserveAllUnresolvedAskUserQuestions &&
           !isResolved &&
           activeAskUserQuestionToolUseId &&
           msg.toolUseId !== activeAskUserQuestionToolUseId
@@ -715,6 +725,7 @@ export function buildRenderModel(messages: UIMessage[], activeAskUserQuestionToo
           continue
         }
         if (
+          !preserveAllUnresolvedAskUserQuestions &&
           !isResolved &&
           !activeAskUserQuestionToolUseId &&
           lastUnresolvedAskUserQuestionIndex !== null &&
@@ -735,6 +746,40 @@ export function buildRenderModel(messages: UIMessage[], activeAskUserQuestionToo
 
   flushGroup()
   return { renderItems: items, toolResultMap, childToolCallsByParent }
+}
+
+function includeProjectedAsks(
+  messages: UIMessage[],
+  projection: AskUserDecisionProjection,
+): UIMessage[] {
+  if (projection.source !== 'server') return messages
+
+  const existingToolUseIds = new Set(messages.flatMap((message) =>
+    message.type === 'tool_use' && message.toolName === 'AskUserQuestion'
+      ? [message.toolUseId]
+      : []))
+  const projectedToolUseIds = new Set<string>()
+  const additions: UIMessage[] = []
+  for (const view of projection.views) {
+    if (
+      view.source !== 'server' ||
+      existingToolUseIds.has(view.toolUseId) ||
+      projectedToolUseIds.has(view.toolUseId)
+    ) {
+      continue
+    }
+    projectedToolUseIds.add(view.toolUseId)
+    additions.push({
+      id: `user-decision-${view.toolUseId}`,
+      type: 'tool_use',
+      toolName: 'AskUserQuestion',
+      toolUseId: view.toolUseId,
+      input: view.input,
+      timestamp: messages[messages.length - 1]?.timestamp ?? 0,
+      isPending: false,
+    })
+  }
+  return additions.length > 0 ? [...messages, ...additions] : messages
 }
 
 const TOOL_FILE_PATH_FIELDS = new Set([
@@ -1757,9 +1802,15 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [backgroundAgentTasks])
   const hasRunningBackgroundTasks = hasAnyRunningBackgroundTasks(backgroundAgentTasks)
   const pendingPermissions = listPendingPermissions(sessionState)
-  const activeAskUserQuestionToolUseId =
-    pendingPermissions
-      .find((permission) => permission.toolName === 'AskUserQuestion')?.toolUseId ?? null
+  const askUserDecisionProjection = useMemo(
+    () => selectAskUserDecisionProjection(sessionState),
+    [sessionState],
+  )
+  const activeAskUserQuestionToolUseId = askUserDecisionProjection.active?.toolUseId ?? null
+  const projectedMessages = useMemo(
+    () => includeProjectedAsks(messages, askUserDecisionProjection),
+    [askUserDecisionProjection, messages],
+  )
   const hasPendingPermissionCard = pendingPermissions.some(
     (permission) => permission.toolName !== 'AskUserQuestion',
   )
@@ -2264,8 +2315,12 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [requestLiveFollow])
 
   const { toolResultMap, childToolCallsByParent, renderItems } = useMemo(
-    () => buildRenderModel(messages, activeAskUserQuestionToolUseId),
-    [activeAskUserQuestionToolUseId, messages],
+    () => buildRenderModel(
+      projectedMessages,
+      activeAskUserQuestionToolUseId,
+      askUserDecisionProjection.source === 'server',
+    ),
+    [activeAskUserQuestionToolUseId, askUserDecisionProjection.source, projectedMessages],
   )
   const turnReferencedFilesByMessageId = useMemo(
     () => buildTurnReferencedFilesByMessageId(messages),
@@ -3243,6 +3298,7 @@ export const MessageBlock = memo(function MessageBlock({
             toolUseId={message.toolUseId}
             input={message.input}
             result={toolResult?.content}
+            hasResult={toolResult != null}
           />
         )
       }

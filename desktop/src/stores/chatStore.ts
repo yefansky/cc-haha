@@ -40,6 +40,8 @@ import type {
   ServerMessage,
   TokenUsage,
   PermissionUpdate,
+  UserDecisionSnapshot,
+  UserDecisionSnapshotEntry,
 } from '../types/chat'
 import type {
   SlashCommandKind,
@@ -115,6 +117,8 @@ export type PerSessionState = {
   connectionState: ConnectionState
   /** True after the server's authoritative reconnect snapshot has arrived. */
   connectionSnapshotReady?: boolean
+  /** Present only when the connected server supplies the R2 decision projection. */
+  userDecisionSnapshot?: UserDecisionSnapshot
   historyStatus?: 'idle' | 'loading' | 'ready' | 'error'
   historyError?: string | null
   streamingText: string
@@ -292,6 +296,159 @@ export function getPendingPermission(
       ? session.pendingPermission
       : undefined
   )
+}
+
+export type AskUserDecisionView = {
+  source: 'server' | 'legacy'
+  toolUseId: string
+  input: unknown
+  decision: UserDecisionSnapshotEntry | null
+  pendingRequest: PendingPermission | null
+  terminal: boolean
+  readOnly: boolean
+  submitting: boolean
+}
+
+export type AskUserDecisionProjection = {
+  source: 'server' | 'legacy'
+  active: AskUserDecisionView | null
+  views: AskUserDecisionView[]
+}
+
+/**
+ * The only desktop AskUserQuestion projection. R2 bindings join by requestId;
+ * original/scoped tool ids have already been resolved by the server read model.
+ */
+export function selectAskUserDecisionProjection(
+  session: Pick<
+    PerSessionState,
+    'pendingPermission' | 'pendingPermissions' | 'userDecisionSnapshot'
+  > | undefined,
+): AskUserDecisionProjection {
+  if (!session) return { source: 'legacy', active: null, views: [] }
+
+  const pendingPermissions = getPendingPermissionRecord(session)
+  const snapshot = session.userDecisionSnapshot
+  if (!snapshot) {
+    const views = Object.values(pendingPermissions)
+      .filter((permission) => permission.toolName === 'AskUserQuestion' && permission.toolUseId)
+      .map((permission): AskUserDecisionView => ({
+        source: 'legacy',
+        toolUseId: permission.toolUseId!,
+        input: permission.input,
+        decision: null,
+        pendingRequest: permission,
+        terminal: false,
+        readOnly: false,
+        submitting: permission.responseState === 'submitting',
+      }))
+    return { source: 'legacy', active: views[0] ?? null, views }
+  }
+
+  const claimedRequestIds = new Set<string>()
+  const snapshotDecisionIds = new Set(snapshot.decisions.map((decision) => decision.decisionId))
+  const views = snapshot.decisions.map((decision): AskUserDecisionView => {
+    const attachedRequestId = decision.runtimeBinding.status === 'attached'
+      ? decision.runtimeBinding.requestId
+      : null
+    if (attachedRequestId) claimedRequestIds.add(attachedRequestId)
+    const terminal = decision.semanticState.status !== 'open'
+    const matchingPendingRequests = terminal || decision.conflicted
+      ? []
+      : Object.values(pendingPermissions).filter((permission) =>
+        permission.toolName === 'AskUserQuestion' &&
+        permission.toolUseId === decision.decisionId)
+    const validPendingRequest = matchingPendingRequests.length === 1
+      ? matchingPendingRequests[0]!
+      : null
+    if (validPendingRequest) claimedRequestIds.add(validPendingRequest.requestId)
+    const readOnly = terminal || decision.conflicted || !validPendingRequest
+    return {
+      source: 'server',
+      toolUseId: decision.decisionId,
+      input: decision.input,
+      decision,
+      pendingRequest: validPendingRequest,
+      terminal,
+      readOnly,
+      submitting: validPendingRequest?.responseState === 'submitting',
+    }
+  })
+
+  // Permission events produced after the atomic snapshot are ordinary live
+  // increments. They keep the established path until the next snapshot.
+  for (const permission of Object.values(pendingPermissions)) {
+    if (
+      permission.toolName !== 'AskUserQuestion' ||
+      !permission.toolUseId ||
+      claimedRequestIds.has(permission.requestId) ||
+      snapshotDecisionIds.has(permission.toolUseId)
+    ) {
+      continue
+    }
+    views.push({
+      source: 'legacy',
+      toolUseId: permission.toolUseId,
+      input: permission.input,
+      decision: null,
+      pendingRequest: permission,
+      terminal: false,
+      readOnly: false,
+      submitting: permission.responseState === 'submitting',
+    })
+  }
+
+  const active = views.find((view) =>
+    view.pendingRequest !== null &&
+    !view.readOnly) ?? null
+  return { source: 'server', active, views }
+}
+
+function hasToolResultEvidence(messages: UIMessage[], decisionId: string): boolean {
+  return messages.some((message) =>
+    message.type === 'tool_result' &&
+    (message.toolUseId === decisionId || message.originalToolUseId === decisionId))
+}
+
+function reconcileAskPermissionsWithUserDecisions(
+  session: Pick<PerSessionState, 'messages'>,
+  pendingPermissions: PendingPermissions,
+  snapshot: UserDecisionSnapshot | undefined,
+): PendingPermissions {
+  if (!snapshot) return pendingPermissions
+
+  const decisionsByRequestId = new Map<string, UserDecisionSnapshotEntry[]>()
+  for (const decision of snapshot.decisions) {
+    if (decision.runtimeBinding.status !== 'attached') continue
+    const candidates = decisionsByRequestId.get(decision.runtimeBinding.requestId) ?? []
+    candidates.push(decision)
+    decisionsByRequestId.set(decision.runtimeBinding.requestId, candidates)
+  }
+
+  const reconciled: PendingPermissions = {}
+  for (const [requestId, permission] of Object.entries(pendingPermissions)) {
+    if (permission.toolName !== 'AskUserQuestion') {
+      reconciled[requestId] = permission
+      continue
+    }
+    const candidates = decisionsByRequestId.get(permission.requestId) ?? []
+    if (candidates.length !== 1) continue
+    const decision = candidates[0]!
+    if (
+      decision.semanticState.status !== 'open' ||
+      decision.conflicted ||
+      permission.toolUseId !== decision.decisionId ||
+      hasToolResultEvidence(session.messages, decision.decisionId)
+    ) {
+      continue
+    }
+    reconciled[requestId] = {
+      ...permission,
+      input: decision.input,
+      ...(decision.description ? { description: decision.description } : {}),
+    }
+  }
+  return reconciled
 }
 
 type ChatStore = {
@@ -1384,6 +1541,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           ...createDefaultSessionState(),
           connectionState: 'connecting',
           connectionSnapshotReady: false,
+          userDecisionSnapshot: undefined,
           messages: existing?.messages ?? [],
           activeGoal: existing?.activeGoal ?? null,
           composerDraft: existing?.composerDraft ?? null,
@@ -1403,6 +1561,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         sessions: updateSessionIn(s.sessions, sessionId, (session) => ({
           connectionState,
           connectionSnapshotReady: false,
+          userDecisionSnapshot: undefined,
           stoppingBackgroundTaskIds:
             connectionState === 'connected' || session.stopAllSubagentsRequested
               ? session.stoppingBackgroundTaskIds
@@ -1415,6 +1574,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, () => ({
           connectionState: 'connected',
           connectionSnapshotReady: false,
+          userDecisionSnapshot: undefined,
         })) }))
       }
       get().handleServerMessage(sessionId, msg)
@@ -3028,9 +3188,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case 'permission_requests_snapshot':
         update((session) => {
           const toolRequestIds = new Set(msg.toolRequestIds)
-          const pendingPermissions = Object.fromEntries(
+          const legacyFilteredPermissions = Object.fromEntries(
             Object.entries(getPendingPermissionRecord(session))
               .filter(([requestId]) => toolRequestIds.has(requestId)),
+          )
+          const pendingPermissions = reconcileAskPermissionsWithUserDecisions(
+            session,
+            legacyFilteredPermissions,
+            msg.userDecisions,
           )
           const computerUseRequestIds = new Set(msg.computerUseRequestIds)
           const pendingComputerUsePermissions = Object.fromEntries(
@@ -3044,6 +3209,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
           return {
             connectionSnapshotReady: true,
+            userDecisionSnapshot: msg.userDecisions,
             pendingPermissions,
             pendingPermission: remainingPermissions[remainingPermissions.length - 1] ?? null,
             pendingComputerUsePermissions,

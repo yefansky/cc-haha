@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessageEntry } from '../types/session'
+import type { UserDecisionSnapshotEntry } from '../types/chat'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
 
 const {
@@ -140,6 +141,7 @@ import { useSettingsStore } from './settingsStore'
 import {
   mapHistoryMessagesToUiMessages,
   reconstructAgentNotifications,
+  selectAskUserDecisionProjection,
   stripGeneratedImageMetadataLines,
   type PerSessionState,
   useChatStore,
@@ -171,6 +173,24 @@ function makeSession(overrides: Partial<PerSessionState> = {}): PerSessionState 
     agentTaskNotifications: {},
     backgroundAgentTasks: {},
     elapsedTimer: null,
+    ...overrides,
+  }
+}
+
+function makeUserDecision(
+  decisionId: string,
+  overrides: Partial<UserDecisionSnapshotEntry> = {},
+): UserDecisionSnapshotEntry {
+  return {
+    decisionId,
+    semanticState: { status: 'open' },
+    runtimeBinding: { status: 'detached' },
+    response: null,
+    input: {
+      questions: [{ question: `Question for ${decisionId}?`, options: [{ label: 'Continue' }] }],
+    },
+    inputSource: 'transcript',
+    conflicted: false,
     ...overrides,
   }
 }
@@ -3792,6 +3812,318 @@ describe('chatStore history mapping', () => {
     const session = useChatStore.getState().sessions[TEST_SESSION_ID]
     expect(session?.pendingPermissions).not.toHaveProperty('perm-ask-snapshot')
     expect(session?.pendingPermission).toBeNull()
+  })
+
+  it('preserves the legacy AskUserQuestion lifecycle when userDecisions is omitted', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'perm-legacy-ask',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'tool-legacy-ask',
+      input: { questions: [{ question: 'Keep legacy behavior?', options: [{ label: 'Yes' }] }] },
+    })
+    store.respondToPermission(TEST_SESSION_ID, 'perm-legacy-ask', true)
+
+    // Deliberately omit userDecisions: old servers must retain the existing path.
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: ['perm-legacy-ask'],
+      computerUseRequestIds: [],
+      turnActive: true,
+    })
+
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    const projection = selectAskUserDecisionProjection(session)
+    expect(session?.userDecisionSnapshot).toBeUndefined()
+    expect(session?.pendingPermissions?.['perm-legacy-ask']?.responseState).toBe('submitting')
+    expect(projection.source).toBe('legacy')
+    expect(projection.active).toMatchObject({
+      toolUseId: 'tool-legacy-ask',
+      submitting: true,
+      readOnly: false,
+    })
+  })
+
+  it('clears the old decision baseline at a connection epoch boundary before accepting a new snapshot', () => {
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: makeSession({ connectionState: 'disconnected' }),
+      },
+    })
+    const store = useChatStore.getState()
+    store.connectToSession(TEST_SESSION_ID, {
+      prewarm: false,
+      applyRuntimeSelection: false,
+      minimalBootstrap: true,
+    })
+    const setConnectionState = connectionStateHandlers.get(TEST_SESSION_ID)
+    expect(setConnectionState).toBeDefined()
+    setConnectionState?.('connected')
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: [],
+      computerUseRequestIds: [],
+      turnActive: false,
+      userDecisions: {
+        transcriptEvidenceComplete: true,
+        decisions: [makeUserDecision('decision-old-epoch')],
+      },
+    })
+    expect(selectAskUserDecisionProjection(
+      useChatStore.getState().sessions[TEST_SESSION_ID],
+    ).views.map((view) => view.toolUseId)).toEqual(['decision-old-epoch'])
+
+    setConnectionState?.('reconnecting')
+    let session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    expect(session?.connectionSnapshotReady).toBe(false)
+    expect(session?.userDecisionSnapshot).toBeUndefined()
+
+    setConnectionState?.('connected')
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: [],
+      computerUseRequestIds: [],
+      turnActive: false,
+      userDecisions: {
+        transcriptEvidenceComplete: true,
+        decisions: [makeUserDecision('decision-new-epoch')],
+      },
+    })
+    session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    expect(selectAskUserDecisionProjection(session).views.map((view) => view.toolUseId))
+      .toEqual(['decision-new-epoch'])
+  })
+
+  it('lets terminal snapshot evidence beat a stale pending AskUserQuestion with an empty result', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'perm-stale-terminal',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'decision-terminal',
+      input: { questions: [{ question: 'Stale question?', options: [{ label: 'Yes' }] }] },
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: ['perm-stale-terminal'],
+      computerUseRequestIds: [],
+      turnActive: false,
+      userDecisions: {
+        transcriptEvidenceComplete: true,
+        decisions: [makeUserDecision('decision-terminal', {
+          semanticState: { status: 'answered' },
+          runtimeBinding: { status: 'detached' },
+          // A successful empty tool_result is terminal evidence without an answer payload.
+          response: null,
+        })],
+      },
+    })
+
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    const view = selectAskUserDecisionProjection(session).views[0]
+    expect(session?.pendingPermissions).not.toHaveProperty('perm-stale-terminal')
+    expect(view).toMatchObject({
+      toolUseId: 'decision-terminal',
+      terminal: true,
+      readOnly: true,
+      pendingRequest: null,
+      decision: { response: null, semanticState: { status: 'answered' } },
+    })
+  })
+
+  it('keeps multiple decision bindings and inputs isolated by tool use id', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    for (const suffix of ['a', 'b']) {
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_request',
+        requestId: `request-${suffix}`,
+        toolName: 'AskUserQuestion',
+        toolUseId: `decision-${suffix}`,
+        input: { questions: [{ question: 'Same live question?', options: [{ label: suffix }] }] },
+      })
+    }
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: ['request-a', 'request-b'],
+      computerUseRequestIds: [],
+      turnActive: true,
+      userDecisions: {
+        transcriptEvidenceComplete: true,
+        // Reverse the decision order so an implementation cannot pass by joining the first item.
+        decisions: [
+          makeUserDecision('decision-b', {
+            runtimeBinding: { status: 'attached', requestId: 'request-b' },
+            input: { questions: [{ question: 'Server question B?', options: [{ label: 'B' }] }] },
+          }),
+          makeUserDecision('decision-a', {
+            runtimeBinding: { status: 'attached', requestId: 'request-a' },
+            input: { questions: [{ question: 'Server question A?', options: [{ label: 'A' }] }] },
+          }),
+        ],
+      },
+    })
+
+    const projection = selectAskUserDecisionProjection(
+      useChatStore.getState().sessions[TEST_SESSION_ID],
+    )
+    const byId = Object.fromEntries(projection.views.map((view) => [view.toolUseId, view]))
+    expect(byId['decision-a']).toMatchObject({
+      input: { questions: [{ question: 'Server question A?' }] },
+      pendingRequest: { requestId: 'request-a', toolUseId: 'decision-a' },
+    })
+    expect(byId['decision-b']).toMatchObject({
+      input: { questions: [{ question: 'Server question B?' }] },
+      pendingRequest: { requestId: 'request-b', toolUseId: 'decision-b' },
+    })
+  })
+
+  it.each([
+    ['detached baseline', { status: 'detached' }],
+    ['missing old baseline request', { status: 'attached', requestId: 'request-old-baseline' }],
+  ] as const)('reattaches a unique live request to the same decision from a %s', (
+    _label,
+    runtimeBinding,
+  ) => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: [],
+      computerUseRequestIds: [],
+      turnActive: true,
+      userDecisions: {
+        transcriptEvidenceComplete: true,
+        decisions: [makeUserDecision('decision-reattach', { runtimeBinding })],
+      },
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'request-new-unique',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'decision-reattach',
+      input: { questions: [{ question: 'Fresh runtime request?', options: [{ label: 'Yes' }] }] },
+    })
+
+    const projection = selectAskUserDecisionProjection(
+      useChatStore.getState().sessions[TEST_SESSION_ID],
+    )
+    expect(projection.active).toMatchObject({
+      source: 'server',
+      toolUseId: 'decision-reattach',
+      readOnly: false,
+      pendingRequest: {
+        requestId: 'request-new-unique',
+        toolUseId: 'decision-reattach',
+      },
+    })
+  })
+
+  it.each([
+    'old baseline plus new request',
+    'two new requests',
+  ] as const)('fails closed when reattaching the same decision with %s', (scenario) => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    if (scenario === 'old baseline plus new request') {
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_request',
+        requestId: 'request-old-baseline',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'decision-ambiguous',
+        input: { questions: [{ question: 'Old runtime?', options: [{ label: 'Old' }] }] },
+      })
+    }
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: scenario === 'old baseline plus new request'
+        ? ['request-old-baseline']
+        : [],
+      computerUseRequestIds: [],
+      turnActive: true,
+      userDecisions: {
+        transcriptEvidenceComplete: true,
+        decisions: [makeUserDecision('decision-ambiguous', {
+          runtimeBinding: scenario === 'old baseline plus new request'
+            ? { status: 'attached', requestId: 'request-old-baseline' }
+            : { status: 'detached' },
+        })],
+      },
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'request-new-one',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'decision-ambiguous',
+      input: { questions: [{ question: 'New runtime one?', options: [{ label: 'One' }] }] },
+    })
+    if (scenario === 'two new requests') {
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_request',
+        requestId: 'request-new-two',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'decision-ambiguous',
+        input: { questions: [{ question: 'New runtime two?', options: [{ label: 'Two' }] }] },
+      })
+    }
+
+    const projection = selectAskUserDecisionProjection(
+      useChatStore.getState().sessions[TEST_SESSION_ID],
+    )
+    expect(projection.active).toBeNull()
+    expect(projection.views).toHaveLength(1)
+    expect(projection.views[0]).toMatchObject({
+      source: 'server',
+      toolUseId: 'decision-ambiguous',
+      readOnly: true,
+      pendingRequest: null,
+    })
+  })
+
+  it('accepts a live AskUserQuestion after the authoritative snapshot without inventing an answer', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: [],
+      computerUseRequestIds: [],
+      turnActive: true,
+      userDecisions: { transcriptEvidenceComplete: true, decisions: [] },
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_request',
+      requestId: 'request-post-snapshot',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'decision-post-snapshot',
+      input: { questions: [{ question: 'Arrived later?', options: [{ label: 'Yes' }] }] },
+    })
+
+    let projection = selectAskUserDecisionProjection(
+      useChatStore.getState().sessions[TEST_SESSION_ID],
+    )
+    expect(projection.source).toBe('server')
+    expect(projection.active).toMatchObject({
+      source: 'legacy',
+      toolUseId: 'decision-post-snapshot',
+      terminal: false,
+      readOnly: false,
+      pendingRequest: { requestId: 'request-post-snapshot' },
+    })
+
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_resolved',
+      requestId: 'request-post-snapshot',
+      permissionType: 'tool',
+      allowed: true,
+    })
+    projection = selectAskUserDecisionProjection(
+      useChatStore.getState().sessions[TEST_SESSION_ID],
+    )
+    expect(projection.views).toEqual([])
+    expect(projection.views.some((view) => view.terminal)).toBe(false)
   })
 
   it('keeps AskUserQuestion retryable when the local websocket send throws', () => {

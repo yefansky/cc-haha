@@ -1116,6 +1116,44 @@ describe('MessageList nested tool calls', () => {
     )
   })
 
+  it('treats a real successful empty tool result as terminal despite a stale pending request', () => {
+    const questionInput = {
+      questions: [{
+        question: 'Did the empty result finish this question?',
+        options: [{ label: 'Retry' }, { label: 'Wait' }],
+      }],
+    }
+    act(() => {
+      const store = useChatStore.getState()
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_request',
+        requestId: 'empty-result-request',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'empty-result-tool',
+        input: questionInput,
+      })
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'tool_result',
+        toolUseId: 'empty-result-tool',
+        content: '',
+        isError: false,
+      })
+    })
+
+    // Preserve the race that caused the bug: terminal transcript evidence has
+    // arrived, but transport cleanup has not removed the permission request yet.
+    expect(useChatStore.getState().sessions[ACTIVE_TAB]
+      ?.pendingPermissions?.['empty-result-request']).toBeDefined()
+
+    render(<MessageList />)
+
+    expect(screen.getByText('Did the empty result finish this question?')).toBeTruthy()
+    expect(screen.getByText('Completed')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Retry$/ })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('button', { name: /Submit$/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Chat about this/ })).toBeNull()
+  })
+
   it('keeps an unresolved AskUserQuestion read-only after its pending request is gone', () => {
     useChatStore.setState({
       sessions: {
@@ -1302,6 +1340,71 @@ describe('MessageList nested tool calls', () => {
         toolUseId: 'second-tool',
       },
     })
+  })
+
+  it('keeps every projected AskUserQuestion visible instead of selecting only one decision', () => {
+    const firstInput = {
+      questions: [{
+        question: 'First projected decision?',
+        options: [{ label: 'First choice' }],
+      }],
+    }
+    const secondInput = {
+      questions: [{
+        question: 'Second projected decision?',
+        options: [{ label: 'Second choice' }],
+      }],
+    }
+
+    act(() => {
+      const store = useChatStore.getState()
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'tool_use_complete',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'projected-decision-a',
+        input: firstInput,
+      })
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_request',
+        requestId: 'projected-request-a',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'projected-decision-a',
+        input: firstInput,
+      })
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: ['projected-request-a'],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          decisions: [{
+            decisionId: 'projected-decision-a',
+            semanticState: { status: 'open' },
+            runtimeBinding: { status: 'attached', requestId: 'projected-request-a' },
+            response: null,
+            input: firstInput,
+            inputSource: 'live',
+            conflicted: false,
+          }, {
+            decisionId: 'projected-decision-b',
+            semanticState: { status: 'open' },
+            runtimeBinding: { status: 'detached' },
+            response: null,
+            input: secondInput,
+            inputSource: 'transcript',
+            conflicted: false,
+          }],
+        },
+      })
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByText('First projected decision?')).toBeTruthy()
+    expect(screen.getByText('Second projected decision?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^First choice$/ })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: /^Second choice$/ })).toHaveProperty('disabled', true)
   })
 
   it('renders goal events as visible status cards', () => {

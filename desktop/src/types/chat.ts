@@ -81,6 +81,36 @@ export type UIAttachment = {
 
 // ─── Server → Client ──────────────────────────────────────────────
 
+export type UserDecisionResponse =
+  | { kind: 'answer'; answers: Readonly<Record<string, string>> }
+  | { kind: 'clarify'; message: string }
+
+export type UserDecisionSemanticState =
+  | { status: 'open' }
+  | { status: 'answered' }
+  | { status: 'superseded'; supersededById: string }
+  | { status: 'cancelled'; reason: string }
+
+export type UserDecisionRuntimeBinding =
+  | { status: 'attached'; requestId: string }
+  | { status: 'detached' }
+
+export type UserDecisionSnapshotEntry = {
+  decisionId: string
+  semanticState: UserDecisionSemanticState
+  runtimeBinding: UserDecisionRuntimeBinding
+  response: UserDecisionResponse | null
+  input: Record<string, unknown>
+  inputSource: 'transcript' | 'live'
+  conflicted: boolean
+  description?: string
+}
+
+export type UserDecisionSnapshot = {
+  transcriptEvidenceComplete: boolean
+  decisions: UserDecisionSnapshotEntry[]
+}
+
 export type ServerMessage =
   | { type: 'connected'; sessionId: string }
   | { type: 'session_state'; turnState: 'running' | 'idle' }
@@ -123,6 +153,7 @@ export type ServerMessage =
       toolRequestIds: string[]
       computerUseRequestIds: string[]
       turnActive: boolean
+      userDecisions?: UserDecisionSnapshot
     }
   | { type: 'user_message_replay'; messageUuid?: string; content: string }
   | { type: 'message_complete'; usage: TokenUsage }

@@ -522,6 +522,80 @@ describe('AskUserQuestion', () => {
     expect(screen.getByText(/Tool permission request failed: AbortError/)).toBeTruthy()
   })
 
+  it('does not call an open detached decision completed when it carries a non-terminal response', () => {
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          decisions: [{
+            decisionId: 'tool-open-detached',
+            semanticState: { status: 'open' },
+            runtimeBinding: { status: 'detached' },
+            response: { kind: 'answer', answers: { 'Choose a path?': 'Wait' } },
+            input: {
+              questions: [{
+                question: 'Choose a path?',
+                options: [{ label: 'Wait' }, { label: 'Continue' }],
+              }],
+            },
+            inputSource: 'transcript',
+            conflicted: false,
+          }],
+        },
+      })
+    })
+
+    render(
+      <AskUserQuestion
+        toolUseId="tool-open-detached"
+        input={{ questions: [{ question: 'Wrong fallback?', options: [{ label: 'Wrong' }] }] }}
+      />,
+    )
+
+    expect(screen.getByText('Choose a path?')).toBeTruthy()
+    expect(screen.queryByText('Completed')).toBeNull()
+    expect(screen.queryByText('Answered')).toBeNull()
+    expect(screen.getByRole('button', { name: /^Wait$/ })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
+  })
+
+  it('does not call a missing decision completed while transcript evidence is incomplete', () => {
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: false,
+        userDecisions: {
+          transcriptEvidenceComplete: false,
+          decisions: [],
+        },
+      })
+    })
+
+    render(
+      <AskUserQuestion
+        toolUseId="tool-not-yet-projected"
+        input={{
+          questions: [{
+            question: 'Was this history fully inspected?',
+            options: [{ label: 'Not yet' }],
+          }],
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Was this history fully inspected?')).toBeTruthy()
+    expect(screen.queryByText('Completed')).toBeNull()
+    expect(screen.queryByText('Answered')).toBeNull()
+    expect(screen.getByRole('button', { name: /^Not yet$/ })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
+  })
+
   describe('chat about this', () => {
     const SCOPE_INPUT = {
       questions: [
