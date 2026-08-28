@@ -25,6 +25,7 @@ const {
   sessionStoreSnapshot,
   cliTaskStoreSnapshot,
   connectionStateHandlers,
+  forceReconnectMock,
 } = vi.hoisted(() => ({
   sendMock: vi.fn(),
   getMemberBySessionIdMock: vi.fn<(sessionId: string) => any>(() => null),
@@ -61,6 +62,7 @@ const {
     sessionId: null as string | null,
   },
   connectionStateHandlers: new Map<string, (state: 'connecting' | 'connected' | 'reconnecting' | 'disconnected') => void>(),
+  forceReconnectMock: vi.fn(() => true),
 }))
 
 vi.mock('../lib/desktopNotifications', () => ({
@@ -71,6 +73,7 @@ vi.mock('../api/websocket', () => ({
   wsManager: {
     connect: vi.fn(),
     disconnect: vi.fn(),
+    forceReconnect: forceReconnectMock,
     onConnectionState: vi.fn((sessionId: string, handler: (state: 'connecting' | 'connected' | 'reconnecting' | 'disconnected') => void) => {
       connectionStateHandlers.set(sessionId, handler)
       handler('connecting')
@@ -144,6 +147,7 @@ import {
   selectAskUserDecisionInteraction,
   selectAskUserDecisionProjection,
   stripGeneratedImageMetadataLines,
+  type AskUserDecisionInteraction,
   type PerSessionState,
   useChatStore,
 } from './chatStore'
@@ -221,6 +225,7 @@ describe('stripGeneratedImageMetadataLines', () => {
 describe('chatStore tool settlement', () => {
   beforeEach(() => {
     sendMock.mockReset()
+    forceReconnectMock.mockClear()
     updateTabStatusMock.mockReset()
     notifyDesktopMock.mockReset()
     localStorage.clear()
@@ -4284,6 +4289,7 @@ describe('chatStore history mapping', () => {
     beforeEach(() => {
       useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
       sendMock.mockReset()
+      forceReconnectMock.mockClear()
     })
 
     const protocolSnapshot = (
@@ -4354,6 +4360,34 @@ describe('chatStore history mapping', () => {
       kind: 'answer',
       answers: { [`Question for ${decisionId}?`]: 'Continue' },
     })
+
+    it.each([false, true])(
+      'keeps a normal modern OPEN Ask editable when pendingRequest=%s',
+      (withPendingRequest) => {
+        const decisionId = `normal-open-${withPendingRequest}`
+        const requestId = `request-${decisionId}`
+        const snapshot = protocolSnapshot(decisionId, withPendingRequest
+          ? { runtimeBinding: { status: 'attached', requestId } }
+          : { runtimeBinding: { status: 'detached' } })
+        const pending = withPendingRequest ? {
+          requestId,
+          toolName: 'AskUserQuestion',
+          toolUseId: decisionId,
+          input: snapshot.decisions[0]!.input,
+        } : null
+        const session = makeSession({
+          chatState: 'thinking',
+          userDecisionSnapshot: snapshot,
+          pendingPermission: pending,
+          pendingPermissions: pending ? { [requestId]: pending } : {},
+        })
+
+        expect(selectAskUserDecisionProjection(session).views[0]).toMatchObject({
+          interaction: { mode: 'editing', channel: 'modern' },
+          pendingRequest: withPendingRequest ? { requestId } : null,
+        })
+      },
+    )
 
     it('selects the latest legacy Ask instead of the oldest pending request', () => {
       const store = useChatStore.getState()
@@ -4429,15 +4463,26 @@ describe('chatStore history mapping', () => {
         ['submitting', { state: 'submitting' }, 'syncing'],
         ['accepted', { state: 'accepted' }, 'syncing'],
         ['already_resolved', { state: 'already_resolved' }, 'syncing'],
-        ['indeterminate', { state: 'indeterminate' }, 'syncing'],
-        ['retryable_failed', { state: 'retryable_failed' }, 'retryable'],
+        ['indeterminate', {
+          state: 'indeterminate', nextAction: 'verify_same_attempt',
+        }, 'verifiable'],
+        ['retryable_failed', {
+          state: 'retryable_failed', nextAction: 'retry_new_attempt',
+        }, 'retryable'],
         ['editable rejected', {
           state: 'rejected',
+          nextAction: 'edit_response',
           error: { code: 'DECISION_RESPONSE_MISMATCH', message: 'edit the answer' },
         }, 'editing'],
         ['busy rejected', {
           state: 'rejected',
+          nextAction: 'resync',
           error: { code: 'USER_DECISION_DELIVERY_BUSY', message: 'verify the answer' },
+        }, 'resync'],
+        ['blocked rejected', {
+          state: 'rejected',
+          nextAction: 'blocked',
+          error: { code: 'ATTEMPT_CAPACITY_EXHAUSTED', message: 'manual recovery required' },
         }, 'blocked'],
       ] as const
       const capabilities = [
@@ -4467,6 +4512,65 @@ describe('chatStore history mapping', () => {
               violations.push(`${label}/${responseCapability?.status ?? 'missing'}/${transcriptEvidenceComplete}:${mode}`)
             }
           }
+        }
+      }
+
+      expect(violations).toEqual([])
+    })
+
+    it('enumerates every response state and nextAction pair through the wire validator', () => {
+      const actions = [
+        undefined,
+        'edit_response',
+        'retry_new_attempt',
+        'verify_same_attempt',
+        'resync',
+        'blocked',
+        'bogus',
+      ] as const
+      const states = [
+        ['accepted', { state: 'accepted', route: 'runtime_callback' }],
+        ['already_resolved', { state: 'already_resolved' }],
+        ['retryable_failed', {
+          state: 'retryable_failed', error: { code: 'RETRY', message: 'retry' },
+        }],
+        ['indeterminate', {
+          state: 'indeterminate', error: { code: 'UNKNOWN', message: 'unknown' },
+        }],
+        ['rejected', {
+          state: 'rejected', error: { code: 'REJECTED', message: 'rejected' },
+        }],
+      ] as const
+      const legalModes = new Map<string, AskUserDecisionInteraction['mode']>([
+        ['accepted/undefined', 'syncing'],
+        ['already_resolved/undefined', 'syncing'],
+        ['retryable_failed/retry_new_attempt', 'retryable'],
+        ['indeterminate/verify_same_attempt', 'verifiable'],
+        ['rejected/edit_response', 'editing'],
+        ['rejected/resync', 'resync'],
+        ['rejected/blocked', 'blocked'],
+      ])
+      const violations: string[] = []
+
+      for (const [state, statePayload] of states) {
+        for (const nextAction of actions) {
+          const decisionId = `matrix-${state}-${nextAction ?? 'none'}`
+          useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+          receiveProtocolSnapshot(decisionId)
+          respondWithAnswer(decisionId)
+          const { attemptId } = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+          useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+            type: 'user_decision_response_result',
+            decisionId,
+            attemptId,
+            ...statePayload,
+            ...(nextAction === undefined ? {} : { nextAction }),
+          } as never)
+          const mode = selectAskUserDecisionInteraction(
+            useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+          ).mode
+          const expected = legalModes.get(`${state}/${String(nextAction)}`) ?? 'resync'
+          if (mode !== expected) violations.push(`${state}/${String(nextAction)}:${mode}`)
         }
       }
 
@@ -4507,6 +4611,7 @@ describe('chatStore history mapping', () => {
       useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
         type: 'user_decision_response_result', decisionId, attemptId: first.attemptId,
         state: 'retryable_failed', error: { code: 'RATE_LIMITED', message: 'retry later' },
+        nextAction: 'retry_new_attempt',
       } as never)
 
       expect(respond(decisionId, { kind: 'clarify', message: 'ignored replacement' }))
@@ -4524,6 +4629,7 @@ describe('chatStore history mapping', () => {
       useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
         type: 'user_decision_response_result', decisionId, attemptId: first.attemptId,
         state: 'rejected',
+        nextAction: 'edit_response',
         error: { code: 'DECISION_RESPONSE_MISMATCH', message: 'answer no longer matches' },
       } as never)
       const edited = { kind: 'clarify' as const, message: 'use this edited response' }
@@ -4537,37 +4643,49 @@ describe('chatStore history mapping', () => {
       expect(second.response).toEqual(edited)
     })
 
-    it('rejects malformed response results without corrupting a valid retry exit', () => {
+    it('routes correlated malformed response results to resync and ignores uncorrelated frames', () => {
       const malformed = [
-        ['missing state', (id: string, attempt: string) => ({ decisionId: id, attemptId: attempt })],
-        ['missing decisionId', (_id: string, attempt: string) => ({
+        ['missing state', 'resync', (id: string, attempt: string) => ({ decisionId: id, attemptId: attempt })],
+        ['missing decisionId', 'retryable', (_id: string, attempt: string) => ({
           attemptId: attempt, state: 'rejected', error: { code: 'BAD', message: 'bad' },
         })],
-        ['missing attemptId', (id: string) => ({
+        ['missing attemptId', 'retryable', (id: string) => ({
           decisionId: id, state: 'rejected', error: { code: 'BAD', message: 'bad' },
         })],
-        ['unknown state', (id: string, attempt: string) => ({
+        ['unknown state', 'resync', (id: string, attempt: string) => ({
           decisionId: id, attemptId: attempt, state: 'unknown',
         })],
-        ['wrong state type', (id: string, attempt: string) => ({
+        ['wrong state type', 'resync', (id: string, attempt: string) => ({
           decisionId: id, attemptId: attempt, state: { invalid: true },
         })],
-        ['wrong id types', () => ({ decisionId: 7, attemptId: false, state: 'rejected' })],
-        ['stale attempt', (id: string) => ({
+        ['wrong id types', 'retryable', () => ({ decisionId: 7, attemptId: false, state: 'rejected' })],
+        ['stale attempt', 'retryable', (id: string) => ({
           decisionId: id, attemptId: 'expired', state: 'rejected',
           error: { code: 'STALE', message: 'stale' },
         })],
-        ['duplicate result', (id: string, attempt: string) => ({
+        ['missing nextAction', 'resync', (id: string, attempt: string) => ({
           decisionId: id, attemptId: attempt, state: 'retryable_failed',
           error: { code: 'RETRY', message: 'retry' },
         })],
-        ['malformed error', (id: string, attempt: string) => ({
+        ['malformed error', 'resync', (id: string, attempt: string) => ({
           decisionId: id, attemptId: attempt, state: 'retryable_failed', error: null,
+        })],
+        ['illegal retry action', 'resync', (id: string, attempt: string) => ({
+          decisionId: id, attemptId: attempt, state: 'retryable_failed',
+          error: { code: 'RETRY', message: 'retry' }, nextAction: 'verify_same_attempt',
+        })],
+        ['illegal indeterminate action', 'resync', (id: string, attempt: string) => ({
+          decisionId: id, attemptId: attempt, state: 'indeterminate',
+          error: { code: 'UNKNOWN', message: 'unknown' }, nextAction: 'retry_new_attempt',
+        })],
+        ['illegal accepted action', 'resync', (id: string, attempt: string) => ({
+          decisionId: id, attemptId: attempt, state: 'accepted',
+          route: 'runtime_callback', nextAction: 'resync',
         })],
       ] as const
       const violations: string[] = []
 
-      for (const [label, payload] of malformed) {
+      for (const [label, expectedMode, payload] of malformed) {
         const decisionId = `malformed-${label}`
         useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
         receiveProtocolSnapshot(decisionId)
@@ -4576,9 +4694,8 @@ describe('chatStore history mapping', () => {
         useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
           type: 'user_decision_response_result', decisionId, attemptId,
           state: 'retryable_failed', error: { code: 'RETRY', message: 'retry' },
+          nextAction: 'retry_new_attempt',
         } as never)
-        const before = useChatStore.getState().sessions[TEST_SESSION_ID]!
-          .userDecisionResponseAttempts?.[decisionId]
         try {
           useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
             type: 'user_decision_response_result', ...payload(decisionId, attemptId),
@@ -4588,14 +4705,73 @@ describe('chatStore history mapping', () => {
           continue
         }
         const session = useChatStore.getState().sessions[TEST_SESSION_ID]
-        const after = session?.userDecisionResponseAttempts?.[decisionId]
         const view = selectAskUserDecisionProjection(session).views[0]
-        if (JSON.stringify(after) !== JSON.stringify(before) || view?.interaction.mode !== 'retryable') {
-          violations.push(`${label}: corrupted retry exit`)
+        if (view?.interaction.mode !== expectedMode) {
+          violations.push(`${label}: expected ${expectedMode}, got ${view?.interaction.mode}`)
         }
       }
 
       expect(violations).toEqual([])
+    })
+
+    it('resyncs without replaying the answer and unlocks only after a fresh complete snapshot', () => {
+      const decisionId = 'decision-needs-resync'
+      receiveProtocolSnapshot(decisionId)
+      respondWithAnswer(decisionId)
+      const attempt = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+      useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId,
+        attemptId: attempt.attemptId,
+        state: 'rejected',
+        error: { code: 'USER_DECISION_DELIVERY_BUSY', message: 'refresh ownership' },
+        nextAction: 'resync',
+      } as never)
+      const decisionSendsBefore = sentDecisionResponses().length
+
+      expect(useChatStore.getState().resyncUserDecision(TEST_SESSION_ID, decisionId))
+        .toBe('dispatched')
+      expect(forceReconnectMock).toHaveBeenCalledWith(TEST_SESSION_ID)
+      expect(sentDecisionResponses()).toHaveLength(decisionSendsBefore)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+      ).mode).toBe('resync')
+
+      startFreshConnectionEpoch()
+      receiveProtocolSnapshot(decisionId, {}, false)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+      ).mode).toBe('resync')
+
+      expect(useChatStore.getState().resyncUserDecision(TEST_SESSION_ID, decisionId))
+        .toBe('dispatched')
+      startFreshConnectionEpoch()
+      receiveProtocolSnapshot(decisionId)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+      )).toEqual({ mode: 'editing', channel: 'modern' })
+      expect(sentDecisionResponses()).toHaveLength(decisionSendsBefore)
+    })
+
+    it('keeps blocked recovery fail-closed with no response dispatch', () => {
+      const decisionId = 'decision-blocked'
+      receiveProtocolSnapshot(decisionId)
+      respondWithAnswer(decisionId)
+      const attempt = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+      useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId,
+        attemptId: attempt.attemptId,
+        state: 'rejected',
+        error: { code: 'ATTEMPT_CAPACITY_EXHAUSTED', message: 'manual recovery required' },
+        nextAction: 'blocked',
+      } as never)
+      const sendsBefore = sentDecisionResponses().length
+
+      expect(respondWithAnswer(decisionId)).toBe('not-dispatched')
+      expect(useChatStore.getState().resyncUserDecision(TEST_SESSION_ID, decisionId))
+        .toBe('not-dispatched')
+      expect(sentDecisionResponses()).toHaveLength(sendsBefore)
     })
 
     it('lets an explicitly undelivered open decision return to editing', () => {
@@ -4615,6 +4791,7 @@ describe('chatStore history mapping', () => {
         decisionId,
         attemptId: original.attemptId,
         state: 'rejected',
+        nextAction: 'edit_response',
         error: {
           code: 'DECISION_RESPONSE_MISMATCH',
           message: 'response does not match the current questions',
@@ -4828,6 +5005,7 @@ describe('chatStore history mapping', () => {
       ['indeterminate', {
         state: 'indeterminate',
         error: { code: 'UNKNOWN', message: 'outcome unknown' },
+        nextAction: 'verify_same_attempt',
       }],
     ] as const)('replays one %s attempt once on a fresh capable snapshot', (
       _label,
@@ -4965,6 +5143,7 @@ describe('chatStore history mapping', () => {
         attemptId: 'stale-attempt',
         state: 'retryable_failed',
         error: { code: 'STALE', message: 'stale result' },
+        nextAction: 'retry_new_attempt',
       } as never)
       expect(sendMock.mock.calls.some(([, message]) =>
         (message as { type?: string }).type === 'sync_state')).toBe(false)
@@ -4978,6 +5157,7 @@ describe('chatStore history mapping', () => {
         attemptId: first.attemptId,
         state: 'retryable_failed',
         error: { code: 'TRY_AGAIN', message: 'retry this response' },
+        nextAction: 'retry_new_attempt',
       } as never)
       expect(sendMock.mock.calls.some(([, message]) =>
         (message as { type?: string }).type === 'sync_state')).toBe(false)
@@ -5000,7 +5180,11 @@ describe('chatStore history mapping', () => {
     it('keeps already-resolved and rejected attempts fail-closed without replay', () => {
       const states = [
         { state: 'already_resolved' },
-        { state: 'rejected', error: { code: 'REJECTED', message: 'response rejected' } },
+        {
+          state: 'rejected',
+          error: { code: 'REJECTED', message: 'response rejected' },
+          nextAction: 'blocked',
+        },
       ] as const
       for (const [index, result] of states.entries()) {
         const decisionId = `decision-hold-${index}`

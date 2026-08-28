@@ -108,6 +108,31 @@ describe('wsManager reconnect buffering', () => {
     expect(states).toEqual(['connecting', 'connected', 'reconnecting', 'reconnecting', 'connected'])
   })
 
+  it('force reconnect preserves handlers and queued messages', async () => {
+    wsManager.connect('session-force-reconnect')
+    const states: string[] = []
+    const messages: unknown[] = []
+    wsManager.onConnectionState('session-force-reconnect', state => states.push(state))
+    wsManager.onMessage('session-force-reconnect', message => messages.push(message))
+
+    const firstSocket = FakeWebSocket.instances[0]!
+    firstSocket.open()
+    expect(wsManager.forceReconnect('session-force-reconnect')).toBe(true)
+    wsManager.send('session-force-reconnect', { type: 'user_message', content: 'kept' })
+
+    await vi.advanceTimersByTimeAsync(1000)
+    const secondSocket = FakeWebSocket.instances[1]!
+    secondSocket.open()
+    secondSocket.receive({ type: 'session_state', turnState: 'idle' })
+
+    expect(secondSocket.sent).toEqual([
+      JSON.stringify({ type: 'user_message', content: 'kept' }),
+      JSON.stringify({ type: 'sync_state' }),
+    ])
+    expect(messages).toEqual([{ type: 'session_state', turnState: 'idle' }])
+    expect(states).toEqual(['connecting', 'connected', 'reconnecting', 'reconnecting', 'connected'])
+  })
+
   it('closes and reconnects a half-open socket when a pong never arrives', async () => {
     wsManager.connect('session-half-open')
     const firstSocket = FakeWebSocket.instances[0]!

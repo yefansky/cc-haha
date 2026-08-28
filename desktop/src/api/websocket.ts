@@ -125,6 +125,25 @@ class WebSocketManager {
     this.connections.delete(sessionId)
   }
 
+  forceReconnect(sessionId: string): boolean {
+    const conn = this.connections.get(sessionId)
+    if (!conn || conn.intentionalClose) return false
+    if (conn.reconnectTimer) return true
+
+    if (
+      conn.ws.readyState === WebSocket.CLOSED ||
+      conn.ws.readyState === WebSocket.CLOSING
+    ) {
+      this.emitConnectionState(conn, 'reconnecting')
+      this.scheduleReconnect(sessionId, conn)
+    } else {
+      // Follow the same non-intentional close path as heartbeat/network loss.
+      // That path retains handlers and queued messages on the Connection.
+      conn.ws.close()
+    }
+    return true
+  }
+
   disconnectAll() {
     for (const sessionId of [...this.connections.keys()]) {
       this.disconnect(sessionId)

@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 
-const { sendMock } = vi.hoisted(() => ({
+const { sendMock, forceReconnectMock } = vi.hoisted(() => ({
   sendMock: vi.fn(),
+  forceReconnectMock: vi.fn(() => true),
 }))
 
 vi.mock('../../api/websocket', () => ({
   wsManager: {
     connect: vi.fn(),
     disconnect: vi.fn(),
+    forceReconnect: forceReconnectMock,
     onConnectionState: vi.fn((_sessionId: string, handler: (state: string) => void) => {
       handler('connecting')
       return () => {}
@@ -36,6 +38,7 @@ const ACTIVE_TAB = 'active-tab'
 describe('AskUserQuestion', () => {
   beforeEach(() => {
     sendMock.mockReset()
+    forceReconnectMock.mockClear()
     useSettingsStore.setState({ locale: 'en' })
     useTabStore.setState({
       activeTabId: ACTIVE_TAB,
@@ -684,6 +687,7 @@ describe('AskUserQuestion', () => {
         attemptId: first.attemptId,
         state: 'retryable_failed',
         error: { code: 'TRY_AGAIN', message: 'Recovery was not started.' },
+        nextAction: 'retry_new_attempt',
       } as never)
     })
     expect(screen.getByRole('alert').textContent).toContain('Recovery was not started.')
@@ -710,6 +714,7 @@ describe('AskUserQuestion', () => {
         decisionId: 'tool-edit-rejected',
         attemptId: first.attemptId,
         state: 'rejected',
+        nextAction: 'edit_response',
         error: {
           code: 'DECISION_RESPONSE_MISMATCH',
           message: 'The questions changed before delivery.',
@@ -730,7 +735,7 @@ describe('AskUserQuestion', () => {
     expect(second.response.answers).toEqual({ 'Choose again?': 'No' })
   })
 
-  it('shows indeterminate delivery as an alert that waits without resending', () => {
+  it('checks indeterminate delivery with the same frozen attempt and response', () => {
     publishDecision('tool-indeterminate', 'Continue carefully?', ['Yes'])
     render(<AskUserQuestion toolUseId="tool-indeterminate" input={{}} />)
     fireEvent.click(screen.getByRole('button', { name: /^Yes$/ }))
@@ -743,15 +748,20 @@ describe('AskUserQuestion', () => {
         attemptId: request.attemptId,
         state: 'indeterminate',
         error: { code: 'UNKNOWN', message: 'Delivery outcome is unknown.' },
+        nextAction: 'verify_same_attempt',
       } as never)
     })
 
     expect(screen.getByRole('alert').textContent).toContain('Delivery outcome is unknown.')
-    expect(screen.getByRole('status').textContent).toContain('Loading...')
+    expect(screen.queryByText('Loading...')).toBeNull()
     expect(sendMock.mock.calls.filter(([, message]) =>
       (message as { type?: string }).type === 'user_decision_response')).toHaveLength(1)
-    expect(sendMock.mock.calls.some(([, message]) =>
-      (message as { type?: string }).type === 'sync_state')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: /check delivery/i }))
+    const repeated = sendMock.mock.calls.at(-1)?.[1] as typeof request & { response: unknown }
+    const original = sendMock.mock.calls.filter(([, message]) =>
+      (message as { type?: string }).type === 'user_decision_response')[0]?.[1] as typeof repeated
+    expect(repeated.attemptId).toBe(original.attemptId)
+    expect(repeated.response).toEqual(original.response)
   })
 
   it('does not guess a replay policy for a non-editable rejection', () => {
@@ -772,6 +782,7 @@ describe('AskUserQuestion', () => {
         decisionId,
         attemptId: original.attemptId,
         state: 'rejected',
+        nextAction: 'blocked',
         error: { code: 'USER_DECISION_DELIVERY_BUSY', message: 'delivery busy' },
       } as never)
     })
@@ -783,6 +794,34 @@ describe('AskUserQuestion', () => {
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
     expect(option).toHaveProperty('disabled', true)
     expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+  })
+
+  it('resyncs through reconnect without resubmitting the frozen answer', () => {
+    const decisionId = 'tool-resync'
+    publishDecision(decisionId, 'Refresh ownership?', ['Yes'])
+    render(<AskUserQuestion toolUseId={decisionId} input={{}} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Yes$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    const original = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'user_decision_response_result',
+        decisionId,
+        attemptId: original.attemptId,
+        state: 'rejected',
+        error: { code: 'USER_DECISION_DELIVERY_BUSY', message: 'refresh ownership' },
+        nextAction: 'resync',
+      } as never)
+    })
+    const sendsBefore = sendMock.mock.calls.filter(([, message]) =>
+      (message as { type?: string }).type === 'user_decision_response').length
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh question/i }))
+
+    expect(forceReconnectMock).toHaveBeenCalledWith(ACTIVE_TAB)
+    expect(sendMock.mock.calls.filter(([, message]) =>
+      (message as { type?: string }).type === 'user_decision_response')).toHaveLength(sendsBefore)
+    expect(screen.getByRole('alert').textContent).toContain('refresh ownership')
   })
 
   it('restores a frozen clarification summary without claiming it was answered', () => {
@@ -798,6 +837,7 @@ describe('AskUserQuestion', () => {
                 attemptId: 'clarify-attempt',
                 response: { kind: 'clarify', message: 'Please explain the tradeoff first.' },
                 state: 'rejected',
+                nextAction: 'blocked',
                 error: { code: 'WAIT', message: 'Waiting for authoritative result.' },
               },
             },

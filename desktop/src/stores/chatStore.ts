@@ -115,23 +115,17 @@ export type UserDecisionResponseAttempt = Readonly<{
     | 'retryable_failed'
     | 'rejected'
   error?: Readonly<{ code: string; message: string }>
+  nextAction?: UserDecisionFailureNextAction
 }>
 
 type UserDecisionResponseAttempts = Record<string, UserDecisionResponseAttempt>
 
-const EDITABLE_USER_DECISION_REJECTION_CODES = new Set([
-  'INVALID_USER_DECISION_RESPONSE',
-  'DECISION_RESPONSE_MISMATCH',
-  'RESPONSE_TOO_LARGE',
-])
-
-function isEditableUserDecisionRejection(
-  attempt: UserDecisionResponseAttempt | undefined,
-): boolean {
-  return attempt?.state === 'rejected' &&
-    typeof attempt.error?.code === 'string' &&
-    EDITABLE_USER_DECISION_REJECTION_CODES.has(attempt.error.code)
-}
+type UserDecisionFailureNextAction =
+  | 'edit_response'
+  | 'retry_new_attempt'
+  | 'verify_same_attempt'
+  | 'resync'
+  | 'blocked'
 
 type PendingPermissions = Record<string, PendingPermission>
 
@@ -305,9 +299,10 @@ function isUserDecisionResponseResultMessage(
   ) return false
 
   if (message.state === 'accepted') {
-    return message.route === 'runtime_callback' || message.route === 'orphaned_recovery'
+    return message.nextAction === undefined &&
+      (message.route === 'runtime_callback' || message.route === 'orphaned_recovery')
   }
-  if (message.state === 'already_resolved') return true
+  if (message.state === 'already_resolved') return message.nextAction === undefined
   if (
     message.state !== 'retryable_failed' &&
     message.state !== 'indeterminate' &&
@@ -316,12 +311,30 @@ function isUserDecisionResponseResultMessage(
 
   if (!message.error || typeof message.error !== 'object') return false
   const error = message.error as Record<string, unknown>
-  return typeof error.code === 'string' && typeof error.message === 'string'
+  if (typeof error.code !== 'string' || typeof error.message !== 'string') return false
+  if (message.state === 'retryable_failed') return message.nextAction === 'retry_new_attempt'
+  if (message.state === 'indeterminate') return message.nextAction === 'verify_same_attempt'
+  return message.nextAction === 'edit_response' ||
+    message.nextAction === 'resync' ||
+    message.nextAction === 'blocked'
+}
+
+function getUserDecisionResponseResultTarget(
+  value: unknown,
+): { decisionId: string; attemptId: string } | null {
+  if (!value || typeof value !== 'object') return null
+  const message = value as Record<string, unknown>
+  return message.type === 'user_decision_response_result' &&
+    typeof message.decisionId === 'string' &&
+    typeof message.attemptId === 'string'
+    ? { decisionId: message.decisionId, attemptId: message.attemptId }
+    : null
 }
 
 function reconcileUserDecisionResponseAttempts(
   attempts: UserDecisionResponseAttempts | undefined,
   snapshot: UserDecisionSnapshot | undefined,
+  freshConnectionSnapshot = false,
 ): UserDecisionResponseAttempts {
   if (!attempts) return {}
   if (!snapshot?.transcriptEvidenceComplete) return attempts
@@ -331,7 +344,9 @@ function reconcileUserDecisionResponseAttempts(
       .map((decision) => decision.decisionId),
   )
   return Object.fromEntries(
-    Object.entries(attempts).filter(([decisionId]) => openDecisionIds.has(decisionId)),
+    Object.entries(attempts).filter(([decisionId, attempt]) =>
+      openDecisionIds.has(decisionId) &&
+      !(freshConnectionSnapshot && attempt.nextAction === 'resync')),
   )
 }
 
@@ -408,6 +423,8 @@ export type AskUserDecisionInteraction =
   | { mode: 'editing'; channel: 'modern' }
   | { mode: 'editing'; channel: 'legacy'; requestId: string }
   | { mode: 'retryable' }
+  | { mode: 'verifiable' }
+  | { mode: 'resync' }
   | { mode: 'syncing'; frozen: boolean }
   | { mode: 'settled' }
   | {
@@ -456,13 +473,12 @@ function canAutoReplayUserDecisionResponse(
 function selectModernUserDecisionInteraction(
   attempt: UserDecisionResponseAttempt | undefined,
 ): AskUserDecisionInteraction {
-  if (!attempt || isEditableUserDecisionRejection(attempt)) {
-    return { mode: 'editing', channel: 'modern' }
-  }
-  if (attempt.state === 'retryable_failed') return { mode: 'retryable' }
-  if (attempt.state === 'rejected') {
-    return { mode: 'blocked', reason: 'delivery_rejected' }
-  }
+  if (!attempt) return { mode: 'editing', channel: 'modern' }
+  if (attempt.nextAction === 'edit_response') return { mode: 'editing', channel: 'modern' }
+  if (attempt.nextAction === 'retry_new_attempt') return { mode: 'retryable' }
+  if (attempt.nextAction === 'verify_same_attempt') return { mode: 'verifiable' }
+  if (attempt.nextAction === 'resync') return { mode: 'resync' }
+  if (attempt.nextAction === 'blocked') return { mode: 'blocked', reason: 'delivery_rejected' }
   return { mode: 'syncing', frozen: true }
 }
 
@@ -796,6 +812,10 @@ type ChatStore = {
     sessionId: string,
     decisionId: string,
     response: UserDecisionResponse,
+  ) => PermissionResponseDispatchResult
+  resyncUserDecision: (
+    sessionId: string,
+    decisionId: string,
   ) => PermissionResponseDispatchResult
   respondToComputerUsePermission: (
     sessionId: string,
@@ -2164,7 +2184,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   respondToUserDecision: (sessionId, decisionId, response) => {
-    const attemptId = crypto.randomUUID()
+    let attemptId: string | undefined
     let claimed = false
     let previousAttempt: UserDecisionResponseAttempt | undefined
     let responseToSend: UserDecisionResponse | undefined
@@ -2179,7 +2199,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             'orphaned-permission-v1' ||
           (
             interaction.mode !== 'editing' &&
-            interaction.mode !== 'retryable'
+            interaction.mode !== 'retryable' &&
+            interaction.mode !== 'verifiable'
           ) ||
           (
             interaction.mode === 'editing' &&
@@ -2188,17 +2209,21 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ) return {}
 
         previousAttempt = previous
-        const editableFailure = isEditableUserDecisionRejection(previousAttempt)
-        if (
-          previousAttempt &&
-          previousAttempt.state !== 'retryable_failed' &&
-          !editableFailure
-        ) return {}
-        responseToSend = previousAttempt?.state === 'retryable_failed'
-          ? previousAttempt.response
-          : freezeUserDecisionResponse(response)
+        if (interaction.mode === 'verifiable') {
+          if (previousAttempt?.nextAction !== 'verify_same_attempt') return {}
+          attemptId = previousAttempt.attemptId
+          responseToSend = previousAttempt.response
+        } else if (interaction.mode === 'retryable') {
+          if (previousAttempt?.nextAction !== 'retry_new_attempt') return {}
+          attemptId = crypto.randomUUID()
+          responseToSend = previousAttempt.response
+        } else {
+          if (previousAttempt && previousAttempt.nextAction !== 'edit_response') return {}
+          attemptId = crypto.randomUUID()
+          responseToSend = freezeUserDecisionResponse(response)
+        }
         const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
-          attemptId,
+          attemptId: attemptId!,
           response: responseToSend,
           state: 'submitting',
         })
@@ -2211,7 +2236,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
       }),
     }))
-    if (!claimed || !responseToSend) return 'not-dispatched'
+    if (!claimed || !attemptId || !responseToSend) return 'not-dispatched'
 
     try {
       wsManager.send(sessionId, {
@@ -2234,6 +2259,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return 'not-dispatched'
     }
     return 'dispatched'
+  },
+
+  resyncUserDecision: (sessionId, decisionId) => {
+    const session = get().sessions[sessionId]
+    if (selectAskUserDecisionInteraction(session, decisionId).mode !== 'resync') {
+      return 'not-dispatched'
+    }
+
+    // `sync_state` refreshes only the turn state. A normal reconnect is the
+    // existing protocol path that rebuilds the authoritative Ask projection.
+    // Keep the attempt frozen until that fresh, complete snapshot arrives.
+    return wsManager.forceReconnect(sessionId) ? 'dispatched' : 'not-dispatched'
   },
 
   respondToComputerUsePermission: (sessionId, requestId, response) => {
@@ -3520,8 +3557,29 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case 'user_decision_response_result': {
         // WebSocket payloads are external input. The compile-time ServerMessage
         // union cannot protect this reducer from malformed or version-skewed
-        // frames, so reject them before they can overwrite a valid recovery exit.
-        if (!isUserDecisionResponseResultMessage(msg)) break
+        // frames. A correlated invalid result is itself uncertainty, so route
+        // it to authoritative resync instead of guessing from an error code.
+        if (!isUserDecisionResponseResultMessage(msg)) {
+          const target = getUserDecisionResponseResultTarget(msg)
+          if (!target) break
+          update((session) => {
+            const attempts = session.userDecisionResponseAttempts ?? {}
+            const current = attempts[target.decisionId]
+            if (!current || current.attemptId !== target.attemptId) return {}
+            return {
+              userDecisionResponseAttempts: {
+                ...attempts,
+                [target.decisionId]: Object.freeze({
+                  attemptId: current.attemptId,
+                  response: current.response,
+                  state: 'rejected',
+                  nextAction: 'resync',
+                }),
+              },
+            }
+          })
+          break
+        }
         update((session) => {
           const attempts = session.userDecisionResponseAttempts ?? {}
           const current = attempts[msg.decisionId]
@@ -3533,6 +3591,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             ...('error' in msg
               ? { error: Object.freeze({ ...msg.error }) }
               : {}),
+            ...('nextAction' in msg ? { nextAction: msg.nextAction } : {}),
           })
           return {
             userDecisionResponseAttempts: {
@@ -3649,6 +3708,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const reconciledAttempts = reconcileUserDecisionResponseAttempts(
             session.userDecisionResponseAttempts,
             msg.userDecisions,
+            freshConnectionSnapshot,
           )
 
           if (

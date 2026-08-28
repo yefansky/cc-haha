@@ -2051,6 +2051,8 @@ export const zh: Record<TranslationKey, string> = {
   'question.customResponse': '或輸入自定義回覆:',
   'question.typePlaceholder': '輸入你的回答...',
   'question.submit': '提交',
+  'question.verifyDelivery': '檢查提交狀態',
+  'question.resync': '重新整理問題狀態',
   'question.answeredPrefix': '已回答: ',
   'question.resultPrefix': '結果: ',
   'question.chatAboutThis': '和 Claude 聊聊',

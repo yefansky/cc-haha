@@ -73,6 +73,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
   const {
     respondToPermission,
     respondToUserDecision,
+    resyncUserDecision,
   } = useChatStore()
   const activeTabId = useTabStore((s) => s.activeTabId)
   const targetSessionId = sessionId ?? activeTabId
@@ -180,7 +181,9 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
     : projectedInteraction
   const editing = interaction.mode === 'editing'
   const retryable = interaction.mode === 'retryable'
-  const frozen = retryable || (
+  const verifiable = interaction.mode === 'verifiable'
+  const needsResync = interaction.mode === 'resync'
+  const frozen = retryable || verifiable || needsResync || (
     interaction.mode === 'syncing' && interaction.frozen
   )
   const authoritativeHistory = decisionProjection.source === 'legacy' &&
@@ -246,6 +249,14 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
     if (semanticallySubmitted || !targetSessionId) return
     if (retryable && retryResponse) {
       respondToUserDecision(targetSessionId, toolUseId, retryResponse)
+      return
+    }
+    if (verifiable && retryResponse) {
+      respondToUserDecision(targetSessionId, toolUseId, retryResponse)
+      return
+    }
+    if (needsResync) {
+      resyncUserDecision(targetSessionId, toolUseId)
       return
     }
     if (!editing) return
@@ -494,7 +505,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
         )}
         {!semanticallySubmitted && deliveryState && (
           <p role="status" className="mt-3 text-xs text-[var(--color-text-secondary)]">
-            {deliveryState !== 'retryable_failed' && frozen && deliveryState !== 'rejected' && (
+            {interaction.mode === 'syncing' && frozen && (
               <span>{t('common.loading')} </span>
             )}
             {frozenResponseSummary && <strong>{frozenResponseSummary}</strong>}
@@ -515,20 +526,27 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
               <span className="material-symbols-outlined text-[14px]">send</span>
             }
           >
-            {t(retryable ? 'common.retry' : 'question.submit')}
+            {t(retryable
+              ? 'common.retry'
+              : verifiable
+                ? 'question.verifyDelivery'
+                : needsResync
+                  ? 'question.resync'
+                  : 'question.submit')}
           </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={!editing}
-            onClick={handleChatAboutThis}
-            title={t('question.chatAboutThisHint')}
-            icon={
-              <span className="material-symbols-outlined text-[14px]">forum</span>
-            }
-          >
-            {t('question.chatAboutThis')}
-          </Button>
+          {editing && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleChatAboutThis}
+              title={t('question.chatAboutThisHint')}
+              icon={
+                <span className="material-symbols-outlined text-[14px]">forum</span>
+              }
+            >
+              {t('question.chatAboutThis')}
+            </Button>
+          )}
         </div>
       )}
     </div>

@@ -137,8 +137,19 @@ export type UserDecisionResponseResult = {
   | { state: 'accepted'; route: 'runtime_callback' | 'orphaned_recovery' }
   | { state: 'already_resolved' }
   | {
-      state: 'retryable_failed' | 'indeterminate' | 'rejected'
+      state: 'retryable_failed'
       error: { code: string; message: string }
+      nextAction: 'retry_new_attempt'
+    }
+  | {
+      state: 'indeterminate'
+      error: { code: string; message: string }
+      nextAction: 'verify_same_attempt'
+    }
+  | {
+      state: 'rejected'
+      error: { code: string; message: string }
+      nextAction: 'edit_response' | 'resync' | 'blocked'
     }
 )
 

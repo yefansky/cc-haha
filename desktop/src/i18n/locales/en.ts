@@ -2051,6 +2051,8 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'question.customResponse': 'Or type a custom response:',
   'question.typePlaceholder': 'Type your answer...',
   'question.submit': 'Submit',
+  'question.verifyDelivery': 'Check delivery',
+  'question.resync': 'Refresh question',
   'question.answeredPrefix': 'Answered: ',
   'question.resultPrefix': 'Result: ',
   'question.chatAboutThis': 'Chat about this',

@@ -2052,6 +2052,8 @@ export const jp: Record<TranslationKey, string> = {
   'question.customResponse': 'または、独自の回答を入力してください:',
   'question.typePlaceholder': '回答を入力...',
   'question.submit': '送信',
+  'question.verifyDelivery': '送信状態を確認',
+  'question.resync': '質問を再同期',
   'question.answeredPrefix': '回答: ',
   'question.resultPrefix': '結果: ',
   'question.chatAboutThis': 'Claude と相談する',
