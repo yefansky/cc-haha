@@ -1,4 +1,4 @@
-import { create } from 'zustand'
+import { create, type StoreApi } from 'zustand'
 import { wsManager } from '../api/websocket'
 import { sessionsApi } from '../api/sessions'
 import { useTeamStore } from './teamStore'
@@ -115,6 +115,8 @@ export type UserDecisionResponseAttempt = Readonly<{
     | 'rejected'
   error?: Readonly<{ code: string; message: string }>
   nextAction?: UserDecisionFailureNextAction
+  /** True after the user explicitly rechecks this exact frozen attempt. */
+  manualVerifyUsed?: boolean
 }>
 
 type UserDecisionResponseAttempts = Record<string, UserDecisionResponseAttempt>
@@ -349,8 +351,9 @@ function reconcileUserDecisionResponseAttempts(
   )
 }
 
-function resyncUserDecisionAttemptsAfterConnectionLoss(
+function resyncInFlightUserDecisionAttempts(
   attempts: UserDecisionResponseAttempts | undefined,
+  error?: Readonly<{ code: string; message: string }>,
 ): UserDecisionResponseAttempts {
   if (!attempts) return {}
   let changed = false
@@ -367,6 +370,8 @@ function resyncUserDecisionAttemptsAfterConnectionLoss(
         response: attempt.response,
         state: 'rejected' as const,
         nextAction: 'resync' as const,
+        ...(error ? { error } : {}),
+        ...(attempt.manualVerifyUsed ? { manualVerifyUsed: true } : {}),
       })]
     }),
   )
@@ -1846,6 +1851,52 @@ function shouldPrewarmSession(sessionId: string): boolean {
   return knownSession?.messageCount === 0
 }
 
+const USER_DECISION_WATCHDOG_MS = 10_000
+
+function scheduleUserDecisionWatchdog(
+  set: StoreApi<ChatStore>['setState'],
+  sessionId: string,
+  decisionId: string,
+  expectedAttempt: UserDecisionResponseAttempt,
+  expectedState: 'submitting' | 'accepted',
+): void {
+  setTimeout(() => {
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (session) => {
+        const attempts = session.userDecisionResponseAttempts ?? {}
+        const current = attempts[decisionId]
+        if (
+          session.connectionState !== 'connected' ||
+          current !== expectedAttempt ||
+          current.attemptId !== expectedAttempt.attemptId ||
+          current.state !== expectedState ||
+          current.manualVerifyUsed !== expectedAttempt.manualVerifyUsed
+        ) return {}
+
+        const verificationTimedOut =
+          expectedState === 'submitting' && current.manualVerifyUsed === true
+        const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
+          attemptId: current.attemptId,
+          response: current.response,
+          state: verificationTimedOut || expectedState === 'accepted'
+            ? 'rejected'
+            : 'indeterminate',
+          nextAction: verificationTimedOut || expectedState === 'accepted'
+            ? 'resync'
+            : 'verify_same_attempt',
+          ...(current.manualVerifyUsed ? { manualVerifyUsed: true } : {}),
+        })
+        return {
+          userDecisionResponseAttempts: {
+            ...attempts,
+            [decisionId]: nextAttempt,
+          },
+        }
+      }),
+    }))
+  }, USER_DECISION_WATCHDOG_MS)
+}
+
 export const useChatStore = create<ChatStore>((set, get) => ({
   sessions: {},
 
@@ -1901,7 +1952,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             connectionSnapshotReady: false,
             userDecisionSnapshot: undefined,
             userDecisionResponseAttempts: leftConnected
-              ? resyncUserDecisionAttemptsAfterConnectionLoss(
+              ? resyncInFlightUserDecisionAttempts(
                   session.userDecisionResponseAttempts,
                 )
               : session.userDecisionResponseAttempts,
@@ -2197,6 +2248,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     let claimed = false
     let previousAttempt: UserDecisionResponseAttempt | undefined
     let responseToSend: UserDecisionResponse | undefined
+    let dispatchedAttempt: UserDecisionResponseAttempt | undefined
 
     set((state) => ({
       sessions: updateSessionIn(state.sessions, sessionId, (session) => {
@@ -2235,7 +2287,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           attemptId: attemptId!,
           response: responseToSend,
           state: 'submitting',
+          ...(interaction.mode === 'verifiable' ? { manualVerifyUsed: true } : {}),
         })
+        dispatchedAttempt = nextAttempt
         claimed = true
         return {
           userDecisionResponseAttempts: {
@@ -2266,6 +2320,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }))
       return 'not-dispatched'
     }
+    scheduleUserDecisionWatchdog(
+      set,
+      sessionId,
+      decisionId,
+      dispatchedAttempt!,
+      'submitting',
+    )
     return 'dispatched'
   },
 
@@ -3573,7 +3634,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           update((session) => {
             const attempts = session.userDecisionResponseAttempts ?? {}
             const current = attempts[target.decisionId]
-            if (!current || current.attemptId !== target.attemptId) return {}
+            if (
+              !current ||
+              current.attemptId !== target.attemptId ||
+              current.state === 'already_resolved'
+            ) return {}
             return {
               userDecisionResponseAttempts: {
                 ...attempts,
@@ -3582,30 +3647,48 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                   response: current.response,
                   state: 'rejected',
                   nextAction: 'resync',
+                  ...(current.manualVerifyUsed ? { manualVerifyUsed: true } : {}),
                 }),
               },
             }
           })
           break
         }
+        let acceptedAttempt: UserDecisionResponseAttempt | undefined
         update((session) => {
           const attempts = session.userDecisionResponseAttempts ?? {}
           const current = attempts[msg.decisionId]
-          if (!current || current.attemptId !== msg.attemptId) return {}
+          if (
+            !current ||
+            current.attemptId !== msg.attemptId ||
+            current.state === 'already_resolved'
+          ) return {}
+          if (current.state === 'accepted' && msg.state !== 'already_resolved') return {}
           if (
             current.state === 'rejected' &&
             current.nextAction === 'resync' &&
             msg.state !== 'already_resolved'
           ) return {}
+          const indeterminateAfterManualVerify =
+            msg.state === 'indeterminate' && current.manualVerifyUsed === true
           const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
             attemptId: current.attemptId,
             response: current.response,
-            state: msg.state,
-            ...('error' in msg
+            state: indeterminateAfterManualVerify ? 'rejected' : msg.state,
+            ...(indeterminateAfterManualVerify
+              ? {
+                  error: Object.freeze({ ...msg.error }),
+                  nextAction: 'resync' as const,
+                }
+              : 'error' in msg
               ? { error: Object.freeze({ ...msg.error }) }
               : {}),
-            ...('nextAction' in msg ? { nextAction: msg.nextAction } : {}),
+            ...(!indeterminateAfterManualVerify && 'nextAction' in msg
+              ? { nextAction: msg.nextAction }
+              : {}),
+            ...(current.manualVerifyUsed ? { manualVerifyUsed: true } : {}),
           })
+          if (nextAttempt.state === 'accepted') acceptedAttempt = nextAttempt
           return {
             userDecisionResponseAttempts: {
               ...attempts,
@@ -3613,6 +3696,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             },
           }
         })
+        if (acceptedAttempt) {
+          scheduleUserDecisionWatchdog(
+            set,
+            sessionId,
+            msg.decisionId,
+            acceptedAttempt,
+            'accepted',
+          )
+        }
         break
       }
 
@@ -3887,6 +3979,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           ]
           return {
             messages: newMessages,
+            userDecisionResponseAttempts: resyncInFlightUserDecisionAttempts(
+              s.userDecisionResponseAttempts,
+              Object.freeze({
+                code: msg.code ?? 'CLIENT_SESSION_ERROR',
+                message: msg.message,
+              }),
+            ),
             chatState: 'idle',
             activeThinkingId: null,
             streamingText: '',

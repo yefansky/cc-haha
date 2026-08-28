@@ -5555,6 +5555,393 @@ describe('chatStore history mapping', () => {
       expect(sendMock).not.toHaveBeenCalled()
     })
 
+    describe('10-second response watchdog', () => {
+      beforeEach(() => {
+        vi.useFakeTimers()
+      })
+
+      afterEach(() => {
+        vi.clearAllTimers()
+        vi.useRealTimers()
+      })
+
+      it('opens same-attempt verification exactly at the first acknowledgement deadline', () => {
+        const decisionId = 'watchdog-first-ack'
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const sentBeforeTimeout = sentDecisionResponses()
+
+        vi.advanceTimersByTime(9_999)
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        ).mode).toBe('syncing')
+
+        vi.advanceTimersByTime(1)
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        ).mode).toBe('verifiable')
+        expect(sentDecisionResponses()).toEqual(sentBeforeTimeout)
+
+        vi.advanceTimersByTime(1)
+        expect(sentDecisionResponses()).toEqual(sentBeforeTimeout)
+      })
+
+      it('allows one manual same-attempt check, then requires resync on silence', () => {
+        const decisionId = 'watchdog-manual-verify'
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const first = sentDecisionResponses().at(-1)?.[1] as {
+          attemptId: string
+          response: UserDecisionResponse
+        }
+        vi.advanceTimersByTime(10_000)
+
+        expect(respond(decisionId, { kind: 'clarify', message: 'must stay frozen' }))
+          .toBe('dispatched')
+        const second = sentDecisionResponses().at(-1)?.[1] as typeof first
+        expect(second).toEqual(first)
+        expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts?.[decisionId]?.manualVerifyUsed).toBe(true)
+        const sendsAfterManualCheck = sentDecisionResponses()
+
+        vi.advanceTimersByTime(9_999)
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        ).mode).toBe('syncing')
+        vi.advanceTimersByTime(1)
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        ).mode).toBe('resync')
+        expect(sentDecisionResponses()).toEqual(sendsAfterManualCheck)
+      })
+
+      it('does not offer an infinite check loop when the manual check is indeterminate', () => {
+        const decisionId = 'watchdog-manual-indeterminate'
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const first = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+        useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result',
+          decisionId,
+          attemptId: first.attemptId,
+          state: 'indeterminate',
+          error: { code: 'UNKNOWN', message: 'unknown' },
+          nextAction: 'verify_same_attempt',
+        } as never)
+        respondWithAnswer(decisionId)
+        const sendsAfterManualCheck = sentDecisionResponses()
+
+        useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result',
+          decisionId,
+          attemptId: first.attemptId,
+          state: 'indeterminate',
+          error: { code: 'STILL_UNKNOWN', message: 'still unknown' },
+          nextAction: 'verify_same_attempt',
+        } as never)
+
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        ).mode).toBe('resync')
+        vi.advanceTimersByTime(10_001)
+        expect(sentDecisionResponses()).toEqual(sendsAfterManualCheck)
+      })
+
+      it('bounds accepted holds and preserves terminal evidence before the deadline', () => {
+        const store = useChatStore.getState()
+        for (const [decisionId, terminalBeforeDeadline] of [
+          ['watchdog-accepted-timeout', false],
+          ['watchdog-accepted-terminal', true],
+        ] as const) {
+          receiveProtocolSnapshot(decisionId)
+          respondWithAnswer(decisionId)
+          const attempt = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+          store.handleServerMessage(TEST_SESSION_ID, {
+            type: 'user_decision_response_result',
+            decisionId,
+            attemptId: attempt.attemptId,
+            state: 'accepted',
+            route: 'orphaned_recovery',
+          } as never)
+          const sendsBeforeDeadline = sentDecisionResponses()
+
+          vi.advanceTimersByTime(9_999)
+          if (terminalBeforeDeadline) {
+            store.handleServerMessage(TEST_SESSION_ID, {
+              type: 'tool_result',
+              toolUseId: decisionId,
+              content: '',
+              isError: false,
+            })
+          }
+          vi.advanceTimersByTime(1)
+
+          const interaction = selectAskUserDecisionInteraction(
+            useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+          )
+          expect(interaction.mode).toBe(terminalBeforeDeadline ? 'settled' : 'resync')
+          expect(sentDecisionResponses()).toEqual(sendsBeforeDeadline)
+        }
+      })
+
+      it('does not let late non-terminal results reopen or extend an accepted hold', () => {
+        const store = useChatStore.getState()
+        const decisionId = 'watchdog-duplicate-accepted'
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const attempt = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+        const acceptedFrame = {
+          type: 'user_decision_response_result' as const,
+          decisionId,
+          attemptId: attempt.attemptId,
+          state: 'accepted' as const,
+          route: 'orphaned_recovery' as const,
+        }
+        store.handleServerMessage(TEST_SESSION_ID, acceptedFrame)
+        const originalAccepted = useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts?.[decisionId]
+        const sendsBeforeDeadline = sentDecisionResponses()
+
+        vi.advanceTimersByTime(9_000)
+        store.handleServerMessage(TEST_SESSION_ID, acceptedFrame)
+        store.handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result',
+          decisionId,
+          attemptId: attempt.attemptId,
+          state: 'retryable_failed',
+          error: { code: 'LATE_RETRY', message: 'late retry' },
+          nextAction: 'retry_new_attempt',
+        } as never)
+        expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts?.[decisionId]).toBe(originalAccepted)
+        vi.advanceTimersByTime(1_000)
+
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        ).mode).toBe('resync')
+        expect(sentDecisionResponses()).toEqual(sendsBeforeDeadline)
+        expect(forceReconnectMock).not.toHaveBeenCalled()
+      })
+
+      it('keeps a synchronous accepted acknowledgement ahead of the submit timer', () => {
+        const decisionId = 'watchdog-synchronous-ack'
+        receiveProtocolSnapshot(decisionId)
+        sendIfOpenMock.mockImplementationOnce((sessionId, message) => {
+          const sent = message as { decisionId: string; attemptId: string }
+          useChatStore.getState().handleServerMessage(sessionId, {
+            type: 'user_decision_response_result',
+            decisionId: sent.decisionId,
+            attemptId: sent.attemptId,
+            state: 'accepted',
+            route: 'orphaned_recovery',
+          } as never)
+          return true
+        })
+
+        expect(respondWithAnswer(decisionId)).toBe('dispatched')
+        expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts?.[decisionId]?.state).toBe('accepted')
+        expect(sentDecisionResponses()).toHaveLength(1)
+
+        vi.advanceTimersByTime(10_000)
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        ).mode).toBe('resync')
+        expect(sentDecisionResponses()).toHaveLength(1)
+        expect(forceReconnectMock).not.toHaveBeenCalled()
+      })
+
+      it('treats incomplete snapshots as non-terminal and ignores stale deadlines', () => {
+        const store = useChatStore.getState()
+        const decisionId = 'watchdog-incomplete-snapshot'
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const attempt = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+        store.handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result',
+          decisionId,
+          attemptId: attempt.attemptId,
+          state: 'accepted',
+          route: 'orphaned_recovery',
+        } as never)
+        receiveProtocolSnapshot(decisionId, {}, false)
+        vi.advanceTimersByTime(10_000)
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        ).mode).toBe('resync')
+
+        const staleDecisionId = 'watchdog-stale-attempt'
+        receiveProtocolSnapshot(staleDecisionId)
+        respondWithAnswer(staleDecisionId)
+        const first = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+        store.handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result',
+          decisionId: staleDecisionId,
+          attemptId: first.attemptId,
+          state: 'retryable_failed',
+          error: { code: 'RETRY', message: 'retry' },
+          nextAction: 'retry_new_attempt',
+        } as never)
+        vi.advanceTimersByTime(5_000)
+        respondWithAnswer(staleDecisionId)
+        const second = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+        expect(second.attemptId).not.toBe(first.attemptId)
+        vi.advanceTimersByTime(5_000)
+        expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts?.[staleDecisionId]).toMatchObject({
+            attemptId: second.attemptId,
+            state: 'submitting',
+          })
+      })
+
+      it('ignores the old deadline after a late acknowledgement or disconnect', () => {
+        const store = useChatStore.getState()
+        const lateAckDecisionId = 'watchdog-late-ack'
+        receiveProtocolSnapshot(lateAckDecisionId)
+        respondWithAnswer(lateAckDecisionId)
+        const lateAckAttempt = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+        vi.advanceTimersByTime(9_999)
+        store.handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result',
+          decisionId: lateAckDecisionId,
+          attemptId: lateAckAttempt.attemptId,
+          state: 'accepted',
+          route: 'orphaned_recovery',
+        } as never)
+        vi.advanceTimersByTime(1)
+        expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts?.[lateAckDecisionId]?.state).toBe('accepted')
+
+        patchSession({ connectionState: 'disconnected' })
+        store.connectToSession(TEST_SESSION_ID, {
+          prewarm: false,
+          applyRuntimeSelection: false,
+          minimalBootstrap: true,
+        })
+        const setConnectionState = connectionStateHandlers.get(TEST_SESSION_ID)!
+        setConnectionState('connected')
+        const disconnectedDecisionId = 'watchdog-disconnected'
+        receiveProtocolSnapshot(disconnectedDecisionId)
+        respondWithAnswer(disconnectedDecisionId)
+        const sendsBeforeDisconnect = sentDecisionResponses()
+        vi.advanceTimersByTime(5_000)
+        setConnectionState('reconnecting')
+        vi.advanceTimersByTime(5_000)
+
+        expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts?.[disconnectedDecisionId]).toMatchObject({
+            state: 'rejected',
+            nextAction: 'resync',
+          })
+        expect(sentDecisionResponses()).toEqual(sendsBeforeDisconnect)
+      })
+
+      it('does not recreate a session removed while its deadline is pending', () => {
+        const decisionId = 'watchdog-removed-session'
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const sendsBeforeRemoval = sentDecisionResponses()
+
+        vi.advanceTimersByTime(5_000)
+        useChatStore.getState().disconnectSession(TEST_SESSION_ID)
+        vi.advanceTimersByTime(5_001)
+
+        expect(useChatStore.getState().sessions).not.toHaveProperty(TEST_SESSION_ID)
+        expect(sentDecisionResponses()).toEqual(sendsBeforeRemoval)
+        expect(forceReconnectMock).not.toHaveBeenCalled()
+      })
+
+      it('keeps already-resolved terminal against malformed and late result frames', () => {
+        const store = useChatStore.getState()
+        const decisionId = 'watchdog-already-resolved-monotonic'
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const attempt = sentDecisionResponses().at(-1)?.[1] as { attemptId: string }
+        store.handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result',
+          decisionId,
+          attemptId: attempt.attemptId,
+          state: 'already_resolved',
+        } as never)
+        const terminalAttempt = useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts?.[decisionId]
+
+        for (const frame of [
+          { state: 'accepted', route: 'orphaned_recovery' },
+          {
+            state: 'retryable_failed',
+            error: { code: 'LATE_RETRY', message: 'late retry' },
+            nextAction: 'retry_new_attempt',
+          },
+          { state: 'malformed' },
+        ] as const) {
+          store.handleServerMessage(TEST_SESSION_ID, {
+            type: 'user_decision_response_result',
+            decisionId,
+            attemptId: attempt.attemptId,
+            ...frame,
+          } as never)
+        }
+        vi.advanceTimersByTime(10_001)
+
+        expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts?.[decisionId]).toBe(terminalAttempt)
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        ).mode).toBe('settled')
+      })
+
+      it('turns only in-flight Ask holds into resync on a generic error', () => {
+        const response = Object.freeze({ kind: 'clarify' as const, message: 'frozen' })
+        const attempts = {
+          submitting: Object.freeze({ attemptId: 'a-submitting', response, state: 'submitting' as const }),
+          accepted: Object.freeze({ attemptId: 'a-accepted', response, state: 'accepted' as const }),
+          indeterminate: Object.freeze({
+            attemptId: 'a-indeterminate', response, state: 'indeterminate' as const,
+            nextAction: 'verify_same_attempt' as const,
+          }),
+          retryable: Object.freeze({
+            attemptId: 'a-retryable', response, state: 'retryable_failed' as const,
+            nextAction: 'retry_new_attempt' as const,
+          }),
+          editable: Object.freeze({
+            attemptId: 'a-editable', response, state: 'rejected' as const,
+            nextAction: 'edit_response' as const,
+          }),
+          blocked: Object.freeze({
+            attemptId: 'a-blocked', response, state: 'rejected' as const,
+            nextAction: 'blocked' as const,
+          }),
+          settled: Object.freeze({
+            attemptId: 'a-settled', response, state: 'already_resolved' as const,
+          }),
+        }
+        patchSession({ userDecisionResponseAttempts: attempts })
+        const sendsBeforeError = sentDecisionResponses()
+
+        useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+          type: 'error',
+          code: 'RATE_LIMITED',
+          message: 'rate limited',
+        })
+
+        const after = useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts
+        for (const decisionId of ['submitting', 'accepted', 'indeterminate']) {
+          expect(after?.[decisionId]).toMatchObject({
+            state: 'rejected',
+            nextAction: 'resync',
+            error: { code: 'RATE_LIMITED' },
+          })
+        }
+        for (const decisionId of ['retryable', 'editable', 'blocked', 'settled']) {
+          expect(after?.[decisionId]).toBe(attempts[decisionId as keyof typeof attempts])
+        }
+        expect(sentDecisionResponses()).toEqual(sendsBeforeError)
+        expect(forceReconnectMock).not.toHaveBeenCalled()
+      })
+    })
+
     it('clears the transport outbox with the local message state', () => {
       patchSession({
         userDecisionResponseAttempts: {
