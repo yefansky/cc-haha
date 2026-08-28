@@ -86,9 +86,10 @@ export function toPetServerMessage(message: ServerMessage): ServerMessage | null
 
   if (message.type === 'permission_requests_snapshot') {
     return {
-      ...message,
+      type: 'permission_requests_snapshot',
       toolRequestIds: [],
       computerUseRequestIds: [],
+      turnActive: message.turnActive,
     }
   }
   if (message.type === 'error') {

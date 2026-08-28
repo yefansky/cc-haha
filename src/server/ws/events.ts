@@ -4,6 +4,12 @@
  * 定义客户端与服务器之间 WebSocket 通信的消息类型。
  */
 
+import type {
+  RuntimeBinding,
+  UserDecisionResponse,
+  UserDecisionSemanticState,
+} from '../userDecision.js'
+
 // ============================================================================
 // Client → Server
 // ============================================================================
@@ -122,6 +128,22 @@ export type ReplaceUserTurnAck = {
   updatedAt: number
 }
 
+export type UserDecisionSnapshotEntry = {
+  decisionId: string
+  semanticState: UserDecisionSemanticState
+  runtimeBinding: RuntimeBinding
+  response: UserDecisionResponse | null
+  input: Record<string, unknown>
+  inputSource: 'transcript' | 'live'
+  conflicted: boolean
+  description?: string
+}
+
+export type UserDecisionSnapshot = {
+  transcriptEvidenceComplete: boolean
+  decisions: UserDecisionSnapshotEntry[]
+}
+
 export type ServerMessage =
   | { type: 'connected'; sessionId: string }
   | { type: 'session_state'; turnState: 'running' | 'idle' }
@@ -161,6 +183,7 @@ export type ServerMessage =
       toolRequestIds: string[]
       computerUseRequestIds: string[]
       turnActive: boolean
+      userDecisions?: UserDecisionSnapshot
     }
   | { type: 'user_message_replay'; content: string; messageUuid?: string }
   | { type: 'message_complete'; usage: TokenUsage }

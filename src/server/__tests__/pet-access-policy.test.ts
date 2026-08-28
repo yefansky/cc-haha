@@ -114,6 +114,18 @@ describe('pet access capability policy', () => {
       toolRequestIds: ['p1'],
       computerUseRequestIds: ['cu1'],
       turnActive: true,
+      userDecisions: {
+        transcriptEvidenceComplete: true,
+        decisions: [{
+          decisionId: 'ask-1',
+          semanticState: { status: 'open' },
+          runtimeBinding: { status: 'attached', requestId: 'p1' },
+          response: null,
+          input: { question: 'Private question' },
+          inputSource: 'transcript',
+          conflicted: false,
+        }],
+      },
     })).toEqual({
       type: 'permission_requests_snapshot',
       toolRequestIds: [],

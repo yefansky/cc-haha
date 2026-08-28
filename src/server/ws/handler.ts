@@ -12,6 +12,7 @@ import type {
   PermissionMode,
   ServerMessage,
   TokenUsage,
+  UserDecisionSnapshot,
 } from './events.js'
 import { RUNTIME_CONFIG_APPLIED_EVENT } from './events.js'
 import * as os from 'node:os'
@@ -24,6 +25,10 @@ import { sessionMutationCoordinator } from '../services/sessionMutationCoordinat
 import {
   sessionService,
 } from '../services/sessionService.js'
+import {
+  projectUserDecisions,
+  type UserDecisionReadEntry,
+} from '../services/userDecisionReadModel.js'
 import { SettingsService } from '../services/settingsService.js'
 import { ProviderService } from '../services/providerService.js'
 import { getPresetDefaultEnv } from '../services/providerRuntimeEnv.js'
@@ -54,6 +59,7 @@ import {
 } from '../services/titleService.js'
 import { parseSlashCommand } from '../../utils/slashCommandParsing.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
+import { withTimeout } from '../../utils/sleep.js'
 import { archiveRemoteSession } from '../../utils/teleport/api.js'
 import { shouldCreateWorktreeForSessionLaunch } from '../services/repositoryLaunchService.js'
 import { getDisconnectGraceMs } from './disconnectGraceConfig.js'
@@ -508,6 +514,17 @@ export type WebSocketData = {
 const activeSessions = new Map<string, Set<ServerWebSocket<WebSocketData>>>()
 let activePetClient: ServerWebSocket<WebSocketData> | null = null
 
+const USER_DECISION_SNAPSHOT_TIMEOUT_MS = 1_500
+const MAX_CONNECTION_SNAPSHOT_QUEUED_MESSAGES = 256
+type ConnectionSnapshotBarrier = {
+  token: symbol
+  queuedMessages: ServerMessage[]
+}
+const connectionSnapshotBarriers = new WeakMap<
+  ServerWebSocket<WebSocketData>,
+  ConnectionSnapshotBarrier
+>()
+
 const clientOutputCallbacks = new Map<
   ServerWebSocket<WebSocketData>,
   {
@@ -544,6 +561,9 @@ export const handleWebSocket = {
 
     console.log(`[WS] Client connected for session: ${sessionId}`)
 
+    const usesConnectionSnapshotBarrier = ws.data.clientKind !== 'pet'
+    if (usesConnectionSnapshotBarrier) installConnectionSnapshotBarrier(ws)
+
     // Cancel pending cleanup timer if client reconnects
     const pendingTimer = sessionCleanupTimers.get(sessionId)
     if (pendingTimer) {
@@ -562,16 +582,22 @@ export const handleWebSocket = {
     }
 
     const msg: ServerMessage = { type: 'connected', sessionId }
-    sendMessage(ws, msg)
-    const toolRequestIds = replayPendingPermissionRequests(ws, sessionId)
-    const computerUseRequestIds = replayPendingComputerUsePermissionRequests(ws, sessionId)
-    sendMessage(ws, {
-      type: 'permission_requests_snapshot',
-      toolRequestIds,
-      computerUseRequestIds,
-      turnActive: hasLiveUserTurnForClient(sessionId),
-    })
-    replayAgentStopFailures(ws, sessionId)
+    sendMessageImmediately(ws, msg)
+    if (usesConnectionSnapshotBarrier) {
+      void hydrateConnectionSnapshot(ws, sessionId)
+    } else {
+      const pendingRequests = conversationService.getPendingPermissionRequests(sessionId)
+      const computerUseRequests = computerUseApprovalService.getPendingRequests(sessionId)
+      replayPendingPermissionRequests(ws, pendingRequests, true)
+      replayPendingComputerUsePermissionRequests(ws, computerUseRequests, true)
+      sendMessageImmediately(ws, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: pendingRequests.map(request => request.requestId),
+        computerUseRequestIds: computerUseRequests.map(request => request.requestId),
+        turnActive: hasLiveUserTurnForClient(sessionId),
+      })
+      replayAgentStopFailures(ws, sessionId)
+    }
   },
 
   message(ws: ServerWebSocket<WebSocketData>, rawMessage: string | Buffer) {
@@ -699,6 +725,7 @@ export const handleWebSocket = {
     }
 
     if (activePetClient === ws) activePetClient = null
+    connectionSnapshotBarriers.delete(ws)
 
     console.log(`[WS] Client disconnected from session: ${sessionId} (${code}: ${reason})`)
     if (!removeActiveClient(sessionId, ws)) {
@@ -3401,10 +3428,151 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
 
 
 function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage) {
-  const outgoing = ws.data.clientKind === 'pet'
-    ? toPetServerMessage(message)
-    : message
-  if (outgoing) ws.send(JSON.stringify(outgoing))
+  const outgoing = toOutgoingServerMessage(ws, message)
+  if (!outgoing) return
+  const barrier = connectionSnapshotBarriers.get(ws)
+  if (barrier) {
+    barrier.queuedMessages.push(outgoing)
+    if (barrier.queuedMessages.length >= MAX_CONNECTION_SNAPSHOT_QUEUED_MESSAGES) {
+      finalizeConnectionSnapshot(ws, ws.data.sessionId, barrier.token, [], false)
+    }
+    return
+  }
+  sendOutgoingMessageImmediately(ws, outgoing)
+}
+
+function sendMessageImmediately(
+  ws: ServerWebSocket<WebSocketData>,
+  message: ServerMessage,
+): void {
+  const outgoing = toOutgoingServerMessage(ws, message)
+  if (outgoing) sendOutgoingMessageImmediately(ws, outgoing)
+}
+
+function toOutgoingServerMessage(
+  ws: ServerWebSocket<WebSocketData>,
+  message: ServerMessage,
+): ServerMessage | null {
+  return ws.data.clientKind === 'pet' ? toPetServerMessage(message) : message
+}
+
+function sendOutgoingMessageImmediately(
+  ws: ServerWebSocket<WebSocketData>,
+  outgoing: ServerMessage,
+): void {
+  ws.send(JSON.stringify(outgoing))
+}
+
+function installConnectionSnapshotBarrier(
+  ws: ServerWebSocket<WebSocketData>,
+): void {
+  const barrier: ConnectionSnapshotBarrier = {
+    token: Symbol('connection-snapshot'),
+    queuedMessages: [],
+  }
+  connectionSnapshotBarriers.set(ws, barrier)
+}
+
+async function hydrateConnectionSnapshot(
+  ws: ServerWebSocket<WebSocketData>,
+  sessionId: string,
+): Promise<void> {
+  const token = connectionSnapshotBarriers.get(ws)?.token
+  if (!token) return
+  let messages: Awaited<ReturnType<typeof sessionService.getSessionMessagesWithEvidence>>['messages'] = []
+  let transcriptEvidenceComplete = false
+  try {
+    const transcript = await withTimeout(
+      sessionService.getSessionMessagesWithEvidence(sessionId),
+      USER_DECISION_SNAPSHOT_TIMEOUT_MS,
+      `Timed out hydrating user decisions for ${sessionId}`,
+    )
+    messages = transcript.messages
+    transcriptEvidenceComplete = transcript.transcriptEvidenceComplete
+  } catch (error) {
+    console.warn(
+      `[WS] Could not hydrate user decisions for ${sessionId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
+  }
+
+  finalizeConnectionSnapshot(
+    ws,
+    sessionId,
+    token,
+    messages,
+    transcriptEvidenceComplete,
+  )
+}
+
+function finalizeConnectionSnapshot(
+  ws: ServerWebSocket<WebSocketData>,
+  sessionId: string,
+  token: symbol,
+  messages: Awaited<ReturnType<typeof sessionService.getSessionMessagesWithEvidence>>['messages'],
+  transcriptEvidenceComplete: boolean,
+): void {
+  const barrier = connectionSnapshotBarriers.get(ws)
+  if (
+    barrier?.token !== token ||
+    !activeSessions.get(sessionId)?.has(ws)
+  ) {
+    return
+  }
+
+  // This capture and the projection run without an await between them. The ID
+  // lists and decisions therefore describe the same pending-request boundary.
+  const pendingRequests = conversationService.getPendingPermissionRequests(sessionId)
+  const computerUseRequests = computerUseApprovalService.getPendingRequests(sessionId)
+  const projected = projectUserDecisions({
+    sessionId,
+    messages,
+    pendingRequests,
+    transcriptEvidenceComplete,
+  })
+
+  replayPendingPermissionRequests(ws, pendingRequests, true)
+  replayPendingComputerUsePermissionRequests(ws, computerUseRequests, true)
+  sendMessageImmediately(ws, {
+    type: 'permission_requests_snapshot',
+    toolRequestIds: pendingRequests.map(request => request.requestId),
+    computerUseRequestIds: computerUseRequests.map(request => request.requestId),
+    turnActive: hasLiveUserTurnForClient(sessionId),
+    userDecisions: toUserDecisionSnapshot(projected),
+  })
+
+  connectionSnapshotBarriers.delete(ws)
+  // Preserve the established reconnect order: startup stop failures belong to
+  // the sampled initial state and therefore precede events buffered while the
+  // transcript was loading.
+  replayAgentStopFailures(ws, sessionId)
+  for (const outgoing of barrier.queuedMessages) {
+    if (!activeSessions.get(sessionId)?.has(ws)) break
+    sendOutgoingMessageImmediately(ws, outgoing)
+  }
+}
+
+function toUserDecisionSnapshot(input: {
+  transcriptEvidenceComplete: boolean
+  decisions: readonly UserDecisionReadEntry[]
+}): UserDecisionSnapshot {
+  return {
+    transcriptEvidenceComplete: input.transcriptEvidenceComplete,
+    decisions: input.decisions.map((entry) => {
+      const { decision } = entry
+      return {
+        decisionId: decision.decisionId,
+        semanticState: decision.semanticState,
+        runtimeBinding: decision.runtimeBinding,
+        response: decision.response,
+        input: entry.input,
+        inputSource: entry.inputSource,
+        conflicted: entry.conflicted,
+        ...(entry.description ? { description: entry.description } : {}),
+      }
+    }),
+  }
 }
 
 function sendError(ws: ServerWebSocket<WebSocketData>, message: string, code: string) {
@@ -3585,33 +3753,37 @@ function cancelSessionDisconnectWatcher(sessionId: string): void {
 
 function replayPendingPermissionRequests(
   ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
+  requests: ReturnType<typeof conversationService.getPendingPermissionRequests>,
+  bypassBarrier = false,
 ): string[] {
-  const requests = conversationService.getPendingPermissionRequests(sessionId)
   for (const request of requests) {
-    sendMessage(ws, {
+    const message: ServerMessage = {
       type: 'permission_request',
       requestId: request.requestId,
       toolName: request.toolName,
       ...(request.toolUseId ? { toolUseId: request.toolUseId } : {}),
       input: request.input,
       ...(request.description ? { description: request.description } : {}),
-    })
+    }
+    if (bypassBarrier) sendMessageImmediately(ws, message)
+    else sendMessage(ws, message)
   }
   return requests.map((request) => request.requestId)
 }
 
 function replayPendingComputerUsePermissionRequests(
   ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
+  requests: ReturnType<typeof computerUseApprovalService.getPendingRequests>,
+  bypassBarrier = false,
 ): string[] {
-  const requests = computerUseApprovalService.getPendingRequests(sessionId)
   for (const request of requests) {
-    sendMessage(ws, {
+    const message: ServerMessage = {
       type: 'computer_use_permission_request',
       requestId: request.requestId,
       request,
-    })
+    }
+    if (bypassBarrier) sendMessageImmediately(ws, message)
+    else sendMessage(ws, message)
   }
   return requests.map((request) => request.requestId)
 }
@@ -4438,6 +4610,7 @@ export function closeSessionConnection(sessionId: string, reason = 'session clos
   activeSessions.delete(sessionId)
   for (const ws of clients) {
     if (activePetClient === ws) activePetClient = null
+    connectionSnapshotBarriers.delete(ws)
     clientOutputCallbacks.delete(ws)
     ws.close(1000, reason)
   }
