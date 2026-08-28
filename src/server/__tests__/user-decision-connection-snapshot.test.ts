@@ -115,6 +115,7 @@ describe('connection user-decision snapshot', () => {
         turnActive: false,
         userDecisions: {
           transcriptEvidenceComplete: true,
+          userDecisionResponseProtocol: 'orphaned-permission-v1',
           decisions: [{
             decisionId: 'ask-1',
             semanticState: { status: 'open' },
@@ -196,7 +197,8 @@ describe('connection user-decision snapshot', () => {
       toolRequestIds: ['request-fallback'],
       userDecisions: {
         transcriptEvidenceComplete: false,
-          decisions: [expect.objectContaining({
+        userDecisionResponseProtocol: 'orphaned-permission-v1',
+        decisions: [expect.objectContaining({
             decisionId: 'ask-fallback',
             inputSource: 'live',
             runtimeBinding: {

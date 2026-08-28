@@ -24,6 +24,8 @@ export type UserDecisionReadEntry = {
   input: Record<string, unknown>
   inputSource: UserDecisionInputSource
   conflicted: boolean
+  hasToolResultEvidence: boolean
+  recoveryToolUseId?: string
   description?: string
 }
 
@@ -45,8 +47,26 @@ type MutableReadEntry = {
   input: Record<string, unknown>
   inputSource: UserDecisionInputSource
   conflicted: boolean
+  hasToolResultEvidence: boolean
+  recoveryToolUseId?: string
   description?: string
 }
+
+export type UserDecisionDeliveryCapability =
+  | { status: 'runtime_callback'; requestId: string }
+  | { status: 'orphaned_recovery'; toolUseId: string }
+  | {
+      status: 'already_resolved'
+      semanticState: Exclude<UserDecision['semanticState'], { status: 'open' }>
+    }
+  | {
+      status: 'unavailable'
+      code:
+        | 'DECISION_NOT_FOUND'
+        | 'DECISION_CONFLICTED'
+        | 'EVIDENCE_INCOMPLETE'
+        | 'RECOVERY_UNAVAILABLE'
+    }
 
 type PendingCandidateGroup = {
   pendingRequests: PendingPermissionRequest[]
@@ -90,6 +110,12 @@ export function projectUserDecisions(
       }
       if (existing) {
         if (!isDeepStrictEqual(existing.input, transcriptInput)) existing.conflicted = true
+        if (
+          (originalAlias && existing.recoveryToolUseId) ||
+          (!originalAlias && (originalAliasesByDecisionId.get(decisionId)?.size ?? 0) > 0)
+        ) {
+          existing.conflicted = true
+        }
         if ((originalAliasesByDecisionId.get(decisionId)?.size ?? 0) > 1) {
           existing.conflicted = true
         }
@@ -100,6 +126,8 @@ export function projectUserDecisions(
         input: transcriptInput,
         inputSource: 'transcript',
         conflicted: (originalAliasesByDecisionId.get(decisionId)?.size ?? 0) > 1,
+        hasToolResultEvidence: false,
+        ...(!originalAlias ? { recoveryToolUseId: decisionId } : {}),
       })
     }
   }
@@ -134,6 +162,7 @@ export function projectUserDecisions(
         input: firstPending.input,
         inputSource: 'live',
         conflicted: false,
+        hasToolResultEvidence: false,
         ...(firstPending.description ? { description: firstPending.description } : {}),
       })
       candidateIds.add(toolUseId)
@@ -188,6 +217,12 @@ export function projectUserDecisions(
 
       const existing = decisions.get(block.tool_use_id)
       if (!existing) continue
+      // The upstream orphaned-permission recovery only considers a tool_use
+      // unresolved when no matching tool_result exists. Preserve the semantic
+      // distinction for non-clarify errors, but never advertise recovery for
+      // evidence that the runtime will already treat as resolved.
+      existing.recoveryToolUseId = undefined
+      existing.hasToolResultEvidence = true
       if (block.is_error === true) {
         existing.decision = detachRuntime(existing.decision)
         const clarifyResponse = clarificationResponse(toolResultText(block.content))
@@ -211,6 +246,45 @@ export function projectUserDecisions(
     sessionId: input.sessionId,
     transcriptEvidenceComplete: input.transcriptEvidenceComplete,
     decisions: [...decisions.values()],
+  }
+}
+
+export function selectUserDecisionDeliveryCapability(
+  snapshot: SessionUserDecisionSnapshot,
+  decisionId: string,
+): UserDecisionDeliveryCapability {
+  const entry = snapshot.decisions.find(
+    (candidate) => candidate.decision.decisionId === decisionId,
+  )
+  if (!entry) {
+    return snapshot.transcriptEvidenceComplete
+      ? { status: 'unavailable', code: 'DECISION_NOT_FOUND' }
+      : { status: 'unavailable', code: 'EVIDENCE_INCOMPLETE' }
+  }
+  if (entry.decision.semanticState.status !== 'open') {
+    return {
+      status: 'already_resolved',
+      semanticState: entry.decision.semanticState,
+    }
+  }
+  if (entry.conflicted) {
+    return { status: 'unavailable', code: 'DECISION_CONFLICTED' }
+  }
+  if (entry.decision.runtimeBinding.status === 'attached') {
+    return {
+      status: 'runtime_callback',
+      requestId: entry.decision.runtimeBinding.requestId,
+    }
+  }
+  if (!snapshot.transcriptEvidenceComplete) {
+    return { status: 'unavailable', code: 'EVIDENCE_INCOMPLETE' }
+  }
+  if (!entry.recoveryToolUseId) {
+    return { status: 'unavailable', code: 'RECOVERY_UNAVAILABLE' }
+  }
+  return {
+    status: 'orphaned_recovery',
+    toolUseId: entry.recoveryToolUseId,
   }
 }
 

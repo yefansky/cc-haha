@@ -12,9 +12,13 @@ import type {
   PermissionMode,
   ServerMessage,
   TokenUsage,
+  UserDecisionResponseResult,
   UserDecisionSnapshot,
 } from './events.js'
-import { RUNTIME_CONFIG_APPLIED_EVENT } from './events.js'
+import {
+  RUNTIME_CONFIG_APPLIED_EVENT,
+  USER_DECISION_RESPONSE_PROTOCOL,
+} from './events.js'
 import * as os from 'node:os'
 import {
   ConversationStartupError,
@@ -27,8 +31,16 @@ import {
 } from '../services/sessionService.js'
 import {
   projectUserDecisions,
+  selectUserDecisionDeliveryCapability,
+  type SessionUserDecisionSnapshot,
   type UserDecisionReadEntry,
 } from '../services/userDecisionReadModel.js'
+import {
+  UserDecisionDeliveryCoordinator,
+  type UserDecisionDeliveryLease,
+  type UserDecisionDeliverySnapshot,
+} from '../services/userDecisionDeliveryCoordinator.js'
+import type { UserDecisionResponse } from '../userDecision.js'
 import { SettingsService } from '../services/settingsService.js'
 import { ProviderService } from '../services/providerService.js'
 import { getPresetDefaultEnv } from '../services/providerRuntimeEnv.js'
@@ -126,6 +138,17 @@ import type {
 
 const settingsService = new SettingsService()
 const providerService = new ProviderService()
+function createUserDecisionDeliveryCoordinator(): UserDecisionDeliveryCoordinator {
+  return new UserDecisionDeliveryCoordinator({
+    capacity: 256,
+    maxAttemptsPerDecision: 8,
+    maxResponseBytes: 64 * 1_024,
+    maxFailureBytes: 4 * 1_024,
+  })
+}
+let userDecisionDeliveryCoordinator = createUserDecisionDeliveryCoordinator()
+const MAX_USER_DECISION_ID_BYTES = 2_048
+const MAX_USER_DECISION_ATTEMPT_ID_BYTES = 128
 
 function buildSdkWebSocketUrl(
   ws: ServerWebSocket<WebSocketData>,
@@ -668,6 +691,22 @@ export const handleWebSocket = {
 
         case 'permission_response':
           handlePermissionResponse(ws, message)
+          break
+
+        case 'user_decision_response':
+          void handleUserDecisionResponse(ws, message).catch((error) => {
+            console.error('[WS] User decision response failed:', error)
+            sendUserDecisionResponseResult(ws, {
+              type: 'user_decision_response_result',
+              decisionId: typeof message.decisionId === 'string' ? message.decisionId : '',
+              attemptId: typeof message.attemptId === 'string' ? message.attemptId : '',
+              state: 'retryable_failed',
+              error: {
+                code: 'USER_DECISION_RESPONSE_FAILED',
+                message: 'User decision response could not be processed.',
+              },
+            })
+          })
           break
 
         case 'computer_use_permission_response':
@@ -1256,6 +1295,8 @@ async function performDesktopClearCommand(
     return
   }
 
+  userDecisionDeliveryCoordinator.clearPermanentlyDeletedSession(sessionId)
+
   sessionTranscriptEpochs.set(
     sessionId,
     (sessionTranscriptEpochs.get(sessionId) ?? 0) + 1,
@@ -1392,6 +1433,594 @@ function handlePermissionResponse(
       ? 'Permission request was not found.'
       : 'Permission session is unavailable.',
   })
+}
+
+async function handleUserDecisionResponse(
+  ws: ServerWebSocket<WebSocketData>,
+  message: Extract<ClientMessage, { type: 'user_decision_response' }>,
+): Promise<void> {
+  const validated = validateUserDecisionResponse(message)
+  if (!validated.ok) {
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: validated.decisionId,
+      attemptId: validated.attemptId,
+      state: 'rejected',
+      error: { code: 'INVALID_USER_DECISION_RESPONSE', message: validated.message },
+    })
+    return
+  }
+
+  const { sessionId } = ws.data
+  await enqueueRuntimeTransition(sessionId, async () => {
+    const snapshot = await readFreshUserDecisionSnapshot(sessionId)
+    const capability = selectUserDecisionDeliveryCapability(
+      snapshot,
+      validated.decisionId,
+    )
+    if (capability.status === 'already_resolved') {
+      userDecisionDeliveryCoordinator.reconcileTerminal(
+        sessionId,
+        validated.decisionId,
+        capability.semanticState,
+      )
+      sendUserDecisionResponseResult(ws, {
+        type: 'user_decision_response_result',
+        decisionId: validated.decisionId,
+        attemptId: validated.attemptId,
+        state: 'already_resolved',
+      })
+      return
+    }
+    if (capability.status === 'unavailable') {
+      sendUnavailableUserDecisionResult(ws, validated, capability.code)
+      return
+    }
+
+    const entry = snapshot.decisions.find(
+      ({ decision }) => decision.decisionId === validated.decisionId,
+    )!
+    if (!isResponseCompleteForDecision(validated.response, entry.input)) {
+      sendUserDecisionResponseResult(ws, {
+        type: 'user_decision_response_result',
+        decisionId: validated.decisionId,
+        attemptId: validated.attemptId,
+        state: 'rejected',
+        error: {
+          code: 'DECISION_RESPONSE_MISMATCH',
+          message: 'The response does not match the current decision questions.',
+        },
+      })
+      return
+    }
+
+    const claim = userDecisionDeliveryCoordinator.claim({
+      sessionId,
+      decisionId: validated.decisionId,
+      attemptId: validated.attemptId,
+      response: validated.response,
+      runtimeBinding: capability.status === 'runtime_callback'
+        ? { status: 'attached', requestId: capability.requestId }
+        : { status: 'detached' },
+    })
+    if (claim.status === 'replayed') {
+      sendReplayedUserDecisionResult(ws, validated, claim.delivery)
+      return
+    }
+    if (claim.status === 'busy') {
+      sendUserDecisionResponseResult(ws, {
+        type: 'user_decision_response_result',
+        decisionId: validated.decisionId,
+        attemptId: validated.attemptId,
+        state: 'rejected',
+        error: {
+          code: 'USER_DECISION_DELIVERY_BUSY',
+          message: 'Another delivery attempt is already active.',
+        },
+      })
+      return
+    }
+    if (claim.status === 'rejected') {
+      sendUserDecisionResponseResult(ws, {
+        type: 'user_decision_response_result',
+        decisionId: validated.decisionId,
+        attemptId: validated.attemptId,
+        state: 'rejected',
+        error: { code: claim.code, message: 'The delivery attempt was rejected.' },
+      })
+      return
+    }
+
+    if (capability.status === 'runtime_callback') {
+      deliverAttachedUserDecision(
+        ws,
+        snapshot,
+        validated,
+        capability.requestId,
+        claim.lease,
+      )
+      return
+    }
+    await deliverDetachedUserDecision(ws, validated, claim.lease)
+  })
+}
+
+type ValidatedUserDecisionResponse = {
+  decisionId: string
+  attemptId: string
+  response: UserDecisionResponse
+}
+
+function validateUserDecisionResponse(
+  message: Extract<ClientMessage, { type: 'user_decision_response' }>,
+):
+  | ({ ok: true } & ValidatedUserDecisionResponse)
+  | { ok: false; decisionId: string; attemptId: string; message: string } {
+  const decisionId = typeof message.decisionId === 'string' ? message.decisionId : ''
+  const attemptId = typeof message.attemptId === 'string' ? message.attemptId : ''
+  const invalidId = (
+    value: string,
+    maxBytes: number,
+  ) => !value || value !== value.trim() || Buffer.byteLength(value, 'utf8') > maxBytes
+  if (
+    invalidId(decisionId, MAX_USER_DECISION_ID_BYTES) ||
+    invalidId(attemptId, MAX_USER_DECISION_ATTEMPT_ID_BYTES)
+  ) {
+    return {
+      ok: false,
+      decisionId,
+      attemptId,
+      message: 'Decision and attempt identifiers are invalid.',
+    }
+  }
+
+  const response = message.response
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    return { ok: false, decisionId, attemptId, message: 'Decision response is invalid.' }
+  }
+  let normalized: UserDecisionResponse
+  if (response.kind === 'answer') {
+    if (
+      !response.answers ||
+      typeof response.answers !== 'object' ||
+      Array.isArray(response.answers) ||
+      !Object.entries(response.answers).every(
+        ([question, answer]) => question.trim() && typeof answer === 'string',
+      )
+    ) {
+      return { ok: false, decisionId, attemptId, message: 'Decision answers are invalid.' }
+    }
+    normalized = { kind: 'answer', answers: { ...response.answers } }
+  } else if (
+    response.kind === 'clarify' &&
+    typeof response.message === 'string' &&
+    response.message.trim()
+  ) {
+    normalized = { kind: 'clarify', message: response.message }
+  } else {
+    return { ok: false, decisionId, attemptId, message: 'Decision response is invalid.' }
+  }
+  if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > 64 * 1_024) {
+    return { ok: false, decisionId, attemptId, message: 'Decision response is too large.' }
+  }
+  return { ok: true, decisionId, attemptId, response: normalized }
+}
+
+function isResponseCompleteForDecision(
+  response: UserDecisionResponse,
+  input: Record<string, unknown>,
+): boolean {
+  if (response.kind === 'clarify') return true
+  if (!Array.isArray(input.questions) || input.questions.length === 0) return false
+  const questions = input.questions.map((question) => {
+    if (!question || typeof question !== 'object' || Array.isArray(question)) return null
+    const text = (question as Record<string, unknown>).question
+    return typeof text === 'string' && text.trim() ? text : null
+  })
+  if (questions.some((question) => question === null)) return false
+  const expected = new Set(questions as string[])
+  const answers = Object.entries(response.answers)
+  return expected.size === questions.length &&
+    answers.length === expected.size &&
+    answers.every(([question, answer]) => expected.has(question) && answer.trim().length > 0)
+}
+
+async function readFreshUserDecisionSnapshot(
+  sessionId: string,
+): Promise<SessionUserDecisionSnapshot> {
+  const transcript = await sessionService.getSessionMessagesWithEvidence(sessionId)
+  const snapshot = projectUserDecisions({
+    sessionId,
+    messages: transcript.messages,
+    pendingRequests: conversationService.getPendingPermissionRequests(sessionId),
+    transcriptEvidenceComplete: transcript.transcriptEvidenceComplete,
+  })
+  reconcileTerminalUserDecisionDeliveries(snapshot)
+  return snapshot
+}
+
+function reconcileTerminalUserDecisionDeliveries(
+  snapshot: SessionUserDecisionSnapshot,
+): void {
+  for (const { decision, hasToolResultEvidence } of snapshot.decisions) {
+    if (hasToolResultEvidence) {
+      userDecisionDeliveryCoordinator.reconcileTerminal(
+        snapshot.sessionId,
+        decision.decisionId,
+        decision.semanticState.status === 'open'
+          ? { status: 'cancelled', reason: 'tool_result_observed' }
+          : decision.semanticState,
+      )
+      continue
+    }
+    if (decision.semanticState.status === 'open') continue
+    userDecisionDeliveryCoordinator.reconcileTerminal(
+      snapshot.sessionId,
+      decision.decisionId,
+      decision.semanticState,
+    )
+  }
+}
+
+function sendUnavailableUserDecisionResult(
+  ws: ServerWebSocket<WebSocketData>,
+  request: ValidatedUserDecisionResponse,
+  code: string,
+): void {
+  sendUserDecisionResponseResult(ws, {
+    type: 'user_decision_response_result',
+    decisionId: request.decisionId,
+    attemptId: request.attemptId,
+    state: code === 'EVIDENCE_INCOMPLETE' ? 'retryable_failed' : 'rejected',
+    error: {
+      code,
+      message: code === 'EVIDENCE_INCOMPLETE'
+        ? 'Decision evidence is incomplete. Retry after synchronization.'
+        : 'This decision cannot be delivered from the current evidence.',
+    },
+  })
+}
+
+function sendReplayedUserDecisionResult(
+  ws: ServerWebSocket<WebSocketData>,
+  request: ValidatedUserDecisionResponse,
+  delivery: UserDecisionDeliverySnapshot,
+): void {
+  const attempt = delivery.deliveryAttempt
+  if (attempt.status === 'accepted') {
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'accepted',
+      route: attempt.route.status === 'runtime_callback'
+        ? 'runtime_callback'
+        : 'orphaned_recovery',
+    })
+    return
+  }
+  if (attempt.status === 'retryable_failed') {
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'retryable_failed',
+      error: attempt.error,
+    })
+    return
+  }
+  sendUserDecisionResponseResult(ws, {
+    type: 'user_decision_response_result',
+    decisionId: request.decisionId,
+    attemptId: request.attemptId,
+    state: 'indeterminate',
+    error: {
+      code: 'USER_DECISION_DELIVERY_IN_PROGRESS',
+      message: 'The delivery outcome is not yet known.',
+    },
+  })
+}
+
+function deliverAttachedUserDecision(
+  ws: ServerWebSocket<WebSocketData>,
+  snapshot: SessionUserDecisionSnapshot,
+  request: ValidatedUserDecisionResponse,
+  requestId: string,
+  lease: UserDecisionDeliveryLease,
+): void {
+  const entry = snapshot.decisions.find(
+    ({ decision }) => decision.decisionId === request.decisionId,
+  )!
+  let result: ReturnType<typeof conversationService.respondToTrackedPermission>
+  try {
+    result = conversationService.respondToTrackedPermission(
+      snapshot.sessionId,
+      requestId,
+      request.response.kind === 'answer',
+      undefined,
+      request.response.kind === 'answer'
+        ? { ...entry.input, answers: request.response.answers }
+        : undefined,
+      request.response.kind === 'clarify' ? request.response.message : undefined,
+    )
+  } catch (error) {
+    console.error('[WS] Live user decision delivery outcome is unknown:', error)
+    userDecisionDeliveryCoordinator.accept(lease)
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'indeterminate',
+      error: {
+        code: 'PERMISSION_DELIVERY_INDETERMINATE',
+        message: 'The live delivery outcome could not be confirmed.',
+      },
+    })
+    return
+  }
+  if (result.status === 'accepted') {
+    userDecisionDeliveryCoordinator.accept(lease)
+    sendToSession(snapshot.sessionId, {
+      type: 'permission_resolved',
+      requestId,
+      permissionType: 'tool',
+      allowed: request.response.kind === 'answer',
+    })
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'accepted',
+      route: 'runtime_callback',
+    })
+    return
+  }
+  if (result.status === 'delivery_failed') {
+    console.error('[WS] Live user decision delivery outcome is unknown:', result.error)
+    userDecisionDeliveryCoordinator.accept(lease)
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'indeterminate',
+      error: {
+        code: 'PERMISSION_DELIVERY_INDETERMINATE',
+        message: 'The live delivery outcome could not be confirmed.',
+      },
+    })
+    return
+  }
+  userDecisionDeliveryCoordinator.failRetryable(lease, {
+    code: 'RUNTIME_CALLBACK_UNAVAILABLE',
+    message: 'The live permission callback is no longer available.',
+  })
+  sendUserDecisionResponseResult(ws, {
+    type: 'user_decision_response_result',
+    decisionId: request.decisionId,
+    attemptId: request.attemptId,
+    state: 'retryable_failed',
+    error: {
+      code: 'RUNTIME_CALLBACK_UNAVAILABLE',
+      message: 'The live permission callback is no longer available.',
+    },
+  })
+}
+
+async function deliverDetachedUserDecision(
+  ws: ServerWebSocket<WebSocketData>,
+  request: ValidatedUserDecisionResponse,
+  lease: UserDecisionDeliveryLease,
+): Promise<void> {
+  const { sessionId } = ws.data
+
+  if (hasActiveSessionWork(sessionId)) {
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'SESSION_RUNTIME_BUSY',
+      message: 'The session has newer active work. Retry after it finishes.',
+    })
+    return
+  }
+
+  let prepared: {
+    workDir: string
+    runtimeSettings: Awaited<ReturnType<typeof getRuntimeSettings>>
+    sdkUrl: string
+  }
+  try {
+    const workDir = await resolveSessionWorkDir(sessionId)
+    prepared = {
+      workDir,
+      runtimeSettings: await getRuntimeSettings(sessionId),
+      sdkUrl: buildSdkWebSocketUrl(ws, sessionId),
+    }
+  } catch (error) {
+    console.error('[WS] Could not prepare user decision recovery:', error)
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'CLI_RECOVERY_PREPARE_FAILED',
+      message: 'The recovery runtime could not be prepared.',
+    })
+    return
+  }
+
+  // Preparing runtime inputs crosses async persistence/settings boundaries.
+  // Re-check the shared-work authority immediately before the synchronous stop
+  // call so work that appeared in that window is never killed for recovery.
+  if (hasActiveSessionWork(sessionId)) {
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'SESSION_RUNTIME_BUSY',
+      message: 'The session has newer active work. Retry after it finishes.',
+    })
+    return
+  }
+
+  runtimeExitStoppedSessions.add(sessionId)
+  let stopped: Awaited<ReturnType<typeof conversationService.stopSessionForReplacementAndConfirm>>
+  try {
+    stopped = await conversationService.stopSessionForReplacementAndConfirm(sessionId)
+  } catch (error) {
+    console.error('[WS] Could not stop runtime for user decision recovery:', error)
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'CLI_SHUTDOWN_FAILED',
+      message: 'The previous runtime could not be stopped.',
+    })
+    return
+  }
+  if (stopped === 'unconfirmed') {
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'CLI_SHUTDOWN_UNCONFIRMED',
+      message: 'The previous runtime did not confirm shutdown.',
+    })
+    return
+  }
+
+  let snapshot: SessionUserDecisionSnapshot
+  try {
+    snapshot = await readFreshUserDecisionSnapshot(sessionId)
+  } catch (error) {
+    console.error('[WS] Could not read decision evidence after runtime shutdown:', error)
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'DECISION_EVIDENCE_READ_FAILED',
+      message: 'Decision evidence could not be read after runtime shutdown.',
+    })
+    return
+  }
+  const capability = selectUserDecisionDeliveryCapability(snapshot, request.decisionId)
+  if (capability.status === 'already_resolved') {
+    userDecisionDeliveryCoordinator.reconcileTerminal(
+      sessionId,
+      request.decisionId,
+      capability.semanticState,
+    )
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'already_resolved',
+    })
+    return
+  }
+  if (capability.status !== 'orphaned_recovery') {
+    failDetachedUserDecision(ws, request, lease, {
+      code: capability.status === 'unavailable'
+        ? capability.code
+        : 'USER_DECISION_ROUTE_CHANGED',
+      message: 'Detached recovery is no longer authoritative.',
+    })
+    return
+  }
+
+  try {
+    lastResolvedStartupWorkDirs.set(sessionId, prepared.workDir)
+    await conversationService.startSession(
+      sessionId,
+      prepared.workDir,
+      prepared.sdkUrl,
+      {
+        ...prepared.runtimeSettings,
+        resumeInterruptedTurn: false,
+        transcriptStartupPolicy: 'preserve_existing',
+      },
+    )
+    runtimeExitStoppedSessions.delete(sessionId)
+    bindAllClientSessionOutputs(sessionId)
+  } catch (error) {
+    console.error('[WS] Could not start user decision recovery runtime:', error)
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'CLI_RECOVERY_START_FAILED',
+      message: 'The recovery runtime could not be started.',
+    })
+    return
+  }
+
+  const entry = snapshot.decisions.find(
+    ({ decision }) => decision.decisionId === request.decisionId,
+  )!
+  let result: ReturnType<typeof conversationService.respondToOrphanedPermission>
+  try {
+    result = conversationService.respondToOrphanedPermission(
+      sessionId,
+      capability.toolUseId,
+      request.response.kind === 'answer',
+      request.response.kind === 'answer'
+        ? { ...entry.input, answers: request.response.answers }
+        : undefined,
+      request.response.kind === 'clarify' ? request.response.message : undefined,
+    )
+  } catch (error) {
+    console.error('[WS] Orphaned user decision delivery outcome is unknown:', error)
+    userDecisionDeliveryCoordinator.accept(lease)
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'indeterminate',
+      error: {
+        code: 'ORPHANED_DELIVERY_INDETERMINATE',
+        message: 'The recovery delivery outcome could not be confirmed.',
+      },
+    })
+    return
+  }
+  if (result.status === 'accepted') {
+    userDecisionDeliveryCoordinator.accept(lease)
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'accepted',
+      route: 'orphaned_recovery',
+    })
+    return
+  }
+  if (result.status === 'delivery_failed') {
+    console.error('[WS] Orphaned user decision delivery outcome is unknown:', result.error)
+    userDecisionDeliveryCoordinator.accept(lease)
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'indeterminate',
+      error: {
+        code: 'ORPHANED_DELIVERY_INDETERMINATE',
+        message: 'The recovery delivery outcome could not be confirmed.',
+      },
+    })
+    return
+  }
+  failDetachedUserDecision(ws, request, lease, {
+    code: 'RECOVERY_SESSION_UNAVAILABLE',
+    message: 'The recovery runtime is unavailable.',
+  })
+}
+
+function failDetachedUserDecision(
+  ws: ServerWebSocket<WebSocketData>,
+  request: ValidatedUserDecisionResponse,
+  lease: UserDecisionDeliveryLease,
+  error: { code: string; message: string },
+): void {
+  userDecisionDeliveryCoordinator.failRetryable(lease, error)
+  sendUserDecisionResponseResult(ws, {
+    type: 'user_decision_response_result',
+    decisionId: request.decisionId,
+    attemptId: request.attemptId,
+    state: 'retryable_failed',
+    error,
+  })
+}
+
+function sendUserDecisionResponseResult(
+  ws: ServerWebSocket<WebSocketData>,
+  result: UserDecisionResponseResult,
+): void {
+  if ('error' in result && Buffer.byteLength(result.error.message, 'utf8') > 2_048) {
+    sendMessage(ws, {
+      ...result,
+      error: { code: result.error.code, message: 'User decision delivery failed.' },
+    })
+    return
+  }
+  sendMessage(ws, result)
 }
 
 function handleComputerUsePermissionResponse(
@@ -3531,6 +4160,7 @@ function finalizeConnectionSnapshot(
     pendingRequests,
     transcriptEvidenceComplete,
   })
+  reconcileTerminalUserDecisionDeliveries(projected)
 
   replayPendingPermissionRequests(ws, pendingRequests, true)
   replayPendingComputerUsePermissionRequests(ws, computerUseRequests, true)
@@ -3559,6 +4189,7 @@ function toUserDecisionSnapshot(input: {
 }): UserDecisionSnapshot {
   return {
     transcriptEvidenceComplete: input.transcriptEvidenceComplete,
+    userDecisionResponseProtocol: USER_DECISION_RESPONSE_PROTOCOL,
     decisions: input.decisions.map((entry) => {
       const { decision } = entry
       return {
@@ -4005,6 +4636,7 @@ function forwardCliMessageToClient(
 ): void {
   handleCliPermissionModeBroadcast(sessionId, cliMsg)
   const serverMsgs = translateCliMessage(cliMsg, sessionId)
+  reconcileUserDecisionToolResults(sessionId, serverMsgs)
   for (const msg of serverMsgs) sendMessage(ws, msg)
 }
 
@@ -4013,8 +4645,25 @@ function forwardCliMessageToSessionClients(sessionId: string, cliMsg: any): void
   if (!clients || clients.size === 0) return
   handleCliPermissionModeBroadcast(sessionId, cliMsg)
   const serverMsgs = translateCliMessage(cliMsg, sessionId)
+  reconcileUserDecisionToolResults(sessionId, serverMsgs)
   for (const ws of clients) {
     for (const msg of serverMsgs) sendMessage(ws, msg)
+  }
+}
+
+function reconcileUserDecisionToolResults(
+  sessionId: string,
+  messages: readonly ServerMessage[],
+): void {
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue
+    userDecisionDeliveryCoordinator.reconcileTerminal(
+      sessionId,
+      message.toolUseId,
+      message.isError
+        ? { status: 'cancelled', reason: 'tool_result_observed' }
+        : { status: 'answered' },
+    )
   }
 }
 
@@ -4603,6 +5252,9 @@ export function closeSessionConnection(sessionId: string, reason = 'session clos
   computerUseApprovalService.cancelSession(sessionId)
   conversationService.clearOutputCallbacks(sessionId)
   cleanupSessionRuntimeState(sessionId)
+  if (conversationService.isSessionDeleted(sessionId)) {
+    userDecisionDeliveryCoordinator.clearPermanentlyDeletedSession(sessionId)
+  }
 
   const clients = activeSessions.get(sessionId)
   if (!clients || clients.size === 0) return false
@@ -4653,6 +5305,7 @@ export function __resetWebSocketHandlerStateForTests(): void {
   legacyQueuedSessionChats.clear()
   interruptedSessionChats.clear()
   sessionMutationCoordinator.resetForTests()
+  userDecisionDeliveryCoordinator = createUserDecisionDeliveryCoordinator()
   sessionStartupPromises.clear()
 }
 
@@ -4698,6 +5351,11 @@ export function __enqueueRuntimeTransitionForTests(
     sessionId,
     typeof transition === 'function' ? transition : () => transition,
   )
+}
+
+/** Test hook: model a resumed CLI that reported running without a renderer turn. */
+export function __markActiveCliRunForTests(sessionId: string): void {
+  activeCliRuns.add(sessionId)
 }
 
 export function __resolveRuntimeRestartWorkDirForTests(sessionId: string): Promise<string> {

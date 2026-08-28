@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import type { PendingPermissionRequest } from './conversationService.js'
 import type { MessageEntry } from './sessionService.js'
-import { projectUserDecisions } from './userDecisionReadModel.js'
+import {
+  projectUserDecisions,
+  selectUserDecisionDeliveryCapability,
+} from './userDecisionReadModel.js'
 import {
   ASK_USER_QUESTION_CLARIFY_MESSAGE,
   ASK_USER_QUESTION_CLARIFY_WITH_QUESTIONS_PREFIX,
@@ -76,6 +79,89 @@ function pendingAsk(
 }
 
 describe('projectUserDecisions', () => {
+  test('selects tracked delivery for attached Ask and root-only orphan recovery for detached Ask', () => {
+    const attached = projectUserDecisions({
+      sessionId: SESSION_ID,
+      messages: [askMessage('ask-attached')],
+      pendingRequests: [pendingAsk('request-attached', 'ask-attached')],
+      transcriptEvidenceComplete: true,
+    })
+    const detached = projectUserDecisions({
+      sessionId: SESSION_ID,
+      messages: [askMessage('ask-detached')],
+      pendingRequests: [],
+      transcriptEvidenceComplete: true,
+    })
+
+    expect(selectUserDecisionDeliveryCapability(attached, 'ask-attached')).toEqual({
+      status: 'runtime_callback',
+      requestId: 'request-attached',
+    })
+    expect(selectUserDecisionDeliveryCapability(detached, 'ask-detached')).toEqual({
+      status: 'orphaned_recovery',
+      toolUseId: 'ask-detached',
+    })
+  })
+
+  test('rejects scoped detached recovery and incomplete or conflicted evidence', () => {
+    const scoped = projectUserDecisions({
+      sessionId: SESSION_ID,
+      messages: [askMessage('parent/agent/ask-scoped', 'Nested?', 'ask-scoped')],
+      pendingRequests: [],
+      transcriptEvidenceComplete: true,
+    })
+    const incomplete = projectUserDecisions({
+      sessionId: SESSION_ID,
+      messages: [askMessage('ask-incomplete')],
+      pendingRequests: [],
+      transcriptEvidenceComplete: false,
+    })
+    const conflicted = projectUserDecisions({
+      sessionId: SESSION_ID,
+      messages: [
+        askMessage('ask-conflicted', 'First?'),
+        askMessage('ask-conflicted', 'Second?'),
+      ],
+      pendingRequests: [],
+      transcriptEvidenceComplete: true,
+    })
+
+    expect(selectUserDecisionDeliveryCapability(scoped, 'parent/agent/ask-scoped')).toEqual({
+      status: 'unavailable',
+      code: 'RECOVERY_UNAVAILABLE',
+    })
+    expect(selectUserDecisionDeliveryCapability(incomplete, 'ask-incomplete')).toEqual({
+      status: 'unavailable',
+      code: 'EVIDENCE_INCOMPLETE',
+    })
+    expect(selectUserDecisionDeliveryCapability({
+      sessionId: SESSION_ID,
+      decisions: [],
+      transcriptEvidenceComplete: false,
+    }, 'ask-missing-from-incomplete-evidence')).toEqual({
+      status: 'unavailable',
+      code: 'EVIDENCE_INCOMPLETE',
+    })
+    expect(selectUserDecisionDeliveryCapability(conflicted, 'ask-conflicted')).toEqual({
+      status: 'unavailable',
+      code: 'DECISION_CONFLICTED',
+    })
+  })
+
+  test('reports terminal decisions as already resolved', () => {
+    const snapshot = projectUserDecisions({
+      sessionId: SESSION_ID,
+      messages: [askMessage('ask-done'), resultMessage('ask-done')],
+      pendingRequests: [],
+      transcriptEvidenceComplete: true,
+    })
+
+    expect(selectUserDecisionDeliveryCapability(snapshot, 'ask-done')).toEqual({
+      status: 'already_resolved',
+      semanticState: { status: 'answered' },
+    })
+  })
+
   test('joins a transcript question to its live callback by exact toolUseId', () => {
     const snapshot = projectUserDecisions({
       sessionId: SESSION_ID,
@@ -462,6 +548,28 @@ describe('projectUserDecisions', () => {
       semanticState: { status: 'answered' },
       response: { kind: 'answer', answers: { 'Pick one?': 'A' } },
       runtimeBinding: { status: 'detached' },
+    })
+  })
+
+  test('keeps an ordinary error semantically open but disables orphaned recovery', () => {
+    const snapshot = projectUserDecisions({
+      sessionId: SESSION_ID,
+      messages: [
+        askMessage('ask-error-evidence'),
+        resultMessage('ask-error-evidence', {
+          isError: true,
+          content: 'runtime rejected the callback',
+        }),
+      ],
+      pendingRequests: [],
+      transcriptEvidenceComplete: true,
+    })
+
+    expect(snapshot.decisions[0]?.decision.semanticState).toEqual({ status: 'open' })
+    expect(snapshot.decisions[0]?.hasToolResultEvidence).toBe(true)
+    expect(selectUserDecisionDeliveryCapability(snapshot, 'ask-error-evidence')).toEqual({
+      status: 'unavailable',
+      code: 'RECOVERY_UNAVAILABLE',
     })
   })
 })

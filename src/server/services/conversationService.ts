@@ -742,6 +742,61 @@ export class ConversationService {
     )
   }
 
+  respondToOrphanedPermission(
+    sessionId: string,
+    toolUseId: string,
+    allowed: boolean,
+    updatedInput?: Record<string, unknown>,
+    denyMessage?: string,
+  ): PermissionResponseResult {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      return { status: 'rejected', reason: 'session_unavailable' }
+    }
+
+    // The CLI deliberately routes an *unexpected* control_response into its
+    // transcript-based orphan recovery. A client attempt id could collide with
+    // a live control request, so it must never be reused as the transport id.
+    let recoveryRequestId = crypto.randomUUID()
+    while (
+      session.pendingPermissionRequests.has(recoveryRequestId) ||
+      session.pendingControlRequests.has(recoveryRequestId)
+    ) {
+      recoveryRequestId = crypto.randomUUID()
+    }
+
+    const payload = {
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: recoveryRequestId,
+        response: allowed
+          ? {
+              behavior: 'allow',
+              updatedInput: updatedInput ?? {},
+              toolUseID: toolUseId,
+            }
+          : {
+              behavior: 'deny',
+              message: buildDenyMessage('AskUserQuestion', denyMessage),
+              toolUseID: toolUseId,
+            },
+      },
+    }
+    const transport = session.sdkSocket ? 'sent' : 'queued'
+    try {
+      if (!this.sendSdkMessage(sessionId, payload)) {
+        return { status: 'rejected', reason: 'session_unavailable' }
+      }
+    } catch (error) {
+      return {
+        status: 'delivery_failed',
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+    return { status: 'accepted', transport }
+  }
+
   private sendPermissionResponse(
     sessionId: string,
     requestId: string,
@@ -1490,6 +1545,10 @@ export class ConversationService {
   markSessionDeleted(sessionId: string): void {
     this.deletedSessions.add(sessionId)
     this.stopSession(sessionId)
+  }
+
+  isSessionDeleted(sessionId: string): boolean {
+    return this.deletedSessions.has(sessionId)
   }
 
   markSessionsDeleted(sessionIds: string[]): void {

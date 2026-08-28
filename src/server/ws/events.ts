@@ -38,6 +38,15 @@ export type ReplaceUserTurnStatusRequest = {
   operationId: string
 }
 
+export const USER_DECISION_RESPONSE_PROTOCOL = 'orphaned-permission-v1' as const
+
+export type UserDecisionResponseRequest = {
+  type: 'user_decision_response'
+  decisionId: string
+  attemptId: string
+  response: UserDecisionResponse
+}
+
 export type ClientMessage =
   | { type: 'prewarm_session' }
   | { type: 'sync_state' }
@@ -67,6 +76,7 @@ export type ClientMessage =
   | { type: 'stop_background_task'; taskId: string }
   | ReplaceUserTurnRequest
   | ReplaceUserTurnStatusRequest
+  | UserDecisionResponseRequest
   | { type: 'ping' }
 
 export type AttachmentRef = {
@@ -142,7 +152,29 @@ export type UserDecisionSnapshotEntry = {
 export type UserDecisionSnapshot = {
   transcriptEvidenceComplete: boolean
   decisions: UserDecisionSnapshotEntry[]
+  userDecisionResponseProtocol?: typeof USER_DECISION_RESPONSE_PROTOCOL
 }
+
+export type UserDecisionResponseResult = {
+  type: 'user_decision_response_result'
+  decisionId: string
+  attemptId: string
+} & (
+  | {
+      state: 'accepted'
+      route: 'runtime_callback' | 'orphaned_recovery'
+    }
+  | {
+      state: 'already_resolved'
+    }
+  | {
+      state: 'retryable_failed' | 'indeterminate' | 'rejected'
+      error: {
+        code: string
+        message: string
+      }
+    }
+)
 
 export type ServerMessage =
   | { type: 'connected'; sessionId: string }
@@ -226,6 +258,7 @@ export type ServerMessage =
   | { type: 'team_deleted'; teamName: string }
   | { type: 'task_update'; taskId: string; status: string; progress?: string }
   | { type: 'session_title_updated'; sessionId: string; title: string }
+  | UserDecisionResponseResult
   | ReplaceUserTurnAck
 
 export type TokenUsage = {
