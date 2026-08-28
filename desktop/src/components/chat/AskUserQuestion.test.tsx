@@ -145,6 +145,35 @@ describe('AskUserQuestion', () => {
     })
   })
 
+  const publishDecision = (
+    decisionId: string,
+    question: string,
+    labels: string[],
+    options: { attachedRequestId?: string; evidenceComplete?: boolean } = {},
+  ) => act(() => {
+    useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: [],
+      computerUseRequestIds: [],
+      turnActive: true,
+      userDecisions: {
+        transcriptEvidenceComplete: options.evidenceComplete ?? true,
+        userDecisionResponseProtocol: 'orphaned-permission-v1',
+        decisions: [{
+          decisionId,
+          semanticState: { status: 'open' },
+          runtimeBinding: options.attachedRequestId
+            ? { status: 'attached', requestId: options.attachedRequestId }
+            : { status: 'detached' },
+          response: null,
+          input: { questions: [{ question, options: labels.map((label) => ({ label })) }] },
+          inputSource: options.attachedRequestId ? 'live' : 'transcript',
+          conflicted: false,
+        }],
+      },
+    } as never)
+  })
+
   it('keeps a dispatched answer in submitting state without claiming it was accepted', () => {
     render(
       <AskUserQuestion
@@ -560,6 +589,141 @@ describe('AskUserQuestion', () => {
     expect(screen.queryByText('Completed')).toBeNull()
     expect(screen.queryByText('Answered')).toBeNull()
     expect(screen.getByRole('button', { name: /^Wait$/ })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
+  })
+
+  it('submits an evidence-complete detached decision through the advertised response protocol', () => {
+    publishDecision(
+      'tool-detached-submit',
+      'Resume the original task?',
+      ['Resume', 'Cancel'],
+    )
+
+    render(<AskUserQuestion toolUseId="tool-detached-submit" input={{}} />)
+    const resumeOption = screen.getByRole('button', { name: /^Resume$/ })
+    expect(resumeOption.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(resumeOption)
+    expect(resumeOption.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+    expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, {
+      type: 'user_decision_response',
+      decisionId: 'tool-detached-submit',
+      attemptId: expect.any(String),
+      response: {
+        kind: 'answer',
+        answers: { 'Resume the original task?': 'Resume' },
+      },
+    })
+    expect(screen.getByRole('button', { name: /submit/i })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('status').textContent).toContain('Loading...')
+    expect(screen.getByRole('status').textContent).toContain('Resume')
+  })
+
+  it('uses the same response protocol for an attached decision instead of the legacy permission message', () => {
+    publishDecision('tool-1', 'Should we persist data?', ['No', 'Yes'], {
+      attachedRequestId: 'perm-1',
+    })
+    render(<AskUserQuestion toolUseId="tool-1" input={{}} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Yes$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+    expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, expect.objectContaining({
+      type: 'user_decision_response',
+      decisionId: 'tool-1',
+    }))
+    expect(sendMock.mock.calls.some(([, message]) =>
+      (message as { type?: string }).type === 'permission_response')).toBe(false)
+  })
+
+  it('shows a retryable response error and retries the frozen answer under a new attempt id', () => {
+    publishDecision('tool-retry-submit', 'Retry the answer?', ['Yes'])
+    const rendered = render(<AskUserQuestion toolUseId="tool-retry-submit" input={{}} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Yes$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    const first = sendMock.mock.calls.at(-1)?.[1] as {
+      attemptId: string
+      response: unknown
+    }
+
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'user_decision_response_result',
+        decisionId: 'tool-retry-submit',
+        attemptId: first.attemptId,
+        state: 'retryable_failed',
+        error: { code: 'TRY_AGAIN', message: 'Recovery was not started.' },
+      } as never)
+    })
+    expect(screen.getByRole('alert').textContent).toContain('Recovery was not started.')
+    rendered.unmount()
+    render(<AskUserQuestion toolUseId="tool-retry-submit" input={{}} />)
+    expect(screen.getByRole('button', { name: /^Yes$/ })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('status').textContent).toContain('Yes')
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    const second = sendMock.mock.calls.at(-1)?.[1] as typeof first
+    expect(second.attemptId).not.toBe(first.attemptId)
+    expect(second.response).toEqual(first.response)
+  })
+
+  it('shows indeterminate delivery as an alert that waits without resending', () => {
+    publishDecision('tool-indeterminate', 'Continue carefully?', ['Yes'])
+    render(<AskUserQuestion toolUseId="tool-indeterminate" input={{}} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Yes$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    const request = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'user_decision_response_result',
+        decisionId: 'tool-indeterminate',
+        attemptId: request.attemptId,
+        state: 'indeterminate',
+        error: { code: 'UNKNOWN', message: 'Delivery outcome is unknown.' },
+      } as never)
+    })
+
+    expect(screen.getByRole('alert').textContent).toContain('Delivery outcome is unknown.')
+    expect(screen.getByRole('status').textContent).toContain('Loading...')
+    expect(sendMock.mock.calls.filter(([, message]) =>
+      (message as { type?: string }).type === 'user_decision_response')).toHaveLength(1)
+    expect(sendMock.mock.calls.some(([, message]) =>
+      (message as { type?: string }).type === 'sync_state')).toBe(false)
+  })
+
+  it('restores a frozen clarification summary without claiming it was answered', () => {
+    publishDecision('tool-clarify-hold', 'Which path?', ['A'])
+    act(() => {
+      useChatStore.setState((state) => ({
+        sessions: {
+          ...state.sessions,
+          [ACTIVE_TAB]: {
+            ...state.sessions[ACTIVE_TAB]!,
+            userDecisionResponseAttempts: {
+              'tool-clarify-hold': {
+                attemptId: 'clarify-attempt',
+                response: { kind: 'clarify', message: 'Please explain the tradeoff first.' },
+                state: 'rejected',
+                error: { code: 'WAIT', message: 'Waiting for authoritative result.' },
+              },
+            },
+          },
+        },
+      }))
+    })
+    render(<AskUserQuestion toolUseId="tool-clarify-hold" input={{}} />)
+    expect(screen.getByRole('status').textContent)
+      .toContain('Please explain the tradeoff first.')
+    expect(screen.getByRole('alert').textContent)
+      .toContain('Waiting for authoritative result.')
+    expect(screen.queryByText('Answered')).toBeNull()
+  })
+
+  it('does not submit a detached decision while transcript evidence is incomplete', () => {
+    publishDecision('tool-incomplete-detached', 'Is history complete?', ['No'], {
+      evidenceComplete: false,
+    })
+    render(<AskUserQuestion toolUseId="tool-incomplete-detached" input={{}} />)
+    expect(screen.getByRole('button', { name: /^No$/ })).toHaveProperty('disabled', true)
     expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
   })
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessageEntry } from '../types/session'
-import type { UserDecisionSnapshotEntry } from '../types/chat'
+import type { UserDecisionResponse, UserDecisionSnapshotEntry } from '../types/chat'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
 
 const {
@@ -4251,6 +4251,427 @@ describe('chatStore history mapping', () => {
     }
 
     expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.pendingPermissions).toEqual(before)
+  })
+
+  describe('UserDecision response transport', () => {
+    beforeEach(() => {
+      useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+      sendMock.mockReset()
+    })
+
+    const protocolSnapshot = (
+      decisionId: string,
+      overrides: Partial<UserDecisionSnapshotEntry> = {},
+      transcriptEvidenceComplete = true,
+    ) => ({
+      transcriptEvidenceComplete,
+      userDecisionResponseProtocol: 'orphaned-permission-v1' as const,
+      decisions: [makeUserDecision(decisionId, overrides)],
+    })
+
+    const respond = (
+      decisionId: string,
+      response: UserDecisionResponse,
+    ) => useChatStore.getState().respondToUserDecision(
+      TEST_SESSION_ID,
+      decisionId,
+      response,
+    )
+
+    const receiveProtocolSnapshot = (
+      decisionId: string,
+      overrides: Partial<UserDecisionSnapshotEntry> = {},
+      transcriptEvidenceComplete = true,
+    ) => useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+      type: 'permission_requests_snapshot',
+      toolRequestIds: [],
+      computerUseRequestIds: [],
+      turnActive: true,
+      userDecisions: protocolSnapshot(decisionId, overrides, transcriptEvidenceComplete),
+    } as never)
+
+    const startFreshConnectionEpoch = () => useChatStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        [TEST_SESSION_ID]: {
+          ...state.sessions[TEST_SESSION_ID]!,
+          connectionSnapshotReady: false,
+          userDecisionSnapshot: undefined,
+        },
+      },
+    }))
+
+    const sentDecisionResponses = () => sendMock.mock.calls.filter(([, message]) =>
+      (message as { type?: string }).type === 'user_decision_response')
+
+    const patchSession = (patch: Partial<PerSessionState>) => useChatStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        [TEST_SESSION_ID]: { ...state.sessions[TEST_SESSION_ID]!, ...patch },
+      },
+    }))
+
+    const respondWithAnswer = (decisionId: string) => respond(decisionId, {
+      kind: 'answer',
+      answers: { [`Question for ${decisionId}?`]: 'Continue' },
+    })
+
+    it('submits complete detached and attached decisions through one protocol-gated transport', () => {
+      receiveProtocolSnapshot('decision-detached')
+
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]).toMatchObject({ readOnly: false, pendingRequest: null })
+
+      respond('decision-detached', {
+        kind: 'answer',
+        answers: { 'Question for decision-detached?': 'Continue' },
+      })
+      expect(sendMock).toHaveBeenLastCalledWith(TEST_SESSION_ID, expect.objectContaining({
+        type: 'user_decision_response',
+        decisionId: 'decision-detached',
+        response: {
+          kind: 'answer',
+          answers: { 'Question for decision-detached?': 'Continue' },
+        },
+      }))
+
+      receiveProtocolSnapshot('decision-attached', {
+        runtimeBinding: { status: 'attached', requestId: 'request-attached' },
+      })
+      respond('decision-attached', { kind: 'clarify', message: 'Need more context' })
+      expect(sendMock).toHaveBeenLastCalledWith(TEST_SESSION_ID, expect.objectContaining({
+        type: 'user_decision_response',
+        decisionId: 'decision-attached',
+        response: { kind: 'clarify', message: 'Need more context' },
+      }))
+      expect(sendMock.mock.calls.some(([, message]) =>
+        (message as { type?: string }).type === 'permission_response')).toBe(false)
+    })
+
+    it('routes a live Ask arriving after the protocol snapshot through UserDecision transport', () => {
+      const store = useChatStore.getState()
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          userDecisionResponseProtocol: 'orphaned-permission-v1',
+          decisions: [],
+        },
+      } as never)
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_request',
+        requestId: 'request-after-snapshot',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'decision-after-snapshot',
+        input: { questions: [{ question: 'Arrived later?', options: [{ label: 'Yes' }] }] },
+      })
+
+      respond('decision-after-snapshot', {
+        kind: 'answer',
+        answers: { 'Arrived later?': 'Yes' },
+      })
+      expect(sendMock).toHaveBeenLastCalledWith(TEST_SESSION_ID, expect.objectContaining({
+        type: 'user_decision_response',
+        decisionId: 'decision-after-snapshot',
+      }))
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]).toMatchObject({ submitting: true, readOnly: false })
+    })
+
+    it('replays one unacknowledged submitting attempt once at a fresh capable connection snapshot', () => {
+      const store = useChatStore.getState()
+      const snapshot = {
+        type: 'permission_requests_snapshot' as const,
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: protocolSnapshot('decision-replay'),
+      }
+      store.handleServerMessage(TEST_SESSION_ID, snapshot as never)
+      respond('decision-replay', {
+        kind: 'answer',
+        answers: { 'Question for decision-replay?': 'Continue' },
+      })
+      const original = sendMock.mock.calls.at(-1)?.[1]
+
+      startFreshConnectionEpoch()
+      store.handleServerMessage(TEST_SESSION_ID, snapshot as never)
+      expect(sentDecisionResponses()).toEqual([
+        [TEST_SESSION_ID, original],
+        [TEST_SESSION_ID, original],
+      ])
+
+      store.handleServerMessage(TEST_SESSION_ID, snapshot as never)
+      expect(sentDecisionResponses()).toHaveLength(2)
+    })
+
+    it('correlates results by decision and attempt, then retries with a new id and frozen response', () => {
+      const store = useChatStore.getState()
+      receiveProtocolSnapshot('decision-retry')
+      const response = {
+        kind: 'answer' as const,
+        answers: { 'Question for decision-retry?': 'Continue' },
+      }
+      respond('decision-retry', response)
+      const first = sendMock.mock.calls.at(-1)?.[1] as {
+        attemptId: string
+        response: { kind: 'answer'; answers: Record<string, string> }
+      }
+      response.answers['Question for decision-retry?'] = 'mutated after dispatch'
+
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId: 'decision-retry',
+        attemptId: 'stale-attempt',
+        state: 'retryable_failed',
+        error: { code: 'STALE', message: 'stale result' },
+      } as never)
+      expect(sendMock.mock.calls.some(([, message]) =>
+        (message as { type?: string }).type === 'sync_state')).toBe(false)
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]?.submitting).toBe(true)
+
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId: 'decision-retry',
+        attemptId: first.attemptId,
+        state: 'retryable_failed',
+        error: { code: 'TRY_AGAIN', message: 'retry this response' },
+      } as never)
+      expect(sendMock.mock.calls.some(([, message]) =>
+        (message as { type?: string }).type === 'sync_state')).toBe(false)
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]).toMatchObject({ retryable: true, error: 'retry this response' })
+
+      respond('decision-retry', { kind: 'clarify', message: 'must not replace the answer' })
+      const second = sendMock.mock.calls.at(-1)?.[1] as typeof first
+      expect(second.attemptId).not.toBe(first.attemptId)
+      expect(second.response).toEqual({
+        kind: 'answer',
+        answers: { 'Question for decision-retry?': 'Continue' },
+      })
+    })
+
+    it('keeps accepted, indeterminate, resolved and rejected attempts fail-closed', () => {
+      const states = [
+        { state: 'accepted', route: 'orphaned_recovery' },
+        { state: 'indeterminate', error: { code: 'UNKNOWN', message: 'outcome unknown' } },
+        { state: 'already_resolved' },
+        { state: 'rejected', error: { code: 'REJECTED', message: 'response rejected' } },
+      ] as const
+      for (const [index, result] of states.entries()) {
+        const decisionId = `decision-hold-${index}`
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const attempt = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+        useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result',
+          decisionId,
+          attemptId: attempt.attemptId,
+          ...result,
+        } as never)
+        const sendsBeforeDuplicate = sendMock.mock.calls.length
+
+        startFreshConnectionEpoch()
+        receiveProtocolSnapshot(decisionId)
+        expect(sendMock).toHaveBeenCalledTimes(sendsBeforeDuplicate)
+
+        respond(decisionId, { kind: 'clarify', message: 'duplicate' })
+        expect(sendMock).toHaveBeenCalledTimes(sendsBeforeDuplicate)
+        expect(selectAskUserDecisionProjection(
+          useChatStore.getState().sessions[TEST_SESSION_ID],
+        ).views.find((view) => view.toolUseId === decisionId)).toMatchObject({
+          readOnly: false,
+          submitting: true,
+        })
+      }
+    })
+
+    it('lets terminal evidence clear a hold before its ack and ignores that late ack', () => {
+      const store = useChatStore.getState()
+      for (const evidence of ['tool_result', 'snapshot'] as const) {
+        const decisionId = `decision-terminal-${evidence}`
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const { attemptId } = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+
+        if (evidence === 'tool_result') {
+          store.handleServerMessage(TEST_SESSION_ID, {
+            type: 'tool_result',
+            toolUseId: 'scoped-tool-result',
+            originalToolUseId: decisionId,
+            content: { answers: { [`Question for ${decisionId}?`]: 'Continue' } },
+            isError: false,
+          })
+        } else {
+          store.handleServerMessage(TEST_SESSION_ID, {
+            type: 'permission_requests_snapshot',
+            toolRequestIds: [],
+            computerUseRequestIds: [],
+            turnActive: false,
+            userDecisions: protocolSnapshot(decisionId, {
+              semanticState: { status: 'answered' },
+              response: { kind: 'answer', answers: { [`Question for ${decisionId}?`]: 'Continue' } },
+            }),
+          } as never)
+        }
+        expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts).not.toHaveProperty(decisionId)
+
+        store.handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result',
+          decisionId,
+          attemptId,
+          state: evidence === 'tool_result' ? 'indeterminate' : 'accepted',
+          ...(evidence === 'tool_result'
+            ? { error: { code: 'LATE', message: 'late result' } }
+            : { route: 'orphaned_recovery' }),
+        } as never)
+        expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+          ?.userDecisionResponseAttempts).not.toHaveProperty(decisionId)
+      }
+    })
+
+    it('preserves a hold across incomplete snapshots and reconnect epochs', () => {
+      const store = useChatStore.getState()
+      receiveProtocolSnapshot('decision-preserved')
+      respondWithAnswer('decision-preserved')
+      const before = useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.userDecisionResponseAttempts?.['decision-preserved']
+
+      patchSession({
+        userDecisionSnapshot: undefined,
+        pendingPermission: {
+          requestId: 'stale-live-request',
+          toolName: 'AskUserQuestion',
+          toolUseId: 'decision-preserved',
+          input: makeUserDecision('decision-preserved').input,
+        },
+      })
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]).toMatchObject({ submitting: true, retryable: false })
+
+      receiveProtocolSnapshot('decision-preserved', {}, false)
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.userDecisionResponseAttempts?.['decision-preserved']).toEqual(before)
+
+      patchSession({ connectionState: 'disconnected' })
+      store.connectToSession(TEST_SESSION_ID, {
+        prewarm: false,
+        applyRuntimeSelection: false,
+        minimalBootstrap: true,
+      })
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.userDecisionResponseAttempts?.['decision-preserved']).toEqual(before)
+    })
+
+    it('gates legacy Ask until a fresh snapshot and never downgrades a modern hold', () => {
+      const request = {
+        type: 'permission_request' as const,
+        requestId: 'legacy-connection-gate',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'legacy-connection-tool',
+        input: { questions: [{ question: 'Wait for sync?', options: [{ label: 'Yes' }] }] },
+      }
+      useChatStore.getState().handleServerMessage(TEST_SESSION_ID, request)
+      patchSession({ connectionSnapshotReady: false })
+      let projection = selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      )
+      expect(projection.views[0]).toMatchObject({ readOnly: true })
+      expect(useChatStore.getState().respondToPermission(
+        TEST_SESSION_ID,
+        request.requestId,
+        true,
+      )).toBe('not-dispatched')
+      expect(sendMock).not.toHaveBeenCalled()
+
+      useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [request.requestId],
+        computerUseRequestIds: [],
+        turnActive: true,
+      })
+      projection = selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      )
+      expect(projection.views[0]).toMatchObject({ readOnly: false })
+
+      patchSession({
+        userDecisionResponseAttempts: {
+          modern: {
+            attemptId: 'modern-attempt',
+            response: { kind: 'clarify', message: 'frozen modern response' },
+            state: 'retryable_failed',
+            error: { code: 'RETRY', message: 'retry later' },
+          },
+        },
+        pendingPermission: {
+          requestId: 'modern-legacy-request',
+          toolName: 'AskUserQuestion',
+          toolUseId: 'modern',
+          input: request.input,
+        },
+        pendingPermissions: {},
+      })
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views.find((view) => view.toolUseId === 'modern')).toMatchObject({
+        readOnly: true,
+        submitting: true,
+        retryable: false,
+      })
+      expect(useChatStore.getState().respondToPermission(
+        TEST_SESSION_ID,
+        'modern-legacy-request',
+        true,
+      )).toBe('not-dispatched')
+
+      useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: ['modern-legacy-request'],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          decisions: [makeUserDecision('modern', {
+            runtimeBinding: { status: 'attached', requestId: 'modern-legacy-request' },
+          })],
+        },
+      })
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views.find((view) => view.toolUseId === 'modern')).toMatchObject({
+        source: 'server',
+        readOnly: true,
+        submitting: true,
+        retryable: false,
+      })
+      expect(sendMock).not.toHaveBeenCalled()
+    })
+
+    it('clears the transport outbox with the local message state', () => {
+      patchSession({
+        userDecisionResponseAttempts: {
+          clearable: {
+            attemptId: 'attempt-clearable',
+            response: { kind: 'clarify', message: 'clear me' },
+            state: 'indeterminate',
+          },
+        },
+      })
+      useChatStore.getState().clearMessages(TEST_SESSION_ID)
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.userDecisionResponseAttempts).toEqual({})
+    })
   })
 
   it('removes replayed or cancelled requests when the server resolves them', () => {

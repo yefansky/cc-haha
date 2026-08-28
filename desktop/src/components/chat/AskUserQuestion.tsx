@@ -66,7 +66,7 @@ function getSelectedAnswer(question: Question, selected: string[] | undefined) {
 }
 
 export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult = false }: Props) {
-  const { respondToPermission } = useChatStore()
+  const { respondToPermission, respondToUserDecision } = useChatStore()
   const activeTabId = useTabStore((s) => s.activeTabId)
   const targetSessionId = sessionId ?? activeTabId
   const sessionState = useChatStore((s) => targetSessionId
@@ -91,6 +91,9 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
   const [hasRequestedChat, setHasRequestedChat] = useState(false)
   const composingRef = useRef(false)
   const isServerDecision = decisionView?.source === 'server'
+  const useResponseProtocol =
+    sessionState?.userDecisionSnapshot?.userDecisionResponseProtocol ===
+      'orphaned-permission-v1'
   const terminalDecision = decision?.semanticState.status !== undefined &&
     decision.semanticState.status !== 'open'
   const decisionResponse = terminalDecision ? decision.response : null
@@ -115,10 +118,24 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
     ? null
     : decisionView?.pendingRequest ?? null
   const submitting = decisionView?.submitting === true
+  const retryable = decisionView?.retryable === true
+  const deliveryState = decisionView?.deliveryState
+  const responseError = decisionView?.error
+  const retryResponse = sessionState?.userDecisionResponseAttempts?.[toolUseId]?.response
+  const frozenResponseSummary = useMemo(() => {
+    if (!retryResponse) return ''
+    if (retryResponse.kind === 'clarify') return retryResponse.message.trim()
+    return Object.values(retryResponse.answers)
+      .map((answer) => answer.trim())
+      .filter(Boolean)
+      .join('; ')
+  }, [retryResponse])
 
   useEffect(() => {
-    if (pendingRequest && !submitting && hasRequestedChat) setHasRequestedChat(false)
-  }, [hasRequestedChat, pendingRequest, submitting])
+    if (!submitting && hasRequestedChat && (retryable || pendingRequest)) {
+      setHasRequestedChat(false)
+    }
+  }, [hasRequestedChat, pendingRequest, retryable, submitting])
 
   const answeredText = useMemo(() => {
     if (hasStructuredAnswers) {
@@ -161,9 +178,12 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
     connectionSnapshotReady
   const settled = semanticallySubmitted || readOnly
   const requestedChat = hasRequestedChat || decisionResponse?.kind === 'clarify'
+  const dispatchAvailable = Boolean(
+    targetSessionId && (useResponseProtocol || pendingRequest),
+  )
 
   const handleSelect = (qIndex: number, label: string) => {
-    if (settled || submitting) return
+    if (settled || submitting || retryable) return
     setSelections((prev) => {
       const question = questions[qIndex]
       const selected = prev[qIndex] ?? []
@@ -195,7 +215,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
   }
 
   const handleFreeTextChange = (qIndex: number, value: string) => {
-    if (settled || submitting) return
+    if (settled || submitting || retryable) return
     setFreeTexts((prev) => {
       const next = { ...prev }
       if (value) {
@@ -217,6 +237,10 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
 
   const handleSubmit = () => {
     if (semanticallySubmitted || submitting) return
+    if (retryable && targetSessionId && useResponseProtocol && retryResponse) {
+      respondToUserDecision(targetSessionId, toolUseId, retryResponse)
+      return
+    }
 
     const parts: string[] = []
     for (let i = 0; i < questions.length; i++) {
@@ -226,7 +250,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
     const response = parts.join('; ')
     if (!response) return
 
-    if (!targetSessionId || !pendingRequest) return
+    if (!targetSessionId || (!useResponseProtocol && !pendingRequest)) return
 
     const answers = questions.reduce<Record<string, string>>((acc, question, index) => {
       const freeText = freeTexts[index]?.trim()
@@ -239,12 +263,15 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
       return acc
     }, {})
 
-    respondToPermission(targetSessionId, pendingRequest.requestId, true, {
-      updatedInput: {
-        ...inputObject,
-        answers,
-      },
-    })
+    const dispatchResult = useResponseProtocol
+      ? respondToUserDecision(targetSessionId, toolUseId, { kind: 'answer', answers })
+      : respondToPermission(targetSessionId, pendingRequest!.requestId, true, {
+          updatedInput: {
+            ...inputObject,
+            answers,
+          },
+        })
+    if (dispatchResult === 'dispatched') setHasRequestedChat(false)
   }
 
   /**
@@ -259,7 +286,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
    */
   const handleChatAboutThis = () => {
     if (semanticallySubmitted || submitting) return
-    if (!targetSessionId || !pendingRequest) return
+    if (!targetSessionId || (!useResponseProtocol && !pendingRequest)) return
 
     // Carry whatever was already picked, so switching to a conversation isn't
     // punished by losing the partial answers.
@@ -272,9 +299,14 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
       })
       .join('\n')
 
-    const dispatchResult = respondToPermission(targetSessionId, pendingRequest.requestId, false, {
-      denyMessage: questionsWithAnswers,
-    })
+    const dispatchResult = useResponseProtocol
+      ? respondToUserDecision(targetSessionId, toolUseId, {
+          kind: 'clarify',
+          message: questionsWithAnswers,
+        })
+      : respondToPermission(targetSessionId, pendingRequest!.requestId, false, {
+          denyMessage: questionsWithAnswers,
+        })
     if (dispatchResult === 'dispatched') setHasRequestedChat(true)
   }
 
@@ -365,8 +397,9 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
               return (
                 <button
                   key={optIndex}
+                  aria-pressed={isSelected}
                   onClick={() => handleSelect(safeActiveTab, opt.label)}
-                  disabled={settled || submitting}
+                  disabled={settled || submitting || retryable}
                   className={`w-full text-left px-4 py-3 rounded-[var(--radius-md)] border transition-all duration-150 cursor-pointer ${
                     isSelected
                       ? 'border-[var(--color-secondary)] bg-[var(--color-secondary-container)]'
@@ -415,7 +448,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
             </label>
             <textarea
               value={freeTexts[safeActiveTab] ?? ''}
-              disabled={submitting}
+              disabled={submitting || retryable}
               onChange={(e) => handleFreeTextChange(safeActiveTab, e.target.value)}
               onCompositionStart={() => { composingRef.current = true }}
               onCompositionEnd={() => { composingRef.current = false }}
@@ -449,6 +482,17 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
             </span>
           </div>
         ) : null)}
+        {!semanticallySubmitted && responseError && (
+          <p role="alert" className="mt-3 text-xs text-[var(--color-error)]">
+            {responseError}
+          </p>
+        )}
+        {!semanticallySubmitted && deliveryState && (
+          <p role="status" className="mt-3 text-xs text-[var(--color-text-secondary)]">
+            {deliveryState !== 'retryable_failed' && <span>{t('common.loading')} </span>}
+            {frozenResponseSummary && <strong>{frozenResponseSummary}</strong>}
+          </p>
+        )}
       </div>
 
       {/* Action bar. Wraps rather than overflows: two buttons plus a translated
@@ -458,18 +502,18 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
           <Button
             variant="primary"
             size="sm"
-            disabled={!allAnswered || !pendingRequest || submitting}
+            disabled={(!retryable && !allAnswered) || !dispatchAvailable || submitting}
             onClick={handleSubmit}
             icon={
               <span className="material-symbols-outlined text-[14px]">send</span>
             }
           >
-            {t('question.submit')}
+            {t(retryable ? 'common.retry' : 'question.submit')}
           </Button>
           <Button
             variant="secondary"
             size="sm"
-            disabled={!pendingRequest || submitting}
+            disabled={!dispatchAvailable || submitting || retryable}
             onClick={handleChatAboutThis}
             title={t('question.chatAboutThisHint')}
             icon={

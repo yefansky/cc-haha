@@ -30,6 +30,7 @@ import type {
   BackgroundAgentTask,
   BackgroundAgentTaskUsage,
   ChatState,
+  ClientMessage,
   ComputerUsePermissionRequest,
   ComputerUsePermissionResponse,
   GoalEventAction,
@@ -40,6 +41,7 @@ import type {
   ServerMessage,
   TokenUsage,
   PermissionUpdate,
+  UserDecisionResponse,
   UserDecisionSnapshot,
   UserDecisionSnapshotEntry,
 } from '../types/chat'
@@ -102,6 +104,21 @@ export type PendingPermission = {
 
 export type PermissionResponseDispatchResult = 'dispatched' | 'not-dispatched'
 
+export type UserDecisionResponseAttempt = Readonly<{
+  attemptId: string
+  response: UserDecisionResponse
+  state:
+    | 'submitting'
+    | 'accepted'
+    | 'already_resolved'
+    | 'indeterminate'
+    | 'retryable_failed'
+    | 'rejected'
+  error?: Readonly<{ code: string; message: string }>
+}>
+
+type UserDecisionResponseAttempts = Record<string, UserDecisionResponseAttempt>
+
 type PendingPermissions = Record<string, PendingPermission>
 
 type PendingComputerUsePermission = {
@@ -119,6 +136,11 @@ export type PerSessionState = {
   connectionSnapshotReady?: boolean
   /** Present only when the connected server supplies the R2 decision projection. */
   userDecisionSnapshot?: UserDecisionSnapshot
+  /**
+   * Transport outbox bounded to this session's open decisions. This is not a
+   * semantic registry; truth remains in userDecisionSnapshot/tool_result.
+   */
+  userDecisionResponseAttempts?: UserDecisionResponseAttempts
   historyStatus?: 'idle' | 'loading' | 'ready' | 'error'
   historyError?: string | null
   streamingText: string
@@ -194,6 +216,7 @@ const DEFAULT_SESSION_STATE: PerSessionState = {
   activeThinkingId: null,
   pendingPermission: null,
   pendingPermissions: {},
+  userDecisionResponseAttempts: {},
   pendingComputerUsePermission: null,
   pendingComputerUsePermissions: {},
   tokenUsage: { input_tokens: 0, output_tokens: 0 },
@@ -239,6 +262,44 @@ function getPendingPermissionRecord(
     pendingPermissions[session.pendingPermission.requestId] = session.pendingPermission
   }
   return pendingPermissions
+}
+
+function freezeUserDecisionResponse(response: UserDecisionResponse): UserDecisionResponse {
+  if (response.kind === 'clarify') {
+    return Object.freeze({ kind: 'clarify', message: response.message })
+  }
+  return Object.freeze({
+    kind: 'answer',
+    answers: Object.freeze({ ...response.answers }),
+  })
+}
+
+function reconcileUserDecisionResponseAttempts(
+  attempts: UserDecisionResponseAttempts | undefined,
+  snapshot: UserDecisionSnapshot | undefined,
+): UserDecisionResponseAttempts {
+  if (!attempts) return {}
+  if (!snapshot?.transcriptEvidenceComplete) return attempts
+  const openDecisionIds = new Set(
+    snapshot.decisions
+      .filter((decision) => decision.semanticState.status === 'open')
+      .map((decision) => decision.decisionId),
+  )
+  return Object.fromEntries(
+    Object.entries(attempts).filter(([decisionId]) => openDecisionIds.has(decisionId)),
+  )
+}
+
+function removeUserDecisionResponseAttempts(
+  attempts: UserDecisionResponseAttempts | undefined,
+  decisionIds: readonly (string | undefined)[],
+): UserDecisionResponseAttempts {
+  if (!attempts) return {}
+  const ids = new Set(decisionIds.filter((id): id is string => Boolean(id)))
+  if (ids.size === 0 || ![...ids].some((id) => attempts[id])) return attempts
+  return Object.fromEntries(
+    Object.entries(attempts).filter(([decisionId]) => !ids.has(decisionId)),
+  )
 }
 
 function getPendingComputerUsePermissionRecord(
@@ -307,6 +368,9 @@ export type AskUserDecisionView = {
   terminal: boolean
   readOnly: boolean
   submitting: boolean
+  retryable: boolean
+  deliveryState?: UserDecisionResponseAttempt['state']
+  error?: string
 }
 
 export type AskUserDecisionProjection = {
@@ -322,7 +386,11 @@ export type AskUserDecisionProjection = {
 export function selectAskUserDecisionProjection(
   session: Pick<
     PerSessionState,
-    'pendingPermission' | 'pendingPermissions' | 'userDecisionSnapshot'
+    | 'pendingPermission'
+    | 'pendingPermissions'
+    | 'connectionSnapshotReady'
+    | 'userDecisionSnapshot'
+    | 'userDecisionResponseAttempts'
   > | undefined,
 ): AskUserDecisionProjection {
   if (!session) return { source: 'legacy', active: null, views: [] }
@@ -332,21 +400,32 @@ export function selectAskUserDecisionProjection(
   if (!snapshot) {
     const views = Object.values(pendingPermissions)
       .filter((permission) => permission.toolName === 'AskUserQuestion' && permission.toolUseId)
-      .map((permission): AskUserDecisionView => ({
-        source: 'legacy',
-        toolUseId: permission.toolUseId!,
-        input: permission.input,
-        decision: null,
-        pendingRequest: permission,
-        terminal: false,
-        readOnly: false,
-        submitting: permission.responseState === 'submitting',
-      }))
+      .map((permission): AskUserDecisionView => {
+        const attempt = session.userDecisionResponseAttempts?.[permission.toolUseId!]
+        return {
+          source: 'legacy',
+          toolUseId: permission.toolUseId!,
+          input: permission.input,
+          decision: null,
+          pendingRequest: permission,
+          terminal: false,
+          readOnly: session.connectionSnapshotReady === false || Boolean(attempt),
+          // The protocol capability is deliberately cleared at a connection
+          // epoch boundary, but an already-claimed attempt is not. Keep the
+          // legacy request locked until the fresh snapshot restores routing.
+          submitting: Boolean(attempt) || permission.responseState === 'submitting',
+          retryable: false,
+          ...(attempt ? { deliveryState: attempt.state } : {}),
+          ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
+        }
+      })
     return { source: 'legacy', active: views[0] ?? null, views }
   }
 
   const claimedRequestIds = new Set<string>()
   const snapshotDecisionIds = new Set(snapshot.decisions.map((decision) => decision.decisionId))
+  const responseProtocolAvailable =
+    snapshot.userDecisionResponseProtocol === 'orphaned-permission-v1'
   const views = snapshot.decisions.map((decision): AskUserDecisionView => {
     const attachedRequestId = decision.runtimeBinding.status === 'attached'
       ? decision.runtimeBinding.requestId
@@ -362,7 +441,17 @@ export function selectAskUserDecisionProjection(
       ? matchingPendingRequests[0]!
       : null
     if (validPendingRequest) claimedRequestIds.add(validPendingRequest.requestId)
-    const readOnly = terminal || decision.conflicted || !validPendingRequest
+    const attempt = session.userDecisionResponseAttempts?.[decision.decisionId]
+    const retryable = attempt?.state === 'retryable_failed'
+    const modernAttemptUnsupported = Boolean(attempt) && !responseProtocolAvailable
+    const protocolCanRespond = responseProtocolAvailable && (
+      decision.runtimeBinding.status === 'detached'
+        ? snapshot.transcriptEvidenceComplete
+        : true
+    )
+    const readOnly = terminal || decision.conflicted || modernAttemptUnsupported || (
+      !protocolCanRespond && !validPendingRequest
+    )
     return {
       source: 'server',
       toolUseId: decision.decisionId,
@@ -371,7 +460,12 @@ export function selectAskUserDecisionProjection(
       pendingRequest: validPendingRequest,
       terminal,
       readOnly,
-      submitting: validPendingRequest?.responseState === 'submitting',
+      submitting: attempt
+        ? modernAttemptUnsupported || !retryable
+        : validPendingRequest?.responseState === 'submitting',
+      retryable: retryable && !modernAttemptUnsupported,
+      ...(attempt ? { deliveryState: attempt.state } : {}),
+      ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
     }
   })
 
@@ -386,6 +480,9 @@ export function selectAskUserDecisionProjection(
     ) {
       continue
     }
+    const attempt = session.userDecisionResponseAttempts?.[permission.toolUseId]
+    const retryable = attempt?.state === 'retryable_failed'
+    const modernAttemptUnsupported = Boolean(attempt) && !responseProtocolAvailable
     views.push({
       source: 'legacy',
       toolUseId: permission.toolUseId,
@@ -393,8 +490,13 @@ export function selectAskUserDecisionProjection(
       decision: null,
       pendingRequest: permission,
       terminal: false,
-      readOnly: false,
-      submitting: permission.responseState === 'submitting',
+      readOnly: modernAttemptUnsupported,
+      submitting: attempt
+        ? modernAttemptUnsupported || !retryable
+        : permission.responseState === 'submitting',
+      retryable: retryable && !modernAttemptUnsupported,
+      ...(attempt ? { deliveryState: attempt.state } : {}),
+      ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
     })
   }
 
@@ -486,6 +588,11 @@ type ChatStore = {
       denyMessage?: string
       permissionUpdates?: PermissionUpdate[]
     },
+  ) => PermissionResponseDispatchResult
+  respondToUserDecision: (
+    sessionId: string,
+    decisionId: string,
+    response: UserDecisionResponse,
   ) => PermissionResponseDispatchResult
   respondToComputerUsePermission: (
     sessionId: string,
@@ -1542,6 +1649,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           connectionState: 'connecting',
           connectionSnapshotReady: false,
           userDecisionSnapshot: undefined,
+          userDecisionResponseAttempts: existing?.userDecisionResponseAttempts ?? {},
           messages: existing?.messages ?? [],
           activeGoal: existing?.activeGoal ?? null,
           composerDraft: existing?.composerDraft ?? null,
@@ -1765,10 +1873,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   respondToPermission: (sessionId, requestId, allowed, options) => {
-    const pendingPermission = getPendingPermission(get().sessions[sessionId], requestId)
+    const currentSession = get().sessions[sessionId]
+    const pendingPermission = getPendingPermission(currentSession, requestId)
     // AskUserQuestion keeps its card until an authoritative server event settles it.
     // Other permission dialogs retain their existing optimistic cleanup in this phase.
     const keepUntilResolved = pendingPermission?.toolName === 'AskUserQuestion'
+    const modernAttempt = pendingPermission?.toolUseId
+      ? currentSession?.userDecisionResponseAttempts?.[pendingPermission.toolUseId]
+      : undefined
+    if (
+      keepUntilResolved &&
+      (currentSession?.connectionSnapshotReady === false || Boolean(modernAttempt))
+    ) {
+      return 'not-dispatched'
+    }
     if (keepUntilResolved && pendingPermission.responseState === 'submitting') {
       return 'not-dispatched'
     }
@@ -1829,6 +1947,67 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
       }),
     }))
+    return 'dispatched'
+  },
+
+  respondToUserDecision: (sessionId, decisionId, response) => {
+    const attemptId = crypto.randomUUID()
+    let claimed = false
+    let previousAttempt: UserDecisionResponseAttempt | undefined
+    let responseToSend: UserDecisionResponse | undefined
+
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (session) => {
+        const view = selectAskUserDecisionProjection(session).views.find(
+          (candidate) => candidate.toolUseId === decisionId,
+        )
+        if (
+          session.userDecisionSnapshot?.userDecisionResponseProtocol !==
+            'orphaned-permission-v1' ||
+          !view ||
+          view.terminal ||
+          view.readOnly
+        ) return {}
+
+        previousAttempt = session.userDecisionResponseAttempts?.[decisionId]
+        if (previousAttempt && previousAttempt.state !== 'retryable_failed') return {}
+        responseToSend = previousAttempt?.response ?? freezeUserDecisionResponse(response)
+        const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
+          attemptId,
+          response: responseToSend,
+          state: 'submitting',
+        })
+        claimed = true
+        return {
+          userDecisionResponseAttempts: {
+            ...(session.userDecisionResponseAttempts ?? {}),
+            [decisionId]: nextAttempt,
+          },
+        }
+      }),
+    }))
+    if (!claimed || !responseToSend) return 'not-dispatched'
+
+    try {
+      wsManager.send(sessionId, {
+        type: 'user_decision_response',
+        decisionId,
+        attemptId,
+        response: responseToSend,
+      })
+    } catch {
+      set((state) => ({
+        sessions: updateSessionIn(state.sessions, sessionId, (session) => {
+          const attempts = session.userDecisionResponseAttempts ?? {}
+          if (attempts[decisionId]?.attemptId !== attemptId) return {}
+          const nextAttempts = { ...attempts }
+          if (previousAttempt) nextAttempts[decisionId] = previousAttempt
+          else delete nextAttempts[decisionId]
+          return { userDecisionResponseAttempts: nextAttempts }
+        }),
+      }))
+      return 'not-dispatched'
+    }
     return 'dispatched'
   },
 
@@ -2403,6 +2582,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       suppressNextTaskNotificationResponse: false,
       replaceHistoryOnCompletion: false,
       queuedUserMessages: [],
+      userDecisionResponseAttempts: {},
     })) }))
   },
 
@@ -2978,6 +3158,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
           return {
             messages,
+            userDecisionResponseAttempts: removeUserDecisionResponseAttempts(
+              s.userDecisionResponseAttempts,
+              [msg.toolUseId, msg.originalToolUseId],
+            ),
             ...(stoppedTask ? { backgroundAgentTasks } : {}),
             chatState: parentToolUseId
               ? s.chatState
@@ -3108,6 +3292,29 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         })
         break
 
+      case 'user_decision_response_result': {
+        update((session) => {
+          const attempts = session.userDecisionResponseAttempts ?? {}
+          const current = attempts[msg.decisionId]
+          if (!current || current.attemptId !== msg.attemptId) return {}
+          const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
+            attemptId: current.attemptId,
+            response: current.response,
+            state: msg.state,
+            ...('error' in msg
+              ? { error: Object.freeze({ ...msg.error }) }
+              : {}),
+          })
+          return {
+            userDecisionResponseAttempts: {
+              ...attempts,
+              [msg.decisionId]: nextAttempt,
+            },
+          }
+        })
+        break
+      }
+
       case 'permission_response_failed':
         update((session) => {
           const pendingPermissions = getPendingPermissionRecord(session)
@@ -3185,8 +3392,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         })
         break
 
-      case 'permission_requests_snapshot':
+      case 'permission_requests_snapshot': {
+        const replayMessages: Array<Extract<ClientMessage, {
+          type: 'user_decision_response'
+        }>> = []
         update((session) => {
+          const freshConnectionSnapshot = session.connectionSnapshotReady === false
           const toolRequestIds = new Set(msg.toolRequestIds)
           const legacyFilteredPermissions = Object.fromEntries(
             Object.entries(getPendingPermissionRecord(session))
@@ -3206,10 +3417,37 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const remainingComputerUsePermissions = Object.values(pendingComputerUsePermissions)
           const hasRemainingPermissions = remainingPermissions.length > 0 ||
             remainingComputerUsePermissions.length > 0
+          const reconciledAttempts = reconcileUserDecisionResponseAttempts(
+            session.userDecisionResponseAttempts,
+            msg.userDecisions,
+          )
+
+          if (
+            freshConnectionSnapshot &&
+            msg.userDecisions?.userDecisionResponseProtocol === 'orphaned-permission-v1'
+          ) {
+            for (const decision of msg.userDecisions.decisions) {
+              const attempt = reconciledAttempts[decision.decisionId]
+              const canReplay =
+                decision.semanticState.status === 'open' &&
+                !decision.conflicted &&
+                attempt?.state === 'submitting' &&
+                (decision.runtimeBinding.status === 'attached' ||
+                  msg.userDecisions.transcriptEvidenceComplete)
+              if (!canReplay) continue
+              replayMessages.push({
+                type: 'user_decision_response',
+                decisionId: decision.decisionId,
+                attemptId: attempt.attemptId,
+                response: attempt.response,
+              })
+            }
+          }
 
           return {
             connectionSnapshotReady: true,
             userDecisionSnapshot: msg.userDecisions,
+            userDecisionResponseAttempts: reconciledAttempts,
             pendingPermissions,
             pendingPermission: remainingPermissions[remainingPermissions.length - 1] ?? null,
             pendingComputerUsePermissions,
@@ -3226,7 +3464,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                   : session.chatState,
           }
         })
+        for (const response of replayMessages) {
+          try {
+            wsManager.send(sessionId, response)
+          } catch {
+            // Keep the same submitting attempt for the next connection epoch.
+          }
+        }
         break
+      }
 
       case 'message_complete': {
         const session = get().sessions[sessionId]

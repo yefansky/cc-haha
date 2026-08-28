@@ -23,6 +23,12 @@ export type ClientMessage =
       requestId: string
       response: ComputerUsePermissionResponse
     }
+  | {
+      type: 'user_decision_response'
+      decisionId: string
+      attemptId: string
+      response: UserDecisionResponse
+    }
   | { type: 'set_permission_mode'; mode: PermissionMode }
   | ({ type: 'set_runtime_config' } & RuntimeSelection)
   | { type: 'stop_generation' }
@@ -109,7 +115,21 @@ export type UserDecisionSnapshotEntry = {
 export type UserDecisionSnapshot = {
   transcriptEvidenceComplete: boolean
   decisions: UserDecisionSnapshotEntry[]
+  userDecisionResponseProtocol?: 'orphaned-permission-v1'
 }
+
+export type UserDecisionResponseResult = {
+  type: 'user_decision_response_result'
+  decisionId: string
+  attemptId: string
+} & (
+  | { state: 'accepted'; route: 'runtime_callback' | 'orphaned_recovery' }
+  | { state: 'already_resolved' }
+  | {
+      state: 'retryable_failed' | 'indeterminate' | 'rejected'
+      error: { code: string; message: string }
+    }
+)
 
 export type ServerMessage =
   | { type: 'connected'; sessionId: string }
@@ -155,6 +175,7 @@ export type ServerMessage =
       turnActive: boolean
       userDecisions?: UserDecisionSnapshot
     }
+  | UserDecisionResponseResult
   | { type: 'user_message_replay'; messageUuid?: string; content: string }
   | { type: 'message_complete'; usage: TokenUsage }
   /** `complete` marks a whole thinking block; without it `text` is a stream fragment. */
