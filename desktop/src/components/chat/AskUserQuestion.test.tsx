@@ -671,6 +671,39 @@ describe('AskUserQuestion', () => {
     expect(second.response).toEqual(first.response)
   })
 
+  it('lets the user edit an answer that was explicitly rejected before delivery', () => {
+    publishDecision('tool-edit-rejected', 'Choose again?', ['No', 'Yes'])
+    render(<AskUserQuestion toolUseId="tool-edit-rejected" input={{}} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Yes$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    const first = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'user_decision_response_result',
+        decisionId: 'tool-edit-rejected',
+        attemptId: first.attemptId,
+        state: 'rejected',
+        error: {
+          code: 'DECISION_RESPONSE_MISMATCH',
+          message: 'The questions changed before delivery.',
+        },
+      } as never)
+    })
+
+    expect(screen.getByRole('alert').textContent).toContain('questions changed')
+    expect(screen.queryByText('Loading...')).toBeNull()
+    expect(screen.getByRole('button', { name: /^No$/ })).toHaveProperty('disabled', false)
+    fireEvent.click(screen.getByRole('button', { name: /^No$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    const second = sendMock.mock.calls.at(-1)?.[1] as {
+      attemptId: string
+      response: { kind: 'answer'; answers: Record<string, string> }
+    }
+    expect(second.attemptId).not.toBe(first.attemptId)
+    expect(second.response.answers).toEqual({ 'Choose again?': 'No' })
+  })
+
   it('shows indeterminate delivery as an alert that waits without resending', () => {
     publishDecision('tool-indeterminate', 'Continue carefully?', ['Yes'])
     render(<AskUserQuestion toolUseId="tool-indeterminate" input={{}} />)

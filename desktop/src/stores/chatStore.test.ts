@@ -4328,6 +4328,232 @@ describe('chatStore history mapping', () => {
       answers: { [`Question for ${decisionId}?`]: 'Continue' },
     })
 
+    it('bottom-up filters attempt states that directly hold an open Ask submitting', () => {
+      const decisionId = 'bottom-up-submit-gate'
+      const states = [
+        undefined,
+        'submitting',
+        'accepted',
+        'already_resolved',
+        'indeterminate',
+        'retryable_failed',
+        'rejected',
+      ] as const
+      const locks = states.filter((state) => {
+        const session = makeSession({
+          userDecisionSnapshot: protocolSnapshot(decisionId),
+          userDecisionResponseAttempts: state ? {
+            [decisionId]: {
+              attemptId: `attempt-${state}`,
+              response: { kind: 'answer', answers: { 'Question?': 'Continue' } },
+              state,
+            },
+          } : {},
+        })
+        const view = selectAskUserDecisionProjection(session).views[0]!
+        return !view.terminal && !view.readOnly && view.submitting && !view.retryable
+      }).map((state) => state ?? 'none')
+
+      expect(locks).toEqual([
+        'submitting',
+        'accepted',
+        'already_resolved',
+        'indeterminate',
+        'rejected',
+      ])
+    })
+
+    it('classifies reduced abnormal-event paths by local exit or reconnect recovery', () => {
+      const results = [
+        'submitting', 'accepted', 'indeterminate',
+        'already_resolved', 'rejected', 'retryable_failed',
+      ] as const
+      const connections = ['keep', 'reconnect'] as const
+      const snapshots = ['terminal', 'open', 'missing'] as const
+      const cases = results.flatMap((result) => connections.flatMap((connection) =>
+        snapshots.map((snapshot) => ({ result, connection, snapshot }))))
+      const outcomes: Array<(typeof cases)[number] & {
+        localExit: boolean
+        replayed: boolean
+        viewPresent: boolean
+      }> = []
+
+      for (const { result, connection, snapshot } of cases) {
+        const decisionId = `liveness-${outcomes.length}`
+        useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+        sendMock.mockReset()
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const { attemptId } = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+        if (result !== 'submitting') {
+          useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+            type: 'user_decision_response_result',
+            decisionId,
+            attemptId,
+            state: result,
+            ...(result === 'accepted'
+              ? { route: 'orphaned_recovery' }
+              : result === 'already_resolved'
+                ? {}
+                : { error: { code: result.toUpperCase(), message: result } }),
+          } as never)
+        }
+        if (connection === 'reconnect') startFreshConnectionEpoch()
+        if (snapshot !== 'missing') {
+          receiveProtocolSnapshot(decisionId, snapshot === 'terminal' ? {
+            semanticState: { status: 'answered' },
+            responseCapability: { status: 'already_resolved' },
+            response: { kind: 'answer', answers: { [`Question for ${decisionId}?`]: 'Continue' } },
+          } : {})
+        }
+
+        const view = selectAskUserDecisionProjection(
+          useChatStore.getState().sessions[TEST_SESSION_ID],
+        ).views[0]
+        outcomes.push({
+          result,
+          connection,
+          snapshot,
+          localExit: Boolean(view && (
+            view.terminal || view.retryable || (!view.readOnly && !view.submitting)
+          )),
+          replayed: sentDecisionResponses().length > 1,
+          viewPresent: Boolean(view),
+        })
+      }
+
+      const behaviorCounts = outcomes.reduce<Record<string, number>>((counts, outcome) => {
+        const signature = [
+          outcome.localExit ? 'exit' : 'locked',
+          outcome.replayed ? 'replayed' : 'not-replayed',
+          outcome.viewPresent ? 'view' : 'no-view',
+        ].join('/')
+        counts[signature] = (counts[signature] ?? 0) + 1
+        return counts
+      }, {})
+      expect(behaviorCounts).toEqual({
+        'exit/not-replayed/view': 15,
+        'locked/not-replayed/view': 12,
+        'locked/replayed/view': 3,
+        'locked/not-replayed/no-view': 6,
+      })
+
+      const noExitGroups = Object.groupBy(
+        outcomes.filter(({ localExit, replayed }) => !localExit && !replayed),
+        ({ connection, snapshot, viewPresent }) =>
+          `${connection}/${snapshot}/${viewPresent ? 'view' : 'no-view'}`,
+      )
+      expect(Object.fromEntries(Object.entries(noExitGroups).map(([key, group]) => [
+        key,
+        [...new Set(group?.map(({ result }) => result))],
+      ]))).toEqual({
+        'keep/open/view': ['submitting', 'accepted', 'indeterminate', 'already_resolved', 'rejected'],
+        'keep/missing/view': ['submitting', 'accepted', 'indeterminate', 'already_resolved', 'rejected'],
+        'reconnect/open/view': ['already_resolved', 'rejected'],
+        'reconnect/missing/no-view': results,
+      })
+    })
+
+    it('rejects malformed response results without corrupting a valid retry exit', () => {
+      const malformed = [
+        ['missing state', (id: string, attempt: string) => ({ decisionId: id, attemptId: attempt })],
+        ['missing decisionId', (_id: string, attempt: string) => ({
+          attemptId: attempt, state: 'rejected', error: { code: 'BAD', message: 'bad' },
+        })],
+        ['missing attemptId', (id: string) => ({
+          decisionId: id, state: 'rejected', error: { code: 'BAD', message: 'bad' },
+        })],
+        ['unknown state', (id: string, attempt: string) => ({
+          decisionId: id, attemptId: attempt, state: 'unknown',
+        })],
+        ['wrong state type', (id: string, attempt: string) => ({
+          decisionId: id, attemptId: attempt, state: { invalid: true },
+        })],
+        ['wrong id types', () => ({ decisionId: 7, attemptId: false, state: 'rejected' })],
+        ['stale attempt', (id: string) => ({
+          decisionId: id, attemptId: 'expired', state: 'rejected',
+          error: { code: 'STALE', message: 'stale' },
+        })],
+        ['duplicate result', (id: string, attempt: string) => ({
+          decisionId: id, attemptId: attempt, state: 'retryable_failed',
+          error: { code: 'RETRY', message: 'retry' },
+        })],
+        ['malformed error', (id: string, attempt: string) => ({
+          decisionId: id, attemptId: attempt, state: 'retryable_failed', error: null,
+        })],
+      ] as const
+      const violations: string[] = []
+
+      for (const [label, payload] of malformed) {
+        const decisionId = `malformed-${label}`
+        useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+        receiveProtocolSnapshot(decisionId)
+        respondWithAnswer(decisionId)
+        const { attemptId } = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+        useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+          type: 'user_decision_response_result', decisionId, attemptId,
+          state: 'retryable_failed', error: { code: 'RETRY', message: 'retry' },
+        } as never)
+        const before = useChatStore.getState().sessions[TEST_SESSION_ID]!
+          .userDecisionResponseAttempts?.[decisionId]
+        try {
+          useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+            type: 'user_decision_response_result', ...payload(decisionId, attemptId),
+          } as never)
+        } catch {
+          violations.push(`${label}: threw`)
+          continue
+        }
+        const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+        const after = session?.userDecisionResponseAttempts?.[decisionId]
+        const view = selectAskUserDecisionProjection(session).views[0]
+        if (JSON.stringify(after) !== JSON.stringify(before) || !view?.retryable) {
+          violations.push(`${label}: corrupted retry exit`)
+        }
+      }
+
+      expect(violations).toEqual([])
+    })
+
+    it('lets an explicitly undelivered open decision return to editing', () => {
+      const store = useChatStore.getState()
+      const decisionId = 'decision-rejected-must-unlock'
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'tool_use_complete',
+        toolName: 'AskUserQuestion',
+        toolUseId: decisionId,
+        input: makeUserDecision(decisionId).input,
+      })
+      receiveProtocolSnapshot(decisionId)
+      respondWithAnswer(decisionId)
+      const original = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId,
+        attemptId: original.attemptId,
+        state: 'rejected',
+        error: {
+          code: 'DECISION_RESPONSE_MISMATCH',
+          message: 'response does not match the current questions',
+        },
+      } as never)
+      receiveProtocolSnapshot(decisionId)
+
+      const view = selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]!
+      const hasLocalRecoveryExit = view.terminal || view.retryable || (
+        !view.readOnly && !view.submitting
+      )
+
+      // Desired liveness invariant: an authoritative open decision must not be
+      // permanently held by a terminal transport rejection.
+      expect(hasLocalRecoveryExit).toBe(true)
+
+      expect(respondWithAnswer(decisionId)).toBe('dispatched')
+      expect(sentDecisionResponses().at(-1)?.[1].attemptId).not.toBe(original.attemptId)
+    })
+
     it('submits complete detached and attached decisions through one protocol-gated transport', () => {
       receiveProtocolSnapshot('decision-detached')
 

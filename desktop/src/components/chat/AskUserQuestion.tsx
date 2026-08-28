@@ -489,7 +489,9 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
         )}
         {!semanticallySubmitted && deliveryState && (
           <p role="status" className="mt-3 text-xs text-[var(--color-text-secondary)]">
-            {deliveryState !== 'retryable_failed' && <span>{t('common.loading')} </span>}
+            {deliveryState !== 'retryable_failed' && submitting && (
+              <span>{t('common.loading')} </span>
+            )}
             {frozenResponseSummary && <strong>{frozenResponseSummary}</strong>}
           </p>
         )}

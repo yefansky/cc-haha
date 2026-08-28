@@ -119,6 +119,20 @@ export type UserDecisionResponseAttempt = Readonly<{
 
 type UserDecisionResponseAttempts = Record<string, UserDecisionResponseAttempt>
 
+const EDITABLE_USER_DECISION_REJECTION_CODES = new Set([
+  'INVALID_USER_DECISION_RESPONSE',
+  'DECISION_RESPONSE_MISMATCH',
+  'RESPONSE_TOO_LARGE',
+])
+
+function isEditableUserDecisionRejection(
+  attempt: UserDecisionResponseAttempt | undefined,
+): boolean {
+  return attempt?.state === 'rejected' &&
+    typeof attempt.error?.code === 'string' &&
+    EDITABLE_USER_DECISION_REJECTION_CODES.has(attempt.error.code)
+}
+
 type PendingPermissions = Record<string, PendingPermission>
 
 type PendingComputerUsePermission = {
@@ -272,6 +286,37 @@ function freezeUserDecisionResponse(response: UserDecisionResponse): UserDecisio
     kind: 'answer',
     answers: Object.freeze({ ...response.answers }),
   })
+}
+
+type UserDecisionResponseResultMessage = Extract<
+  ServerMessage,
+  { type: 'user_decision_response_result' }
+>
+
+function isUserDecisionResponseResultMessage(
+  value: unknown,
+): value is UserDecisionResponseResultMessage {
+  if (!value || typeof value !== 'object') return false
+  const message = value as Record<string, unknown>
+  if (
+    message.type !== 'user_decision_response_result' ||
+    typeof message.decisionId !== 'string' ||
+    typeof message.attemptId !== 'string'
+  ) return false
+
+  if (message.state === 'accepted') {
+    return message.route === 'runtime_callback' || message.route === 'orphaned_recovery'
+  }
+  if (message.state === 'already_resolved') return true
+  if (
+    message.state !== 'retryable_failed' &&
+    message.state !== 'indeterminate' &&
+    message.state !== 'rejected'
+  ) return false
+
+  if (!message.error || typeof message.error !== 'object') return false
+  const error = message.error as Record<string, unknown>
+  return typeof error.code === 'string' && typeof error.message === 'string'
 }
 
 function reconcileUserDecisionResponseAttempts(
@@ -464,6 +509,7 @@ export function selectAskUserDecisionProjection(
     if (validPendingRequest) claimedRequestIds.add(validPendingRequest.requestId)
     const attempt = session.userDecisionResponseAttempts?.[decision.decisionId]
     const retryable = attempt?.state === 'retryable_failed'
+    const editableFailure = isEditableUserDecisionRejection(attempt)
     const modernAttemptUnsupported = Boolean(attempt) && !responseProtocolAvailable
     const protocolCanRespond = canUseUserDecisionResponseProtocol(
       snapshot,
@@ -483,7 +529,7 @@ export function selectAskUserDecisionProjection(
       terminal,
       readOnly,
       submitting: attempt
-        ? modernAttemptUnsupported || !retryable
+        ? modernAttemptUnsupported || (!retryable && !editableFailure)
         : validPendingRequest?.responseState === 'submitting',
       retryable: retryable && !modernAttemptUnsupported,
       ...(attempt ? { deliveryState: attempt.state } : {}),
@@ -504,6 +550,7 @@ export function selectAskUserDecisionProjection(
     }
     const attempt = session.userDecisionResponseAttempts?.[permission.toolUseId]
     const retryable = attempt?.state === 'retryable_failed'
+    const editableFailure = isEditableUserDecisionRejection(attempt)
     const modernAttemptUnsupported = Boolean(attempt) && !responseProtocolAvailable
     views.push({
       source: 'legacy',
@@ -514,7 +561,7 @@ export function selectAskUserDecisionProjection(
       terminal: false,
       readOnly: modernAttemptUnsupported,
       submitting: attempt
-        ? modernAttemptUnsupported || !retryable
+        ? modernAttemptUnsupported || (!retryable && !editableFailure)
         : permission.responseState === 'submitting',
       retryable: retryable && !modernAttemptUnsupported,
       ...(attempt ? { deliveryState: attempt.state } : {}),
@@ -1992,8 +2039,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ) return {}
 
         previousAttempt = session.userDecisionResponseAttempts?.[decisionId]
-        if (previousAttempt && previousAttempt.state !== 'retryable_failed') return {}
-        responseToSend = previousAttempt?.response ?? freezeUserDecisionResponse(response)
+        const editableFailure = isEditableUserDecisionRejection(previousAttempt)
+        if (
+          previousAttempt &&
+          previousAttempt.state !== 'retryable_failed' &&
+          !editableFailure
+        ) return {}
+        responseToSend = previousAttempt?.state === 'retryable_failed'
+          ? previousAttempt.response
+          : freezeUserDecisionResponse(response)
         const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
           attemptId,
           response: responseToSend,
@@ -3315,6 +3369,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break
 
       case 'user_decision_response_result': {
+        // WebSocket payloads are external input. The compile-time ServerMessage
+        // union cannot protect this reducer from malformed or version-skewed
+        // frames, so reject them before they can overwrite a valid recovery exit.
+        if (!isUserDecisionResponseResultMessage(msg)) break
         update((session) => {
           const attempts = session.userDecisionResponseAttempts ?? {}
           const current = attempts[msg.decisionId]
