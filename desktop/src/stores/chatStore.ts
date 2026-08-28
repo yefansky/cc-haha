@@ -379,6 +379,27 @@ export type AskUserDecisionProjection = {
   views: AskUserDecisionView[]
 }
 
+function canUseUserDecisionResponseProtocol(
+  snapshot: UserDecisionSnapshot,
+  decision: UserDecisionSnapshotEntry,
+  pendingRequest: PendingPermission | null,
+): boolean {
+  if (snapshot.userDecisionResponseProtocol !== 'orphaned-permission-v1') return false
+  const capability = decision.responseCapability
+  if (
+    capability?.status === 'runtime_callback' ||
+    capability?.status === 'orphaned_recovery'
+  ) {
+    return true
+  }
+  // Older v1 sidecars did not publish responseCapability. Preserve only the
+  // attached route that is independently proven by one exact live request;
+  // detached recovery must fail closed instead of being inferred from evidence.
+  return capability === undefined &&
+    decision.runtimeBinding.status === 'attached' &&
+    pendingRequest?.requestId === decision.runtimeBinding.requestId
+}
+
 /**
  * The only desktop AskUserQuestion projection. R2 bindings join by requestId;
  * original/scoped tool ids have already been resolved by the server read model.
@@ -444,13 +465,14 @@ export function selectAskUserDecisionProjection(
     const attempt = session.userDecisionResponseAttempts?.[decision.decisionId]
     const retryable = attempt?.state === 'retryable_failed'
     const modernAttemptUnsupported = Boolean(attempt) && !responseProtocolAvailable
-    const protocolCanRespond = responseProtocolAvailable && (
-      decision.runtimeBinding.status === 'detached'
-        ? snapshot.transcriptEvidenceComplete
-        : true
+    const protocolCanRespond = canUseUserDecisionResponseProtocol(
+      snapshot,
+      decision,
+      validPendingRequest,
     )
+    const legacyCanRespond = !responseProtocolAvailable && validPendingRequest !== null
     const readOnly = terminal || decision.conflicted || modernAttemptUnsupported || (
-      !protocolCanRespond && !validPendingRequest
+      !protocolCanRespond && !legacyCanRespond
     )
     return {
       source: 'server',
@@ -3428,12 +3450,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           ) {
             for (const decision of msg.userDecisions.decisions) {
               const attempt = reconciledAttempts[decision.decisionId]
+              const attachedRequest = decision.runtimeBinding.status === 'attached'
+                ? pendingPermissions[decision.runtimeBinding.requestId] ?? null
+                : null
               const canReplay =
                 decision.semanticState.status === 'open' &&
                 !decision.conflicted &&
-                attempt?.state === 'submitting' &&
-                (decision.runtimeBinding.status === 'attached' ||
-                  msg.userDecisions.transcriptEvidenceComplete)
+                attempt !== undefined &&
+                (
+                  attempt.state === 'submitting' ||
+                  attempt.state === 'accepted' ||
+                  attempt.state === 'indeterminate'
+                ) &&
+                canUseUserDecisionResponseProtocol(
+                  msg.userDecisions,
+                  decision,
+                  attachedRequest,
+                )
               if (!canReplay) continue
               replayMessages.push({
                 type: 'user_decision_response',
@@ -3468,7 +3501,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           try {
             wsManager.send(sessionId, response)
           } catch {
-            // Keep the same submitting attempt for the next connection epoch.
+            // Keep the same attempt for the next connection epoch.
           }
         }
         break

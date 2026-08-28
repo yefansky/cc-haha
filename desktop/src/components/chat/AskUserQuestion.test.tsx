@@ -165,6 +165,11 @@ describe('AskUserQuestion', () => {
           runtimeBinding: options.attachedRequestId
             ? { status: 'attached', requestId: options.attachedRequestId }
             : { status: 'detached' },
+          responseCapability: options.attachedRequestId
+            ? { status: 'runtime_callback' }
+            : options.evidenceComplete === false
+              ? { status: 'unavailable', code: 'EVIDENCE_INCOMPLETE' }
+              : { status: 'orphaned_recovery' },
           response: null,
           input: { questions: [{ question, options: labels.map((label) => ({ label })) }] },
           inputSource: options.attachedRequestId ? 'live' : 'transcript',

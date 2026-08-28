@@ -4216,10 +4216,7 @@ function finalizeConnectionSnapshot(
   }
 }
 
-function toUserDecisionSnapshot(input: {
-  transcriptEvidenceComplete: boolean
-  decisions: readonly UserDecisionReadEntry[]
-}): UserDecisionSnapshot {
+function toUserDecisionSnapshot(input: SessionUserDecisionSnapshot): UserDecisionSnapshot {
   return {
     transcriptEvidenceComplete: input.transcriptEvidenceComplete,
     userDecisionResponseProtocol: USER_DECISION_RESPONSE_PROTOCOL,
@@ -4229,6 +4226,9 @@ function toUserDecisionSnapshot(input: {
         decisionId: decision.decisionId,
         semanticState: decision.semanticState,
         runtimeBinding: decision.runtimeBinding,
+        responseCapability: toUserDecisionResponseCapability(
+          selectUserDecisionDeliveryCapability(input, decision.decisionId),
+        ),
         response: decision.response,
         input: entry.input,
         inputSource: entry.inputSource,
@@ -4237,6 +4237,15 @@ function toUserDecisionSnapshot(input: {
       }
     }),
   }
+}
+
+function toUserDecisionResponseCapability(
+  capability: ReturnType<typeof selectUserDecisionDeliveryCapability>,
+): NonNullable<UserDecisionSnapshot['decisions'][number]['responseCapability']> {
+  if (capability.status === 'unavailable') {
+    return { status: 'unavailable', code: capability.code }
+  }
+  return { status: capability.status }
 }
 
 function sendError(ws: ServerWebSocket<WebSocketData>, message: string, code: string) {

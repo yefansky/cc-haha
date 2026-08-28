@@ -105,6 +105,17 @@ export type UserDecisionSnapshotEntry = {
   decisionId: string
   semanticState: UserDecisionSemanticState
   runtimeBinding: UserDecisionRuntimeBinding
+  /** Missing on older v1 sidecars; consumers must fail closed for detached decisions. */
+  responseCapability?:
+    | { status: 'runtime_callback' | 'orphaned_recovery' | 'already_resolved' }
+    | {
+        status: 'unavailable'
+        code:
+          | 'DECISION_NOT_FOUND'
+          | 'DECISION_CONFLICTED'
+          | 'EVIDENCE_INCOMPLETE'
+          | 'RECOVERY_UNAVAILABLE'
+      }
   response: UserDecisionResponse | null
   input: Record<string, unknown>
   inputSource: 'transcript' | 'live'

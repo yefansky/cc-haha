@@ -142,6 +142,17 @@ export type UserDecisionSnapshotEntry = {
   decisionId: string
   semanticState: UserDecisionSemanticState
   runtimeBinding: RuntimeBinding
+  /** Optional so a new Desktop fails closed against an older v1 sidecar. */
+  responseCapability?:
+    | { status: 'runtime_callback' | 'orphaned_recovery' | 'already_resolved' }
+    | {
+        status: 'unavailable'
+        code:
+          | 'DECISION_NOT_FOUND'
+          | 'DECISION_CONFLICTED'
+          | 'EVIDENCE_INCOMPLETE'
+          | 'RECOVERY_UNAVAILABLE'
+      }
   response: UserDecisionResponse | null
   input: Record<string, unknown>
   inputSource: 'transcript' | 'live'

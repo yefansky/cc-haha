@@ -120,6 +120,7 @@ describe('connection user-decision snapshot', () => {
             decisionId: 'ask-1',
             semanticState: { status: 'open' },
             runtimeBinding: { status: 'attached', requestId: 'request-1' },
+            responseCapability: { status: 'runtime_callback' },
             response: null,
             input: pendingRequests[0]!.input,
             inputSource: 'transcript',
@@ -129,6 +130,76 @@ describe('connection user-decision snapshot', () => {
       },
       { type: 'pong' },
     ])
+  })
+
+  test('publishes detached recovery capability without leaking transport identities', async () => {
+    const sessionId = `decision-capability-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    spyOn(conversationService, 'hasSession').mockReturnValue(false)
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+    spyOn(sessionService, 'getSessionMessagesWithEvidence').mockResolvedValue({
+      transcriptEvidenceComplete: true,
+      messages: [{
+        id: 'assistant-decisions',
+        type: 'tool_use',
+        timestamp: '2026-08-28T00:00:00.000Z',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'AskUserQuestion',
+            id: 'ask-root',
+            input: pendingAsk('unused-root', 'ask-root').input,
+          },
+          {
+            type: 'tool_use',
+            name: 'AskUserQuestion',
+            id: 'parent/agent/ask-scoped',
+            original_tool_use_id: 'ask-scoped',
+            input: pendingAsk('unused-scoped', 'ask-scoped').input,
+          },
+          {
+            type: 'tool_use',
+            name: 'AskUserQuestion',
+            id: 'ask-error',
+            input: pendingAsk('unused-error', 'ask-error').input,
+          },
+        ],
+      }, {
+        id: 'result-error',
+        type: 'tool_result',
+        timestamp: '2026-08-28T00:00:01.000Z',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'ask-error',
+          is_error: true,
+          content: 'runtime rejected the callback',
+        }],
+      }],
+    })
+
+    handleWebSocket.open(ws)
+    await flushMicrotasks()
+
+    const snapshot = ws.sent
+      .map(payload => JSON.parse(payload))
+      .find(message => message.type === 'permission_requests_snapshot')
+    const decisions = Object.fromEntries(
+      snapshot.userDecisions.decisions.map((decision: { decisionId: string }) => [
+        decision.decisionId,
+        decision,
+      ]),
+    )
+    expect(decisions['ask-root']).toMatchObject({
+      responseCapability: { status: 'orphaned_recovery' },
+    })
+    expect(decisions['parent/agent/ask-scoped']).toMatchObject({
+      responseCapability: { status: 'unavailable', code: 'RECOVERY_UNAVAILABLE' },
+    })
+    expect(decisions['ask-error']).toMatchObject({
+      responseCapability: { status: 'unavailable', code: 'RECOVERY_UNAVAILABLE' },
+    })
+    expect(JSON.stringify(snapshot.userDecisions)).not.toContain('requestId')
+    expect(JSON.stringify(snapshot.userDecisions)).not.toContain('toolUseId')
   })
 
   test('finalizes live-only at the queue bound without dropping queued events', async () => {

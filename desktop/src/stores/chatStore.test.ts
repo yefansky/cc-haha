@@ -4263,11 +4263,23 @@ describe('chatStore history mapping', () => {
       decisionId: string,
       overrides: Partial<UserDecisionSnapshotEntry> = {},
       transcriptEvidenceComplete = true,
-    ) => ({
-      transcriptEvidenceComplete,
-      userDecisionResponseProtocol: 'orphaned-permission-v1' as const,
-      decisions: [makeUserDecision(decisionId, overrides)],
-    })
+    ) => {
+      const decision = makeUserDecision(decisionId, overrides)
+      if (!Object.prototype.hasOwnProperty.call(overrides, 'responseCapability')) {
+        decision.responseCapability = decision.semanticState.status !== 'open'
+          ? { status: 'already_resolved' }
+          : decision.runtimeBinding.status === 'attached'
+            ? { status: 'runtime_callback' }
+            : transcriptEvidenceComplete
+              ? { status: 'orphaned_recovery' }
+              : { status: 'unavailable', code: 'EVIDENCE_INCOMPLETE' }
+      }
+      return {
+        transcriptEvidenceComplete,
+        userDecisionResponseProtocol: 'orphaned-permission-v1' as const,
+        decisions: [decision],
+      }
+    }
 
     const respond = (
       decisionId: string,
@@ -4347,6 +4359,162 @@ describe('chatStore history mapping', () => {
       }))
       expect(sendMock.mock.calls.some(([, message]) =>
         (message as { type?: string }).type === 'permission_response')).toBe(false)
+    })
+
+    it('fails closed when detached capability is missing or capability is unavailable', () => {
+      const store = useChatStore.getState()
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: false,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          userDecisionResponseProtocol: 'orphaned-permission-v1',
+          decisions: [makeUserDecision('decision-capability-missing')],
+        },
+      } as never)
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]).toMatchObject({ readOnly: true, submitting: false })
+      expect(respondWithAnswer('decision-capability-missing')).toBe('not-dispatched')
+
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_request',
+        requestId: 'request-capability-unavailable',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'decision-capability-unavailable',
+        input: makeUserDecision('decision-capability-unavailable').input,
+      })
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: ['request-capability-unavailable'],
+        computerUseRequestIds: [],
+        turnActive: false,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          userDecisionResponseProtocol: 'orphaned-permission-v1',
+          decisions: [{
+            ...makeUserDecision('decision-capability-unavailable'),
+            runtimeBinding: {
+              status: 'attached',
+              requestId: 'request-capability-unavailable',
+            },
+            responseCapability: {
+              status: 'unavailable',
+              code: 'RECOVERY_UNAVAILABLE',
+            },
+          }],
+        },
+      } as never)
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]).toMatchObject({
+        readOnly: true,
+        submitting: false,
+        pendingRequest: { requestId: 'request-capability-unavailable' },
+      })
+      expect(respondWithAnswer('decision-capability-unavailable')).toBe('not-dispatched')
+      expect(sendMock).not.toHaveBeenCalled()
+    })
+
+    it('allows an older v1 attached decision only with its exact live request', () => {
+      const store = useChatStore.getState()
+      const decisionId = 'decision-older-v1-attached'
+      const requestId = 'request-older-v1-attached'
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_request',
+        requestId,
+        toolName: 'AskUserQuestion',
+        toolUseId: decisionId,
+        input: makeUserDecision(decisionId).input,
+      })
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [requestId],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          userDecisionResponseProtocol: 'orphaned-permission-v1',
+          decisions: [makeUserDecision(decisionId, {
+            runtimeBinding: { status: 'attached', requestId },
+          })],
+        },
+      } as never)
+
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]).toMatchObject({
+        readOnly: false,
+        pendingRequest: { requestId },
+      })
+      expect(respondWithAnswer(decisionId)).toBe('dispatched')
+      expect(sendMock).toHaveBeenLastCalledWith(TEST_SESSION_ID, expect.objectContaining({
+        type: 'user_decision_response',
+        decisionId,
+      }))
+    })
+
+    it.each([
+      ['accepted', { state: 'accepted', route: 'orphaned_recovery' }],
+      ['indeterminate', {
+        state: 'indeterminate',
+        error: { code: 'UNKNOWN', message: 'outcome unknown' },
+      }],
+    ] as const)('replays one %s attempt once on a fresh capable snapshot', (
+      _label,
+      result,
+    ) => {
+      const store = useChatStore.getState()
+      const decisionId = `decision-reconnect-${result.state}`
+      receiveProtocolSnapshot(decisionId)
+      respondWithAnswer(decisionId)
+      const original = sendMock.mock.calls.at(-1)?.[1] as {
+        attemptId: string
+        response: UserDecisionResponse
+      }
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId,
+        attemptId: original.attemptId,
+        ...result,
+      } as never)
+
+      startFreshConnectionEpoch()
+      receiveProtocolSnapshot(decisionId)
+      expect(sentDecisionResponses().map(([, message]) => message)).toEqual([
+        original,
+        original,
+      ])
+
+      receiveProtocolSnapshot(decisionId)
+      expect(sentDecisionResponses()).toHaveLength(2)
+    })
+
+    it('does not replay an accepted attempt when the fresh capability is unavailable', () => {
+      const store = useChatStore.getState()
+      const decisionId = 'decision-reconnect-unavailable'
+      receiveProtocolSnapshot(decisionId)
+      respondWithAnswer(decisionId)
+      const original = sendMock.mock.calls.at(-1)?.[1] as { attemptId: string }
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'user_decision_response_result',
+        decisionId,
+        attemptId: original.attemptId,
+        state: 'accepted',
+        route: 'orphaned_recovery',
+      } as never)
+      const sendsBeforeReconnect = sentDecisionResponses().length
+
+      startFreshConnectionEpoch()
+      receiveProtocolSnapshot(decisionId, {
+        responseCapability: { status: 'unavailable', code: 'RECOVERY_UNAVAILABLE' },
+      })
+      expect(sentDecisionResponses()).toHaveLength(sendsBeforeReconnect)
+      expect(selectAskUserDecisionProjection(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+      ).views[0]).toMatchObject({ readOnly: true, submitting: true })
     })
 
     it('routes a live Ask arriving after the protocol snapshot through UserDecision transport', () => {
@@ -4459,10 +4627,8 @@ describe('chatStore history mapping', () => {
       })
     })
 
-    it('keeps accepted, indeterminate, resolved and rejected attempts fail-closed', () => {
+    it('keeps already-resolved and rejected attempts fail-closed without replay', () => {
       const states = [
-        { state: 'accepted', route: 'orphaned_recovery' },
-        { state: 'indeterminate', error: { code: 'UNKNOWN', message: 'outcome unknown' } },
         { state: 'already_resolved' },
         { state: 'rejected', error: { code: 'REJECTED', message: 'response rejected' } },
       ] as const
