@@ -179,7 +179,24 @@ export type UserDecisionResponseResult = {
       state: 'already_resolved'
     }
   | {
-      state: 'retryable_failed' | 'indeterminate' | 'rejected'
+      state: 'retryable_failed'
+      nextAction: 'retry_new_attempt'
+      error: {
+        code: string
+        message: string
+      }
+    }
+  | {
+      state: 'indeterminate'
+      nextAction: 'verify_same_attempt'
+      error: {
+        code: string
+        message: string
+      }
+    }
+  | {
+      state: 'rejected'
+      nextAction: 'edit_response' | 'resync' | 'blocked'
       error: {
         code: string
         message: string

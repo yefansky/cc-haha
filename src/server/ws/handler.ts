@@ -37,6 +37,7 @@ import {
 } from '../services/userDecisionReadModel.js'
 import {
   UserDecisionDeliveryCoordinator,
+  type UserDecisionDeliveryClaimResult,
   type UserDecisionDeliveryLease,
   type UserDecisionDeliverySnapshot,
 } from '../services/userDecisionDeliveryCoordinator.js'
@@ -149,6 +150,80 @@ function createUserDecisionDeliveryCoordinator(): UserDecisionDeliveryCoordinato
 let userDecisionDeliveryCoordinator = createUserDecisionDeliveryCoordinator()
 const MAX_USER_DECISION_ID_BYTES = 2_048
 const MAX_USER_DECISION_ATTEMPT_ID_BYTES = 128
+
+type UserDecisionFailureNextAction =
+  | 'edit_response'
+  | 'resync'
+  | 'blocked'
+  | 'retry_new_attempt'
+  | 'verify_same_attempt'
+
+type UserDecisionClaimRejectionCode = Extract<
+  UserDecisionDeliveryClaimResult,
+  { status: 'rejected' }
+>['code']
+
+type UserDecisionUnavailableCode = Extract<
+  ReturnType<typeof selectUserDecisionDeliveryCapability>,
+  { status: 'unavailable' }
+>['code']
+
+type UserDecisionHandlerFailureCode =
+  | UserDecisionClaimRejectionCode
+  | UserDecisionUnavailableCode
+  | 'INVALID_USER_DECISION_IDENTIFIERS'
+  | 'INVALID_USER_DECISION_RESPONSE'
+  | 'USER_DECISION_RESPONSE_TOO_LARGE'
+  | 'DECISION_RESPONSE_MISMATCH'
+  | 'USER_DECISION_DELIVERY_BUSY'
+  | 'USER_DECISION_RESPONSE_FAILED'
+  | 'PERMISSION_DELIVERY_INDETERMINATE'
+  | 'ORPHANED_DELIVERY_INDETERMINATE'
+  | 'USER_DECISION_DELIVERY_IN_PROGRESS'
+  | 'RUNTIME_CALLBACK_UNAVAILABLE'
+  | 'SESSION_RUNTIME_BUSY'
+  | 'CLI_RECOVERY_PREPARE_FAILED'
+  | 'CLI_SHUTDOWN_FAILED'
+  | 'CLI_SHUTDOWN_UNCONFIRMED'
+  | 'DECISION_EVIDENCE_READ_FAILED'
+  | 'USER_DECISION_ROUTE_CHANGED'
+  | 'CLI_RECOVERY_START_FAILED'
+  | 'RECOVERY_SESSION_UNAVAILABLE'
+  | 'FAILURE_DETAIL_TOO_LARGE'
+
+const USER_DECISION_FAILURE_ACTIONS = {
+  INVALID_USER_DECISION_IDENTIFIERS: 'resync',
+  INVALID_USER_DECISION_RESPONSE: 'edit_response',
+  USER_DECISION_RESPONSE_TOO_LARGE: 'edit_response',
+  DECISION_NOT_FOUND: 'resync',
+  DECISION_CONFLICTED: 'resync',
+  EVIDENCE_INCOMPLETE: 'resync',
+  RECOVERY_UNAVAILABLE: 'resync',
+  DECISION_RESPONSE_MISMATCH: 'resync',
+  USER_DECISION_DELIVERY_BUSY: 'resync',
+  ATTEMPT_RESPONSE_MISMATCH: 'resync',
+  RESPONSE_MISMATCH: 'resync',
+  ATTEMPT_ALREADY_USED: 'retry_new_attempt',
+  ATTEMPT_CAPACITY_EXHAUSTED: 'blocked',
+  RESPONSE_TOO_LARGE: 'edit_response',
+  // No coordinator entry or delivery side effect exists when global capacity
+  // rejects a claim, so a fresh attempt is safe once capacity becomes available.
+  CAPACITY_EXHAUSTED: 'retry_new_attempt',
+  USER_DECISION_RESPONSE_FAILED: 'verify_same_attempt',
+  PERMISSION_DELIVERY_INDETERMINATE: 'verify_same_attempt',
+  ORPHANED_DELIVERY_INDETERMINATE: 'verify_same_attempt',
+  USER_DECISION_DELIVERY_IN_PROGRESS: 'verify_same_attempt',
+  RUNTIME_CALLBACK_UNAVAILABLE: 'retry_new_attempt',
+  SESSION_RUNTIME_BUSY: 'retry_new_attempt',
+  CLI_RECOVERY_PREPARE_FAILED: 'retry_new_attempt',
+  CLI_SHUTDOWN_FAILED: 'retry_new_attempt',
+  CLI_SHUTDOWN_UNCONFIRMED: 'retry_new_attempt',
+  DECISION_EVIDENCE_READ_FAILED: 'retry_new_attempt',
+  USER_DECISION_ROUTE_CHANGED: 'resync',
+  CLI_RECOVERY_START_FAILED: 'retry_new_attempt',
+  RECOVERY_SESSION_UNAVAILABLE: 'retry_new_attempt',
+  FAILURE_DETAIL_TOO_LARGE: 'retry_new_attempt',
+} as const satisfies Record<UserDecisionHandlerFailureCode, UserDecisionFailureNextAction>
 
 function buildSdkWebSocketUrl(
   ws: ServerWebSocket<WebSocketData>,
@@ -696,16 +771,11 @@ export const handleWebSocket = {
         case 'user_decision_response':
           void handleUserDecisionResponse(ws, message).catch((error) => {
             console.error('[WS] User decision response failed:', error)
-            sendUserDecisionResponseResult(ws, {
-              type: 'user_decision_response_result',
+            sendUserDecisionFailureResult(ws, {
               decisionId: typeof message.decisionId === 'string' ? message.decisionId : '',
               attemptId: typeof message.attemptId === 'string' ? message.attemptId : '',
-              state: 'indeterminate',
-              error: {
-                code: 'USER_DECISION_RESPONSE_FAILED',
-                message: 'User decision response could not be processed.',
-              },
-            })
+            }, 'USER_DECISION_RESPONSE_FAILED',
+            'User decision response could not be processed.')
           })
           break
 
@@ -1441,13 +1511,10 @@ async function handleUserDecisionResponse(
 ): Promise<void> {
   const validated = validateUserDecisionResponse(message)
   if (!validated.ok) {
-    sendUserDecisionResponseResult(ws, {
-      type: 'user_decision_response_result',
+    sendUserDecisionFailureResult(ws, {
       decisionId: validated.decisionId,
       attemptId: validated.attemptId,
-      state: 'rejected',
-      error: { code: 'INVALID_USER_DECISION_RESPONSE', message: validated.message },
-    })
+    }, validated.code, validated.message)
     return
   }
 
@@ -1483,16 +1550,12 @@ async function handleUserDecisionResponse(
       ({ decision }) => decision.decisionId === validated.decisionId,
     )!
     if (!isResponseCompleteForDecision(validated.response, entry.input)) {
-      sendUserDecisionResponseResult(ws, {
-        type: 'user_decision_response_result',
-        decisionId: validated.decisionId,
-        attemptId: validated.attemptId,
-        state: 'rejected',
-        error: {
-          code: 'DECISION_RESPONSE_MISMATCH',
-          message: 'The response does not match the current decision questions.',
-        },
-      })
+      sendUserDecisionFailureResult(
+        ws,
+        validated,
+        'DECISION_RESPONSE_MISMATCH',
+        'The response does not match the current decision questions.',
+      )
       return
     }
 
@@ -1510,26 +1573,21 @@ async function handleUserDecisionResponse(
       return
     }
     if (claim.status === 'busy') {
-      sendUserDecisionResponseResult(ws, {
-        type: 'user_decision_response_result',
-        decisionId: validated.decisionId,
-        attemptId: validated.attemptId,
-        state: 'rejected',
-        error: {
-          code: 'USER_DECISION_DELIVERY_BUSY',
-          message: 'Another delivery attempt is already active.',
-        },
-      })
+      sendUserDecisionFailureResult(
+        ws,
+        validated,
+        'USER_DECISION_DELIVERY_BUSY',
+        'Another delivery attempt is already active.',
+      )
       return
     }
     if (claim.status === 'rejected') {
-      sendUserDecisionResponseResult(ws, {
-        type: 'user_decision_response_result',
-        decisionId: validated.decisionId,
-        attemptId: validated.attemptId,
-        state: 'rejected',
-        error: { code: claim.code, message: 'The delivery attempt was rejected.' },
-      })
+      sendUserDecisionFailureResult(
+        ws,
+        validated,
+        claim.code,
+        'The delivery attempt was rejected.',
+      )
       return
     }
 
@@ -1557,7 +1615,16 @@ function validateUserDecisionResponse(
   message: Extract<ClientMessage, { type: 'user_decision_response' }>,
 ):
   | ({ ok: true } & ValidatedUserDecisionResponse)
-  | { ok: false; decisionId: string; attemptId: string; message: string } {
+  | {
+      ok: false
+      decisionId: string
+      attemptId: string
+      code:
+        | 'INVALID_USER_DECISION_IDENTIFIERS'
+        | 'INVALID_USER_DECISION_RESPONSE'
+        | 'USER_DECISION_RESPONSE_TOO_LARGE'
+      message: string
+    } {
   const decisionId = typeof message.decisionId === 'string' ? message.decisionId : ''
   const attemptId = typeof message.attemptId === 'string' ? message.attemptId : ''
   const invalidId = (
@@ -1572,13 +1639,20 @@ function validateUserDecisionResponse(
       ok: false,
       decisionId,
       attemptId,
+      code: 'INVALID_USER_DECISION_IDENTIFIERS',
       message: 'Decision and attempt identifiers are invalid.',
     }
   }
 
   const response = message.response
   if (!response || typeof response !== 'object' || Array.isArray(response)) {
-    return { ok: false, decisionId, attemptId, message: 'Decision response is invalid.' }
+    return {
+      ok: false,
+      decisionId,
+      attemptId,
+      code: 'INVALID_USER_DECISION_RESPONSE',
+      message: 'Decision response is invalid.',
+    }
   }
   let normalized: UserDecisionResponse
   if (response.kind === 'answer') {
@@ -1590,7 +1664,13 @@ function validateUserDecisionResponse(
         ([question, answer]) => question.trim() && typeof answer === 'string',
       )
     ) {
-      return { ok: false, decisionId, attemptId, message: 'Decision answers are invalid.' }
+      return {
+        ok: false,
+        decisionId,
+        attemptId,
+        code: 'INVALID_USER_DECISION_RESPONSE',
+        message: 'Decision answers are invalid.',
+      }
     }
     normalized = { kind: 'answer', answers: { ...response.answers } }
   } else if (
@@ -1600,10 +1680,22 @@ function validateUserDecisionResponse(
   ) {
     normalized = { kind: 'clarify', message: response.message }
   } else {
-    return { ok: false, decisionId, attemptId, message: 'Decision response is invalid.' }
+    return {
+      ok: false,
+      decisionId,
+      attemptId,
+      code: 'INVALID_USER_DECISION_RESPONSE',
+      message: 'Decision response is invalid.',
+    }
   }
   if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > 64 * 1_024) {
-    return { ok: false, decisionId, attemptId, message: 'Decision response is too large.' }
+    return {
+      ok: false,
+      decisionId,
+      attemptId,
+      code: 'USER_DECISION_RESPONSE_TOO_LARGE',
+      message: 'Decision response is too large.',
+    }
   }
   return { ok: true, decisionId, attemptId, response: normalized }
 }
@@ -1708,20 +1800,16 @@ function reconcileTerminalUserDecisionDeliveries(
 function sendUnavailableUserDecisionResult(
   ws: ServerWebSocket<WebSocketData>,
   request: ValidatedUserDecisionResponse,
-  code: string,
+  code: UserDecisionUnavailableCode,
 ): void {
-  sendUserDecisionResponseResult(ws, {
-    type: 'user_decision_response_result',
-    decisionId: request.decisionId,
-    attemptId: request.attemptId,
-    state: code === 'EVIDENCE_INCOMPLETE' ? 'retryable_failed' : 'rejected',
-    error: {
-      code,
-      message: code === 'EVIDENCE_INCOMPLETE'
-        ? 'Decision evidence is incomplete. Retry after synchronization.'
-        : 'This decision cannot be delivered from the current evidence.',
-    },
-  })
+  sendUserDecisionFailureResult(
+    ws,
+    request,
+    code,
+    code === 'EVIDENCE_INCOMPLETE'
+      ? 'Decision evidence is incomplete. Synchronize before responding.'
+      : 'This decision cannot be delivered from the current evidence.',
+  )
 }
 
 function sendReplayedUserDecisionResult(
@@ -1743,43 +1831,34 @@ function sendReplayedUserDecisionResult(
     return
   }
   if (attempt.status === 'retryable_failed') {
-    sendUserDecisionResponseResult(ws, {
-      type: 'user_decision_response_result',
-      decisionId: request.decisionId,
-      attemptId: request.attemptId,
-      state: 'retryable_failed',
-      error: attempt.error,
-    })
+    emitUserDecisionFailureResult(
+      ws,
+      request,
+      { state: 'retryable_failed', nextAction: 'retry_new_attempt' },
+      attempt.error,
+    )
     return
   }
   if (attempt.status === 'indeterminate') {
     const attached = attempt.route.status === 'runtime_callback'
-    sendUserDecisionResponseResult(ws, {
-      type: 'user_decision_response_result',
-      decisionId: request.decisionId,
-      attemptId: request.attemptId,
-      state: 'indeterminate',
-      error: {
-        code: attached
-          ? 'PERMISSION_DELIVERY_INDETERMINATE'
-          : 'ORPHANED_DELIVERY_INDETERMINATE',
-        message: attached
-          ? 'The live delivery outcome could not be confirmed.'
-          : 'The recovery delivery outcome could not be confirmed.',
-      },
-    })
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      attached
+        ? 'PERMISSION_DELIVERY_INDETERMINATE'
+        : 'ORPHANED_DELIVERY_INDETERMINATE',
+      attached
+        ? 'The live delivery outcome could not be confirmed.'
+        : 'The recovery delivery outcome could not be confirmed.',
+    )
     return
   }
-  sendUserDecisionResponseResult(ws, {
-    type: 'user_decision_response_result',
-    decisionId: request.decisionId,
-    attemptId: request.attemptId,
-    state: 'indeterminate',
-    error: {
-      code: 'USER_DECISION_DELIVERY_IN_PROGRESS',
-      message: 'The delivery outcome is not yet known.',
-    },
-  })
+  sendUserDecisionFailureResult(
+    ws,
+    request,
+    'USER_DECISION_DELIVERY_IN_PROGRESS',
+    'The delivery outcome is not yet known.',
+  )
 }
 
 function deliverAttachedUserDecision(
@@ -1807,16 +1886,12 @@ function deliverAttachedUserDecision(
   } catch (error) {
     console.error('[WS] Live user decision delivery outcome is unknown:', error)
     userDecisionDeliveryCoordinator.markIndeterminate(lease)
-    sendUserDecisionResponseResult(ws, {
-      type: 'user_decision_response_result',
-      decisionId: request.decisionId,
-      attemptId: request.attemptId,
-      state: 'indeterminate',
-      error: {
-        code: 'PERMISSION_DELIVERY_INDETERMINATE',
-        message: 'The live delivery outcome could not be confirmed.',
-      },
-    })
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      'PERMISSION_DELIVERY_INDETERMINATE',
+      'The live delivery outcome could not be confirmed.',
+    )
     return
   }
   if (result.status === 'accepted') {
@@ -1839,32 +1914,24 @@ function deliverAttachedUserDecision(
   if (result.status === 'delivery_failed') {
     console.error('[WS] Live user decision delivery outcome is unknown:', result.error)
     userDecisionDeliveryCoordinator.markIndeterminate(lease)
-    sendUserDecisionResponseResult(ws, {
-      type: 'user_decision_response_result',
-      decisionId: request.decisionId,
-      attemptId: request.attemptId,
-      state: 'indeterminate',
-      error: {
-        code: 'PERMISSION_DELIVERY_INDETERMINATE',
-        message: 'The live delivery outcome could not be confirmed.',
-      },
-    })
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      'PERMISSION_DELIVERY_INDETERMINATE',
+      'The live delivery outcome could not be confirmed.',
+    )
     return
   }
   userDecisionDeliveryCoordinator.failRetryable(lease, {
     code: 'RUNTIME_CALLBACK_UNAVAILABLE',
     message: 'The live permission callback is no longer available.',
   })
-  sendUserDecisionResponseResult(ws, {
-    type: 'user_decision_response_result',
-    decisionId: request.decisionId,
-    attemptId: request.attemptId,
-    state: 'retryable_failed',
-    error: {
-      code: 'RUNTIME_CALLBACK_UNAVAILABLE',
-      message: 'The live permission callback is no longer available.',
-    },
-  })
+  sendUserDecisionFailureResult(
+    ws,
+    request,
+    'RUNTIME_CALLBACK_UNAVAILABLE',
+    'The live permission callback is no longer available.',
+  )
 }
 
 async function deliverDetachedUserDecision(
@@ -1963,12 +2030,12 @@ async function deliverDetachedUserDecision(
     return
   }
   if (capability.status !== 'orphaned_recovery') {
-    failDetachedUserDecision(ws, request, lease, {
-      code: capability.status === 'unavailable'
-        ? capability.code
-        : 'USER_DECISION_ROUTE_CHANGED',
-      message: 'Detached recovery is no longer authoritative.',
-    })
+    const code = capability.status === 'unavailable'
+      ? capability.code
+      : 'USER_DECISION_ROUTE_CHANGED'
+    const message = 'Detached recovery is no longer authoritative.'
+    userDecisionDeliveryCoordinator.failRetryable(lease, { code, message })
+    sendUserDecisionFailureResult(ws, request, code, message)
     return
   }
 
@@ -2012,16 +2079,12 @@ async function deliverDetachedUserDecision(
   } catch (error) {
     console.error('[WS] Orphaned user decision delivery outcome is unknown:', error)
     userDecisionDeliveryCoordinator.markIndeterminate(lease)
-    sendUserDecisionResponseResult(ws, {
-      type: 'user_decision_response_result',
-      decisionId: request.decisionId,
-      attemptId: request.attemptId,
-      state: 'indeterminate',
-      error: {
-        code: 'ORPHANED_DELIVERY_INDETERMINATE',
-        message: 'The recovery delivery outcome could not be confirmed.',
-      },
-    })
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      'ORPHANED_DELIVERY_INDETERMINATE',
+      'The recovery delivery outcome could not be confirmed.',
+    )
     return
   }
   if (result.status === 'accepted') {
@@ -2038,16 +2101,12 @@ async function deliverDetachedUserDecision(
   if (result.status === 'delivery_failed') {
     console.error('[WS] Orphaned user decision delivery outcome is unknown:', result.error)
     userDecisionDeliveryCoordinator.markIndeterminate(lease)
-    sendUserDecisionResponseResult(ws, {
-      type: 'user_decision_response_result',
-      decisionId: request.decisionId,
-      attemptId: request.attemptId,
-      state: 'indeterminate',
-      error: {
-        code: 'ORPHANED_DELIVERY_INDETERMINATE',
-        message: 'The recovery delivery outcome could not be confirmed.',
-      },
-    })
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      'ORPHANED_DELIVERY_INDETERMINATE',
+      'The recovery delivery outcome could not be confirmed.',
+    )
     return
   }
   failDetachedUserDecision(ws, request, lease, {
@@ -2060,16 +2119,73 @@ function failDetachedUserDecision(
   ws: ServerWebSocket<WebSocketData>,
   request: ValidatedUserDecisionResponse,
   lease: UserDecisionDeliveryLease,
-  error: { code: string; message: string },
+  error: { code: UserDecisionHandlerFailureCode; message: string },
 ): void {
   userDecisionDeliveryCoordinator.failRetryable(lease, error)
+  sendUserDecisionFailureResult(ws, request, error.code, error.message)
+}
+
+function sendUserDecisionFailureResult(
+  ws: ServerWebSocket<WebSocketData>,
+  request: Pick<ValidatedUserDecisionResponse, 'decisionId' | 'attemptId'>,
+  code: UserDecisionHandlerFailureCode,
+  message: string,
+): void {
+  const classification = classifyUserDecisionFailure(code)
+  emitUserDecisionFailureResult(ws, request, classification, { code, message })
+}
+
+function emitUserDecisionFailureResult(
+  ws: ServerWebSocket<WebSocketData>,
+  request: Pick<ValidatedUserDecisionResponse, 'decisionId' | 'attemptId'>,
+  classification: UserDecisionFailureClassification,
+  error: { code: string; message: string },
+): void {
+  if (classification.state === 'retryable_failed') {
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      ...classification,
+      error,
+    })
+    return
+  }
+  if (classification.state === 'indeterminate') {
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      ...classification,
+      error,
+    })
+    return
+  }
   sendUserDecisionResponseResult(ws, {
     type: 'user_decision_response_result',
     decisionId: request.decisionId,
     attemptId: request.attemptId,
-    state: 'retryable_failed',
+    ...classification,
     error,
   })
+}
+
+type UserDecisionFailureClassification =
+  | { state: 'retryable_failed'; nextAction: 'retry_new_attempt' }
+  | { state: 'indeterminate'; nextAction: 'verify_same_attempt' }
+  | { state: 'rejected'; nextAction: 'edit_response' | 'resync' | 'blocked' }
+
+function classifyUserDecisionFailure(
+  code: UserDecisionHandlerFailureCode,
+): UserDecisionFailureClassification {
+  const nextAction = USER_DECISION_FAILURE_ACTIONS[code]
+  if (nextAction === 'retry_new_attempt') {
+    return { state: 'retryable_failed', nextAction }
+  }
+  if (nextAction === 'verify_same_attempt') {
+    return { state: 'indeterminate', nextAction }
+  }
+  return { state: 'rejected', nextAction }
 }
 
 function sendUserDecisionResponseResult(
@@ -5367,6 +5483,12 @@ export function __resetWebSocketHandlerStateForTests(): void {
   sessionMutationCoordinator.resetForTests()
   userDecisionDeliveryCoordinator = createUserDecisionDeliveryCoordinator()
   sessionStartupPromises.clear()
+}
+
+export function __getUserDecisionFailureActionsForTests(): Readonly<
+  Record<UserDecisionHandlerFailureCode, UserDecisionFailureNextAction>
+> {
+  return USER_DECISION_FAILURE_ACTIONS
 }
 
 export function __markPrewarmPendingForTests(sessionId: string): void {

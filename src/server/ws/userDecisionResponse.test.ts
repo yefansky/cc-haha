@@ -5,6 +5,7 @@ import { sessionService } from '../services/sessionService.js'
 import { SettingsService } from '../services/settingsService.js'
 import {
   __enqueueRuntimeTransitionForTests,
+  __getUserDecisionFailureActionsForTests,
   __markActiveCliRunForTests,
   __markActiveTurnForTests,
   __resetWebSocketHandlerStateForTests,
@@ -95,6 +96,112 @@ describe('user_decision_response websocket route', () => {
     mock.restore()
   })
 
+  test('classifies every known handler failure with one explicit next action', () => {
+    expect(__getUserDecisionFailureActionsForTests()).toEqual({
+      INVALID_USER_DECISION_IDENTIFIERS: 'resync',
+      INVALID_USER_DECISION_RESPONSE: 'edit_response',
+      USER_DECISION_RESPONSE_TOO_LARGE: 'edit_response',
+      DECISION_NOT_FOUND: 'resync',
+      DECISION_CONFLICTED: 'resync',
+      EVIDENCE_INCOMPLETE: 'resync',
+      RECOVERY_UNAVAILABLE: 'resync',
+      DECISION_RESPONSE_MISMATCH: 'resync',
+      USER_DECISION_DELIVERY_BUSY: 'resync',
+      ATTEMPT_RESPONSE_MISMATCH: 'resync',
+      RESPONSE_MISMATCH: 'resync',
+      ATTEMPT_ALREADY_USED: 'retry_new_attempt',
+      ATTEMPT_CAPACITY_EXHAUSTED: 'blocked',
+      RESPONSE_TOO_LARGE: 'edit_response',
+      CAPACITY_EXHAUSTED: 'retry_new_attempt',
+      USER_DECISION_RESPONSE_FAILED: 'verify_same_attempt',
+      PERMISSION_DELIVERY_INDETERMINATE: 'verify_same_attempt',
+      ORPHANED_DELIVERY_INDETERMINATE: 'verify_same_attempt',
+      USER_DECISION_DELIVERY_IN_PROGRESS: 'verify_same_attempt',
+      RUNTIME_CALLBACK_UNAVAILABLE: 'retry_new_attempt',
+      SESSION_RUNTIME_BUSY: 'retry_new_attempt',
+      CLI_RECOVERY_PREPARE_FAILED: 'retry_new_attempt',
+      CLI_SHUTDOWN_FAILED: 'retry_new_attempt',
+      CLI_SHUTDOWN_UNCONFIRMED: 'retry_new_attempt',
+      DECISION_EVIDENCE_READ_FAILED: 'retry_new_attempt',
+      USER_DECISION_ROUTE_CHANGED: 'resync',
+      CLI_RECOVERY_START_FAILED: 'retry_new_attempt',
+      RECOVERY_SESSION_UNAVAILABLE: 'retry_new_attempt',
+      FAILURE_DETAIL_TOO_LARGE: 'retry_new_attempt',
+    })
+  })
+
+  for (const testCase of [
+    {
+      name: 'invalid identifiers require resynchronization',
+      decisionId: ' ask-invalid-id ',
+      attemptId: 'attempt-invalid-id',
+      response: { kind: 'clarify', message: 'Explain' },
+      code: 'INVALID_USER_DECISION_IDENTIFIERS',
+      nextAction: 'resync',
+    },
+    {
+      name: 'invalid response schema returns to editing',
+      decisionId: 'ask-invalid-response',
+      attemptId: 'attempt-invalid-response',
+      response: { kind: 'answer', answers: [] },
+      code: 'INVALID_USER_DECISION_RESPONSE',
+      nextAction: 'edit_response',
+    },
+    {
+      name: 'oversized response returns to editing',
+      decisionId: 'ask-oversized-response',
+      attemptId: 'attempt-oversized-response',
+      response: { kind: 'clarify', message: 'x'.repeat(65 * 1_024) },
+      code: 'USER_DECISION_RESPONSE_TOO_LARGE',
+      nextAction: 'edit_response',
+    },
+  ] as const) {
+    test(testCase.name, async () => {
+      const ws = socket(`decision-validation-${crypto.randomUUID()}`)
+      const messages = await submitAndDrain(ws, {
+        type: 'user_decision_response',
+        decisionId: testCase.decisionId,
+        attemptId: testCase.attemptId,
+        response: testCase.response,
+      })
+
+      expect(messages).toContainEqual(expect.objectContaining({
+        type: 'user_decision_response_result',
+        state: 'rejected',
+        nextAction: testCase.nextAction,
+        error: expect.objectContaining({ code: testCase.code }),
+      }))
+    })
+  }
+
+  for (const evidence of [
+    { complete: true, code: 'DECISION_NOT_FOUND' },
+    { complete: false, code: 'EVIDENCE_INCOMPLETE' },
+  ] as const) {
+    test(`requires resynchronization when capability is ${evidence.code}`, async () => {
+      const ws = socket(`decision-capability-${crypto.randomUUID()}`)
+      spyOn(sessionService, 'getSessionMessagesWithEvidence').mockResolvedValue({
+        messages: [],
+        transcriptEvidenceComplete: evidence.complete,
+      })
+      spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+
+      const messages = await submitAndDrain(ws, {
+        type: 'user_decision_response',
+        decisionId: 'ask-missing',
+        attemptId: 'attempt-missing',
+        response: { kind: 'clarify', message: 'Explain' },
+      })
+
+      expect(messages).toContainEqual(expect.objectContaining({
+        type: 'user_decision_response_result',
+        state: 'rejected',
+        nextAction: 'resync',
+        error: expect.objectContaining({ code: evidence.code }),
+      }))
+    })
+  }
+
   test('delivers a complete attached Ask through its tracked callback without stopping runtime', async () => {
     const sessionId = `decision-attached-${crypto.randomUUID()}`
     const toolUseId = 'ask-attached'
@@ -149,6 +256,7 @@ describe('user_decision_response websocket route', () => {
     expect(respond).not.toHaveBeenCalled()
     expect(messages).toContainEqual(expect.objectContaining({
       state: 'rejected',
+      nextAction: 'resync',
       error: expect.objectContaining({ code: 'DECISION_RESPONSE_MISMATCH' }),
     }))
   })
@@ -188,20 +296,59 @@ describe('user_decision_response websocket route', () => {
       expect(first).toContainEqual(expect.objectContaining({
         attemptId: 'attempt-unknown',
         state: 'indeterminate',
+        nextAction: 'verify_same_attempt',
       }))
       expect(replay).toContainEqual(expect.objectContaining({
         attemptId: 'attempt-unknown',
         state: 'indeterminate',
+        nextAction: 'verify_same_attempt',
         error: expect.objectContaining({ code: 'PERMISSION_DELIVERY_INDETERMINATE' }),
       }))
       expect(JSON.stringify([...first, ...replay, ...later])).not.toContain('private')
       expect(later).toContainEqual(expect.objectContaining({
         attemptId: 'attempt-later',
         state: 'rejected',
+        nextAction: 'resync',
         error: expect.objectContaining({ code: 'USER_DECISION_DELIVERY_BUSY' }),
       }))
     })
   }
+
+  test('requires a fresh attempt after a previously used retryable attempt id', async () => {
+    const sessionId = `decision-used-attempt-${crypto.randomUUID()}`
+    const toolUseId = 'ask-used-attempt'
+    const ws = socket(sessionId)
+    installAttachedEvidence(sessionId, toolUseId)
+    const respond = spyOn(conversationService, 'respondToTrackedPermission').mockReturnValue({
+      status: 'rejected',
+      reason: 'session_unavailable',
+    })
+    const response = {
+      kind: 'answer',
+      answers: { 'Ship?': 'Yes', 'Notify?': 'No' },
+    }
+
+    await submitAndDrain(ws, {
+      type: 'user_decision_response', decisionId: toolUseId,
+      attemptId: 'attempt-used-1', response,
+    })
+    await submitAndDrain(ws, {
+      type: 'user_decision_response', decisionId: toolUseId,
+      attemptId: 'attempt-used-2', response,
+    })
+    const messages = await submitAndDrain(ws, {
+      type: 'user_decision_response', decisionId: toolUseId,
+      attemptId: 'attempt-used-1', response,
+    })
+
+    expect(respond).toHaveBeenCalledTimes(2)
+    expect(messages).toContainEqual(expect.objectContaining({
+      attemptId: 'attempt-used-1',
+      state: 'retryable_failed',
+      nextAction: 'retry_new_attempt',
+      error: expect.objectContaining({ code: 'ATTEMPT_ALREADY_USED' }),
+    }))
+  })
 
   test('reports an unexpected outer processing failure as indeterminate', async () => {
     const sessionId = `decision-outer-failure-${crypto.randomUUID()}`
@@ -226,6 +373,7 @@ describe('user_decision_response websocket route', () => {
     expect(messages).toContainEqual(expect.objectContaining({
       attemptId: 'attempt-outer-failure',
       state: 'indeterminate',
+      nextAction: 'verify_same_attempt',
       error: expect.objectContaining({ code: 'USER_DECISION_RESPONSE_FAILED' }),
     }))
   })
@@ -255,6 +403,7 @@ describe('user_decision_response websocket route', () => {
     expect(stop).not.toHaveBeenCalled()
     expect(messages).toContainEqual(expect.objectContaining({
       state: 'retryable_failed',
+      nextAction: 'retry_new_attempt',
       error: expect.objectContaining({ code: 'SESSION_RUNTIME_BUSY' }),
     }))
   })
@@ -299,6 +448,7 @@ describe('user_decision_response websocket route', () => {
     expect(ws.sent.map((payload) => JSON.parse(payload))).toContainEqual(
       expect.objectContaining({
         state: 'retryable_failed',
+        nextAction: 'retry_new_attempt',
         error: expect.objectContaining({ code: 'SESSION_RUNTIME_BUSY' }),
       }),
     )
@@ -388,16 +538,19 @@ describe('user_decision_response websocket route', () => {
       expect(first).toContainEqual(expect.objectContaining({
         attemptId: 'attempt-unknown',
         state: 'indeterminate',
+        nextAction: 'verify_same_attempt',
       }))
       expect(replay).toContainEqual(expect.objectContaining({
         attemptId: 'attempt-unknown',
         state: 'indeterminate',
+        nextAction: 'verify_same_attempt',
         error: expect.objectContaining({ code: 'ORPHANED_DELIVERY_INDETERMINATE' }),
       }))
       expect(JSON.stringify([...first, ...replay, ...later])).not.toContain('private')
       expect(later).toContainEqual(expect.objectContaining({
         attemptId: 'attempt-later',
         state: 'rejected',
+        nextAction: 'resync',
         error: expect.objectContaining({ code: 'USER_DECISION_DELIVERY_BUSY' }),
       }))
     })
@@ -447,6 +600,7 @@ describe('user_decision_response websocket route', () => {
       expect(messages).toContainEqual(expect.objectContaining({
         attemptId: `attempt-${mode}-retry`,
         state: 'retryable_failed',
+        nextAction: 'retry_new_attempt',
       }))
     }
     expect(stop).toHaveBeenCalledTimes(4)
@@ -565,12 +719,14 @@ describe('user_decision_response websocket route', () => {
         expect(messages).toContainEqual(expect.objectContaining({
           attemptId: `attempt-later-${permanentlyDeleted}`,
           state: 'indeterminate',
+          nextAction: 'verify_same_attempt',
         }))
       } else {
         expect(respond.mock.calls.length).toBe(callsAfterInitial)
         expect(messages).toContainEqual(expect.objectContaining({
           attemptId: `attempt-later-${permanentlyDeleted}`,
           state: 'rejected',
+          nextAction: 'resync',
           error: expect.objectContaining({ code: 'USER_DECISION_DELIVERY_BUSY' }),
         }))
       }
