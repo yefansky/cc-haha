@@ -16,6 +16,7 @@ import type { ConversationNavigationItem } from './ConversationNavigator'
 import type { VirtualRenderItemMetric } from './virtualHeightCache'
 import { relativizeWorkspacePath } from './CurrentTurnChangeCard'
 import { sessionsApi } from '../../api/sessions'
+import { wsManager } from '../../api/websocket'
 import { useChatStore } from '../../stores/chatStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
@@ -1078,6 +1079,7 @@ describe('MessageList nested tool calls', () => {
       ],
     }
     const store = useChatStore.getState()
+    vi.spyOn(wsManager, 'sendIfOpen').mockReturnValue(true)
 
     // The SDK can ask for permission before the trailing tool_use_complete event.
     // Drive that real ordering instead of constructing an already-consistent card.
