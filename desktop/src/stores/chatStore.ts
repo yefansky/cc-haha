@@ -404,6 +404,17 @@ export function getPendingPermission(
   )
 }
 
+export type AskUserDecisionInteraction =
+  | { mode: 'editing'; channel: 'modern' }
+  | { mode: 'editing'; channel: 'legacy'; requestId: string }
+  | { mode: 'retryable' }
+  | { mode: 'syncing'; frozen: boolean }
+  | { mode: 'settled' }
+  | {
+      mode: 'blocked'
+      reason: 'conflicted' | 'legacy_route_unavailable' | 'delivery_rejected'
+    }
+
 export type AskUserDecisionView = {
   source: 'server' | 'legacy'
   toolUseId: string
@@ -411,9 +422,7 @@ export type AskUserDecisionView = {
   decision: UserDecisionSnapshotEntry | null
   pendingRequest: PendingPermission | null
   terminal: boolean
-  readOnly: boolean
-  submitting: boolean
-  retryable: boolean
+  interaction: AskUserDecisionInteraction
   deliveryState?: UserDecisionResponseAttempt['state']
   error?: string
 }
@@ -424,7 +433,7 @@ export type AskUserDecisionProjection = {
   views: AskUserDecisionView[]
 }
 
-function canUseUserDecisionResponseProtocol(
+function canAutoReplayUserDecisionResponse(
   snapshot: UserDecisionSnapshot,
   decision: UserDecisionSnapshotEntry,
   pendingRequest: PendingPermission | null,
@@ -437,12 +446,24 @@ function canUseUserDecisionResponseProtocol(
   ) {
     return true
   }
-  // Older v1 sidecars did not publish responseCapability. Preserve only the
-  // attached route that is independently proven by one exact live request;
-  // detached recovery must fail closed instead of being inferred from evidence.
+  // Older v1 sidecars did not publish responseCapability. Automatic replay is
+  // allowed only when one exact live request independently proves the route.
   return capability === undefined &&
     decision.runtimeBinding.status === 'attached' &&
     pendingRequest?.requestId === decision.runtimeBinding.requestId
+}
+
+function selectModernUserDecisionInteraction(
+  attempt: UserDecisionResponseAttempt | undefined,
+): AskUserDecisionInteraction {
+  if (!attempt || isEditableUserDecisionRejection(attempt)) {
+    return { mode: 'editing', channel: 'modern' }
+  }
+  if (attempt.state === 'retryable_failed') return { mode: 'retryable' }
+  if (attempt.state === 'rejected') {
+    return { mode: 'blocked', reason: 'delivery_rejected' }
+  }
+  return { mode: 'syncing', frozen: true }
 }
 
 /**
@@ -452,6 +473,7 @@ function canUseUserDecisionResponseProtocol(
 export function selectAskUserDecisionProjection(
   session: Pick<
     PerSessionState,
+    | 'messages'
     | 'pendingPermission'
     | 'pendingPermissions'
     | 'connectionSnapshotReady'
@@ -475,17 +497,20 @@ export function selectAskUserDecisionProjection(
           decision: null,
           pendingRequest: permission,
           terminal: false,
-          readOnly: session.connectionSnapshotReady === false || Boolean(attempt),
-          // The protocol capability is deliberately cleared at a connection
-          // epoch boundary, but an already-claimed attempt is not. Keep the
-          // legacy request locked until the fresh snapshot restores routing.
-          submitting: Boolean(attempt) || permission.responseState === 'submitting',
-          retryable: false,
+          interaction: attempt || permission.responseState === 'submitting'
+            ? { mode: 'syncing', frozen: true }
+            : session.connectionSnapshotReady === false
+              ? { mode: 'syncing', frozen: false }
+              : { mode: 'editing', channel: 'legacy', requestId: permission.requestId },
           ...(attempt ? { deliveryState: attempt.state } : {}),
           ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
         }
       })
-    return { source: 'legacy', active: views[0] ?? null, views }
+    return {
+      source: 'legacy',
+      active: selectLatestActiveAskView(session.messages, views),
+      views,
+    }
   }
 
   const claimedRequestIds = new Set<string>()
@@ -508,18 +533,21 @@ export function selectAskUserDecisionProjection(
       : null
     if (validPendingRequest) claimedRequestIds.add(validPendingRequest.requestId)
     const attempt = session.userDecisionResponseAttempts?.[decision.decisionId]
-    const retryable = attempt?.state === 'retryable_failed'
-    const editableFailure = isEditableUserDecisionRejection(attempt)
-    const modernAttemptUnsupported = Boolean(attempt) && !responseProtocolAvailable
-    const protocolCanRespond = canUseUserDecisionResponseProtocol(
-      snapshot,
-      decision,
-      validPendingRequest,
-    )
-    const legacyCanRespond = !responseProtocolAvailable && validPendingRequest !== null
-    const readOnly = terminal || decision.conflicted || modernAttemptUnsupported || (
-      !protocolCanRespond && !legacyCanRespond
-    )
+    const interaction: AskUserDecisionInteraction = terminal
+      ? { mode: 'settled' }
+      : decision.conflicted
+        ? { mode: 'blocked', reason: 'conflicted' }
+        : responseProtocolAvailable
+          ? selectModernUserDecisionInteraction(attempt)
+          : attempt
+            ? { mode: 'syncing', frozen: true }
+            : validPendingRequest
+              ? {
+                  mode: 'editing',
+                  channel: 'legacy',
+                  requestId: validPendingRequest.requestId,
+                }
+              : { mode: 'blocked', reason: 'legacy_route_unavailable' }
     return {
       source: 'server',
       toolUseId: decision.decisionId,
@@ -527,11 +555,7 @@ export function selectAskUserDecisionProjection(
       decision,
       pendingRequest: validPendingRequest,
       terminal,
-      readOnly,
-      submitting: attempt
-        ? modernAttemptUnsupported || (!retryable && !editableFailure)
-        : validPendingRequest?.responseState === 'submitting',
-      retryable: retryable && !modernAttemptUnsupported,
+      interaction,
       ...(attempt ? { deliveryState: attempt.state } : {}),
       ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
     }
@@ -549,9 +573,15 @@ export function selectAskUserDecisionProjection(
       continue
     }
     const attempt = session.userDecisionResponseAttempts?.[permission.toolUseId]
-    const retryable = attempt?.state === 'retryable_failed'
-    const editableFailure = isEditableUserDecisionRejection(attempt)
-    const modernAttemptUnsupported = Boolean(attempt) && !responseProtocolAvailable
+    const interaction: AskUserDecisionInteraction = responseProtocolAvailable
+      ? selectModernUserDecisionInteraction(attempt)
+      : attempt || permission.responseState === 'submitting'
+        ? { mode: 'syncing', frozen: true }
+        : {
+            mode: 'editing',
+            channel: 'legacy',
+            requestId: permission.requestId,
+          }
     views.push({
       source: 'legacy',
       toolUseId: permission.toolUseId,
@@ -559,26 +589,130 @@ export function selectAskUserDecisionProjection(
       decision: null,
       pendingRequest: permission,
       terminal: false,
-      readOnly: modernAttemptUnsupported,
-      submitting: attempt
-        ? modernAttemptUnsupported || (!retryable && !editableFailure)
-        : permission.responseState === 'submitting',
-      retryable: retryable && !modernAttemptUnsupported,
+      interaction,
       ...(attempt ? { deliveryState: attempt.state } : {}),
       ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
     })
   }
 
-  const active = views.find((view) =>
-    view.pendingRequest !== null &&
-    !view.readOnly) ?? null
-  return { source: 'server', active, views }
+  return {
+    source: 'server',
+    active: selectLatestActiveAskView(session.messages, views),
+    views,
+  }
 }
 
 function hasToolResultEvidence(messages: UIMessage[], decisionId: string): boolean {
   return messages.some((message) =>
     message.type === 'tool_result' &&
     (message.toolUseId === decisionId || message.originalToolUseId === decisionId))
+}
+
+function isLatestUnresolvedLocalAsk(messages: UIMessage[], decisionId: string): boolean {
+  const resolvedIds = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue
+    resolvedIds.add(message.toolUseId)
+    if (message.originalToolUseId) resolvedIds.add(message.originalToolUseId)
+  }
+  const candidateIds: string[] = []
+  for (const message of messages) {
+    if (
+      message.type === 'tool_use' &&
+      message.toolName === 'AskUserQuestion' &&
+      !message.parentToolUseId &&
+      !resolvedIds.has(message.toolUseId)
+    ) {
+      candidateIds.push(message.toolUseId)
+    }
+  }
+  if (candidateIds.filter((candidateId) => candidateId === decisionId).length !== 1) {
+    return false
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (
+      message?.type !== 'tool_use' ||
+      message.toolName !== 'AskUserQuestion' ||
+      message.parentToolUseId ||
+      resolvedIds.has(message.toolUseId)
+    ) {
+      continue
+    }
+    return message.toolUseId === decisionId
+  }
+  return false
+}
+
+function hasSuccessfulToolResultEvidence(
+  messages: UIMessage[],
+  decisionId: string,
+): boolean {
+  return messages.some((message) =>
+    message.type === 'tool_result' &&
+    message.isError !== true &&
+    (message.toolUseId === decisionId || message.originalToolUseId === decisionId))
+}
+
+function selectLatestActiveAskView(
+  messages: UIMessage[],
+  views: AskUserDecisionView[],
+): AskUserDecisionView | null {
+  const activeViewsById = new Map(
+    views
+      .filter((view) =>
+        view.interaction.mode !== 'settled' &&
+        view.interaction.mode !== 'blocked' &&
+        !hasSuccessfulToolResultEvidence(messages, view.toolUseId))
+      .map((view) => [view.toolUseId, view]),
+  )
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.type !== 'tool_use' || message.toolName !== 'AskUserQuestion') continue
+    const candidate = activeViewsById.get(message.toolUseId)
+    if (candidate) return candidate
+  }
+  return [...views].reverse().find((view) => activeViewsById.has(view.toolUseId)) ?? null
+}
+
+/**
+ * The single interaction decision consumed by both the Ask card and dispatch
+ * actions. An incomplete modern snapshot may omit the latest locally observed
+ * Ask; the server fresh-reads transcript evidence when that user intent arrives.
+ */
+export function selectAskUserDecisionInteraction(
+  session: Pick<
+    PerSessionState,
+    | 'messages'
+    | 'pendingPermission'
+    | 'pendingPermissions'
+    | 'connectionSnapshotReady'
+    | 'userDecisionSnapshot'
+    | 'userDecisionResponseAttempts'
+  > | undefined,
+  decisionId: string,
+): AskUserDecisionInteraction {
+  if (!session) return { mode: 'blocked', reason: 'legacy_route_unavailable' }
+  if (hasSuccessfulToolResultEvidence(session.messages, decisionId)) {
+    return { mode: 'settled' }
+  }
+  const view = selectAskUserDecisionProjection(session).views.find(
+    (candidate) => candidate.toolUseId === decisionId,
+  )
+  if (view) return view.interaction
+
+  if (
+    session.userDecisionSnapshot?.userDecisionResponseProtocol ===
+      'orphaned-permission-v1' &&
+    session.userDecisionSnapshot.transcriptEvidenceComplete === false &&
+    isLatestUnresolvedLocalAsk(session.messages, decisionId)
+  ) {
+    return selectModernUserDecisionInteraction(
+      session.userDecisionResponseAttempts?.[decisionId],
+    )
+  }
+
+  return { mode: 'blocked', reason: 'legacy_route_unavailable' }
 }
 
 function reconcileAskPermissionsWithUserDecisions(
@@ -1947,17 +2081,27 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     // AskUserQuestion keeps its card until an authoritative server event settles it.
     // Other permission dialogs retain their existing optimistic cleanup in this phase.
     const keepUntilResolved = pendingPermission?.toolName === 'AskUserQuestion'
-    const modernAttempt = pendingPermission?.toolUseId
-      ? currentSession?.userDecisionResponseAttempts?.[pendingPermission.toolUseId]
-      : undefined
-    if (
-      keepUntilResolved &&
-      (currentSession?.connectionSnapshotReady === false || Boolean(modernAttempt))
-    ) {
-      return 'not-dispatched'
-    }
-    if (keepUntilResolved && pendingPermission.responseState === 'submitting') {
-      return 'not-dispatched'
+    if (keepUntilResolved) {
+      if (pendingPermission.toolUseId) {
+        const interaction = selectAskUserDecisionInteraction(
+          currentSession,
+          pendingPermission.toolUseId,
+        )
+        if (
+          interaction.mode !== 'editing' ||
+          interaction.channel !== 'legacy' ||
+          interaction.requestId !== requestId
+        ) return 'not-dispatched'
+      } else if (
+        currentSession?.connectionSnapshotReady === false ||
+        currentSession?.userDecisionSnapshot?.userDecisionResponseProtocol ===
+          'orphaned-permission-v1' ||
+        pendingPermission.responseState === 'submitting'
+      ) {
+        // Old permission streams may omit toolUseId. Keep that compatibility
+        // only while no modern decision route has been advertised.
+        return 'not-dispatched'
+      }
     }
 
     const response = {
@@ -2027,18 +2171,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     set((state) => ({
       sessions: updateSessionIn(state.sessions, sessionId, (session) => {
-        const view = selectAskUserDecisionProjection(session).views.find(
-          (candidate) => candidate.toolUseId === decisionId,
-        )
+        const snapshot = session.userDecisionSnapshot
+        const previous = session.userDecisionResponseAttempts?.[decisionId]
+        const interaction = selectAskUserDecisionInteraction(session, decisionId)
         if (
-          session.userDecisionSnapshot?.userDecisionResponseProtocol !==
+          snapshot?.userDecisionResponseProtocol !==
             'orphaned-permission-v1' ||
-          !view ||
-          view.terminal ||
-          view.readOnly
+          (
+            interaction.mode !== 'editing' &&
+            interaction.mode !== 'retryable'
+          ) ||
+          (
+            interaction.mode === 'editing' &&
+            interaction.channel !== 'modern'
+          )
         ) return {}
 
-        previousAttempt = session.userDecisionResponseAttempts?.[decisionId]
+        previousAttempt = previous
         const editableFailure = isEditableUserDecisionRejection(previousAttempt)
         if (
           previousAttempt &&
@@ -3508,9 +3657,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           ) {
             for (const decision of msg.userDecisions.decisions) {
               const attempt = reconciledAttempts[decision.decisionId]
-              const attachedRequest = decision.runtimeBinding.status === 'attached'
-                ? pendingPermissions[decision.runtimeBinding.requestId] ?? null
-                : null
               const canReplay =
                 decision.semanticState.status === 'open' &&
                 !decision.conflicted &&
@@ -3520,10 +3666,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                   attempt.state === 'accepted' ||
                   attempt.state === 'indeterminate'
                 ) &&
-                canUseUserDecisionResponseProtocol(
+                canAutoReplayUserDecisionResponse(
                   msg.userDecisions,
                   decision,
-                  attachedRequest,
+                  decision.runtimeBinding.status === 'attached'
+                    ? pendingPermissions[decision.runtimeBinding.requestId] ?? null
+                    : null,
                 )
               if (!canReplay) continue
               replayMessages.push({

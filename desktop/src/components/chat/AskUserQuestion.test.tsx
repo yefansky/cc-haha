@@ -199,9 +199,9 @@ describe('AskUserQuestion', () => {
     expect(useChatStore.getState().sessions[ACTIVE_TAB]
       ?.pendingPermissions?.['perm-1']).toMatchObject({ responseState: 'submitting' })
     expect(option).toHaveProperty('disabled', true)
-    expect(screen.getByPlaceholderText('Type your answer...')).toHaveProperty('disabled', true)
-    expect(screen.getByRole('button', { name: /submit/i })).toHaveProperty('disabled', true)
-    expect(screen.getByRole('button', { name: /chat about this/i })).toHaveProperty('disabled', true)
+    expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+    expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /chat about this/i })).toBeNull()
     expect(screen.queryByText('Answered')).toBeNull()
     expect(screen.queryByText('Completed')).toBeNull()
   })
@@ -597,6 +597,31 @@ describe('AskUserQuestion', () => {
     expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
   })
 
+  it('keeps a modern OPEN decision actionable after a non-terminal error result', () => {
+    publishDecision('tool-open-error', 'Try another path?', ['Retry'])
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'tool_result',
+        toolUseId: 'tool-open-error',
+        content: 'runtime stopped before the answer was applied',
+        isError: true,
+      })
+    })
+
+    render(
+      <AskUserQuestion
+        toolUseId="tool-open-error"
+        input={{}}
+        result="runtime stopped"
+        hasResult
+      />,
+    )
+
+    expect(screen.queryByText('Completed')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Retry$/ }))
+    expect(screen.getByRole('button', { name: /submit/i })).toHaveProperty('disabled', false)
+  })
+
   it('submits an evidence-complete detached decision through the advertised response protocol', () => {
     publishDecision(
       'tool-detached-submit',
@@ -620,7 +645,8 @@ describe('AskUserQuestion', () => {
         answers: { 'Resume the original task?': 'Resume' },
       },
     })
-    expect(screen.getByRole('button', { name: /submit/i })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^Resume$/ })).toHaveProperty('disabled', true)
     expect(screen.getByRole('status').textContent).toContain('Loading...')
     expect(screen.getByRole('status').textContent).toContain('Resume')
   })
@@ -728,6 +754,37 @@ describe('AskUserQuestion', () => {
       (message as { type?: string }).type === 'sync_state')).toBe(false)
   })
 
+  it('does not guess a replay policy for a non-editable rejection', () => {
+    const decisionId = 'tool-verify-busy'
+    publishDecision(decisionId, 'Continue once?', ['Yes'])
+    render(<AskUserQuestion toolUseId={decisionId} input={{}} />)
+    const option = screen.getByRole('button', { name: /^Yes$/ })
+    fireEvent.click(option)
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    const original = sendMock.mock.calls.at(-1)?.[1] as {
+      decisionId: string
+      attemptId: string
+      response: unknown
+    }
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'user_decision_response_result',
+        decisionId,
+        attemptId: original.attemptId,
+        state: 'rejected',
+        error: { code: 'USER_DECISION_DELIVERY_BUSY', message: 'delivery busy' },
+      } as never)
+    })
+
+    const decisionResponses = sendMock.mock.calls
+      .map(([, message]) => message as { type?: string })
+      .filter((message) => message.type === 'user_decision_response')
+    expect(decisionResponses).toEqual([original])
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+    expect(option).toHaveProperty('disabled', true)
+    expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+  })
+
   it('restores a frozen clarification summary without claiming it was answered', () => {
     publishDecision('tool-clarify-hold', 'Which path?', ['A'])
     act(() => {
@@ -756,13 +813,18 @@ describe('AskUserQuestion', () => {
     expect(screen.queryByText('Answered')).toBeNull()
   })
 
-  it('does not submit a detached decision while transcript evidence is incomplete', () => {
+  it('submits a modern OPEN decision and lets the server fresh-check incomplete evidence', () => {
     publishDecision('tool-incomplete-detached', 'Is history complete?', ['No'], {
       evidenceComplete: false,
     })
     render(<AskUserQuestion toolUseId="tool-incomplete-detached" input={{}} />)
-    expect(screen.getByRole('button', { name: /^No$/ })).toHaveProperty('disabled', true)
-    expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^No$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, expect.objectContaining({
+      type: 'user_decision_response',
+      decisionId: 'tool-incomplete-detached',
+      response: { kind: 'answer', answers: { 'Is history complete?': 'No' } },
+    }))
   })
 
   it('does not call a missing decision completed while transcript evidence is incomplete', () => {
@@ -797,6 +859,114 @@ describe('AskUserQuestion', () => {
     expect(screen.getByRole('button', { name: /^Not yet$/ })).toHaveProperty('disabled', true)
     expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
   })
+
+  it('submits a transcript Ask omitted from an incomplete modern snapshot', () => {
+    act(() => {
+      useChatStore.setState((state) => ({
+        sessions: {
+          ...state.sessions,
+          [ACTIVE_TAB]: {
+            ...state.sessions[ACTIVE_TAB]!,
+            messages: [{
+              id: 'tool-provisional-transcript-message',
+              type: 'tool_use',
+              toolName: 'AskUserQuestion',
+              toolUseId: 'tool-provisional-transcript',
+              input: {
+                questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+              },
+              timestamp: 1,
+            }],
+          },
+        },
+      }))
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: false,
+          userDecisionResponseProtocol: 'orphaned-permission-v1',
+          decisions: [],
+        },
+      } as never)
+    })
+    render(
+      <AskUserQuestion
+        toolUseId="tool-provisional-transcript"
+        input={{ questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }] }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^Yes$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, expect.objectContaining({
+      type: 'user_decision_response',
+      decisionId: 'tool-provisional-transcript',
+    }))
+  })
+
+  it.each([false, true])(
+    'does not call an omitted modern Ask completed after an error result (evidenceComplete=%s)',
+    (transcriptEvidenceComplete) => {
+      const decisionId = `tool-omitted-error-${transcriptEvidenceComplete}`
+      act(() => {
+        useChatStore.setState((state) => ({
+          sessions: {
+            ...state.sessions,
+            [ACTIVE_TAB]: {
+              ...state.sessions[ACTIVE_TAB]!,
+              messages: [
+                {
+                  id: `message-${decisionId}`,
+                  type: 'tool_use',
+                  toolName: 'AskUserQuestion',
+                  toolUseId: decisionId,
+                  input: {
+                    questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+                  },
+                  timestamp: 1,
+                },
+                {
+                  id: `result-${decisionId}`,
+                  type: 'tool_result',
+                  toolUseId: decisionId,
+                  content: 'runtime failed before applying the answer',
+                  isError: true,
+                  timestamp: 2,
+                },
+              ],
+            },
+          },
+        }))
+        useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+          type: 'permission_requests_snapshot',
+          toolRequestIds: [],
+          computerUseRequestIds: [],
+          turnActive: true,
+          userDecisions: {
+            transcriptEvidenceComplete,
+            userDecisionResponseProtocol: 'orphaned-permission-v1',
+            decisions: [],
+          },
+        } as never)
+      })
+
+      render(
+        <AskUserQuestion
+          toolUseId={decisionId}
+          input={{ questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }] }}
+          result="runtime failed before applying the answer"
+          hasResult
+        />,
+      )
+
+      expect(screen.queryByText('Completed')).toBeNull()
+      expect(screen.queryByText('Answered')).toBeNull()
+      expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
+    },
+  )
 
   describe('chat about this', () => {
     const SCOPE_INPUT = {
@@ -856,10 +1026,7 @@ describe('AskUserQuestion', () => {
 
       expect(screen.queryByText(/Handed back to Claude/)).toBeNull()
       expect(screen.queryByText(/Answered:/)).toBeNull()
-      expect(screen.getByRole('button', { name: /chat about this/i })).toHaveProperty(
-        'disabled',
-        true,
-      )
+      expect(screen.queryByRole('button', { name: /chat about this/i })).toBeNull()
     })
 
     // Regression: the status badge is rendered from its own branch, so it kept
