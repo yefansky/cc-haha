@@ -176,10 +176,10 @@ export function acceptDeliveryAttempt(
 
 export function markDecisionAnswered(
   decision: UserDecision,
-  response: UserDecisionResponse,
+  response: UserDecisionResponse | null,
 ): UserDecision {
   if (decision.semanticState.status !== 'open') return decision
-  if (decision.response && !responsesEqual(decision.response, response)) {
+  if (decision.response && response && !responsesEqual(decision.response, response)) {
     throw new Error('Answered response does not match the recorded decision response')
   }
   return {

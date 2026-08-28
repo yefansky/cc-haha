@@ -122,6 +122,23 @@ describe('UserDecision', () => {
     expect(answered.deliveryAttempt).toEqual(accepted.deliveryAttempt)
   })
 
+  it('hydrates terminal evidence even when a historical response is unavailable', () => {
+    const open = createUserDecision({ decisionId: 'decision-hydrated' })
+    const answeredWithoutResponse = markDecisionAnswered(open, null)
+
+    expect(answeredWithoutResponse.semanticState).toEqual({ status: 'answered' })
+    expect(answeredWithoutResponse.response).toBeNull()
+
+    const sending = startDeliveryAttempt(
+      createUserDecision({ decisionId: 'decision-hydrated-recorded' }),
+      'attempt-hydrated',
+      answer,
+    )
+    const answeredWithRecordedResponse = markDecisionAnswered(sending, null)
+    expect(answeredWithRecordedResponse.semanticState).toEqual({ status: 'answered' })
+    expect(answeredWithRecordedResponse.response).toEqual(answer)
+  })
+
   it('retains the structured response after a retryable delivery failure', () => {
     const sending = startDeliveryAttempt(
       createUserDecision({ decisionId: 'decision-4', requestId: 'request-4' }),
