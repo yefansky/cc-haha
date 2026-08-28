@@ -4973,7 +4973,7 @@ describe('chatStore history mapping', () => {
       expect(sentDecisionResponses()).toHaveLength(decisionSendsBefore)
     })
 
-    it('keeps blocked recovery fail-closed with no response dispatch', () => {
+    it('keeps an active server-blocked decision fail-closed while allowing snapshot refresh', () => {
       const decisionId = 'decision-blocked'
       receiveProtocolSnapshot(decisionId)
       respondWithAnswer(decisionId)
@@ -4988,10 +4988,122 @@ describe('chatStore history mapping', () => {
       } as never)
       const sendsBefore = sentDecisionResponses().length
 
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+      )).toEqual({ mode: 'blocked', reason: 'delivery_rejected', recoverable: true })
       expect(respondWithAnswer(decisionId)).toBe('not-dispatched')
       expect(useChatStore.getState().resyncUserDecision(TEST_SESSION_ID, decisionId))
-        .toBe('not-dispatched')
+        .toBe('dispatched')
+      expect(forceReconnectMock).toHaveBeenCalledWith(TEST_SESSION_ID)
       expect(sentDecisionResponses()).toHaveLength(sendsBefore)
+
+      startFreshConnectionEpoch()
+      receiveProtocolSnapshot(decisionId)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+      )).toEqual({ mode: 'blocked', reason: 'delivery_rejected', recoverable: true })
+      expect(sentDecisionResponses()).toHaveLength(sendsBefore)
+    })
+
+    it.each([
+      ['conflicted', { conflicted: true }, 'conflicted'],
+      ['legacy route unavailable', { responseCapability: undefined }, 'legacy_route_unavailable'],
+    ] as const)(
+      'refreshes an active %s decision without dispatching an answer',
+      (_label, decisionOverrides, reason) => {
+        const decisionId = `active-blocked-${reason}`
+        const snapshot = protocolSnapshot(decisionId, decisionOverrides as never)
+        if (reason === 'legacy_route_unavailable') {
+          delete (snapshot as { userDecisionResponseProtocol?: string }).userDecisionResponseProtocol
+        }
+        useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+          type: 'permission_requests_snapshot',
+          toolRequestIds: [],
+          computerUseRequestIds: [],
+          turnActive: true,
+          userDecisions: snapshot,
+        } as never)
+        const sendsBefore = sentDecisionResponses().length
+
+        expect(selectAskUserDecisionInteraction(
+          useChatStore.getState().sessions[TEST_SESSION_ID], decisionId,
+        )).toEqual({ mode: 'blocked', reason, recoverable: true })
+        expect(useChatStore.getState().resyncUserDecision(TEST_SESSION_ID, decisionId))
+          .toBe('dispatched')
+        expect(forceReconnectMock).toHaveBeenCalledWith(TEST_SESSION_ID)
+        expect(sentDecisionResponses()).toHaveLength(sendsBefore)
+      },
+    )
+
+    it('allows refresh only for the latest blocked decision in one authoritative snapshot', () => {
+      const olderId = 'older-blocked-decision'
+      const latestId = 'latest-blocked-decision'
+      useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          userDecisionResponseProtocol: 'orphaned-permission-v1',
+          decisions: [
+            makeUserDecision(olderId, { conflicted: true }),
+            makeUserDecision(latestId, { conflicted: true }),
+          ],
+        },
+      } as never)
+      const sendsBefore = sentDecisionResponses().length
+
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID], olderId,
+      )).toEqual({ mode: 'blocked', reason: 'conflicted', recoverable: false })
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID], latestId,
+      )).toEqual({ mode: 'blocked', reason: 'conflicted', recoverable: true })
+      expect(useChatStore.getState().resyncUserDecision(TEST_SESSION_ID, olderId))
+        .toBe('not-dispatched')
+      expect(useChatStore.getState().resyncUserDecision(TEST_SESSION_ID, latestId))
+        .toBe('dispatched')
+      expect(forceReconnectMock).toHaveBeenCalledTimes(1)
+      expect(sentDecisionResponses()).toHaveLength(sendsBefore)
+    })
+
+    it('keeps a historical legacy blocked card read-only and a terminal decision settled', () => {
+      const historicalId = 'historical-legacy-blocked'
+      patchSession({
+        messages: [{
+          id: 'historical-legacy-message',
+          type: 'tool_use',
+          toolName: 'AskUserQuestion',
+          toolUseId: historicalId,
+          input: makeUserDecision(historicalId).input,
+          timestamp: 1,
+        }],
+        userDecisionSnapshot: undefined,
+        pendingPermission: null,
+        pendingPermissions: {},
+      })
+
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID], historicalId,
+      )).toEqual({
+        mode: 'blocked',
+        reason: 'legacy_route_unavailable',
+        recoverable: false,
+      })
+      expect(useChatStore.getState().resyncUserDecision(TEST_SESSION_ID, historicalId))
+        .toBe('not-dispatched')
+
+      const terminalId = 'terminal-decision'
+      receiveProtocolSnapshot(terminalId, {
+        semanticState: { status: 'answered' },
+        response: { kind: 'answer', answers: { [`Question for ${terminalId}?`]: 'Continue' } },
+      } as never)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID], terminalId,
+      )).toEqual({ mode: 'settled' })
+      expect(useChatStore.getState().resyncUserDecision(TEST_SESSION_ID, terminalId))
+        .toBe('not-dispatched')
     })
 
     it('lets an explicitly undelivered open decision return to editing', () => {

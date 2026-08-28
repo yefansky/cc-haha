@@ -183,6 +183,9 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
   const retryable = interaction.mode === 'retryable'
   const verifiable = interaction.mode === 'verifiable'
   const needsResync = interaction.mode === 'resync'
+  const canResync = needsResync || (
+    interaction.mode === 'blocked' && interaction.recoverable
+  )
   const frozen = retryable || verifiable || needsResync || (
     interaction.mode === 'syncing' && interaction.frozen
   )
@@ -255,7 +258,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
       respondToUserDecision(targetSessionId, toolUseId, retryResponse)
       return
     }
-    if (needsResync) {
+    if (canResync) {
       resyncUserDecision(targetSessionId, toolUseId)
       return
     }
@@ -515,7 +518,9 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
 
       {/* Action bar. Wraps rather than overflows: two buttons plus a translated
           label (kr/jp run long) can outgrow a narrow side-by-side pane. */}
-      {!settled && interaction.mode !== 'blocked' && interaction.mode !== 'syncing' && (
+      {!settled && interaction.mode !== 'syncing' && (
+        interaction.mode !== 'blocked' || interaction.recoverable
+      ) && (
         <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-t border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
           <Button
             variant="primary"
@@ -530,7 +535,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult
               ? 'common.retry'
               : verifiable
                 ? 'question.verifyDelivery'
-                : needsResync
+                : canResync
                   ? 'question.resync'
                   : 'question.submit')}
           </Button>

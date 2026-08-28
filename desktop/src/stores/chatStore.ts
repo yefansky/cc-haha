@@ -460,6 +460,7 @@ export type AskUserDecisionInteraction =
   | {
       mode: 'blocked'
       reason: 'conflicted' | 'legacy_route_unavailable' | 'delivery_rejected'
+      recoverable: boolean
     }
 
 export type AskUserDecisionView = {
@@ -482,6 +483,7 @@ export type AskUserDecisionProjection = {
 
 function selectModernUserDecisionInteraction(
   attempt: UserDecisionResponseAttempt | undefined,
+  blockedRecoverable = false,
 ): AskUserDecisionInteraction {
   if (!attempt) return { mode: 'editing', channel: 'modern' }
   if (attempt.state === 'already_resolved') return { mode: 'settled' }
@@ -489,7 +491,13 @@ function selectModernUserDecisionInteraction(
   if (attempt.nextAction === 'retry_new_attempt') return { mode: 'retryable' }
   if (attempt.nextAction === 'verify_same_attempt') return { mode: 'verifiable' }
   if (attempt.nextAction === 'resync') return { mode: 'resync' }
-  if (attempt.nextAction === 'blocked') return { mode: 'blocked', reason: 'delivery_rejected' }
+  if (attempt.nextAction === 'blocked') {
+    return {
+      mode: 'blocked',
+      reason: 'delivery_rejected',
+      recoverable: blockedRecoverable,
+    }
+  }
   return { mode: 'syncing', frozen: true }
 }
 
@@ -557,6 +565,12 @@ export function selectAskUserDecisionProjection(
   const snapshotDecisionIds = new Set(snapshot.decisions.map((decision) => decision.decisionId))
   const responseProtocolAvailable =
     snapshot.userDecisionResponseProtocol === 'orphaned-permission-v1'
+  const recoverableBlockedDecisionId = session.connectionSnapshotReady === true
+    ? [...snapshot.decisions].reverse().find((decision) =>
+        decision.semanticState.status === 'open' &&
+        !hasSuccessfulToolResultEvidence(session.messages, decision.decisionId))
+      ?.decisionId
+    : undefined
   const views = snapshot.decisions.map((decision): AskUserDecisionView => {
     const attachedRequestId = decision.runtimeBinding.status === 'attached'
       ? decision.runtimeBinding.requestId
@@ -573,12 +587,13 @@ export function selectAskUserDecisionProjection(
       : null
     if (validPendingRequest) claimedRequestIds.add(validPendingRequest.requestId)
     const attempt = session.userDecisionResponseAttempts?.[decision.decisionId]
+    const blockedRecoverable = decision.decisionId === recoverableBlockedDecisionId
     const interaction: AskUserDecisionInteraction = terminal
       ? { mode: 'settled' }
       : decision.conflicted
-        ? { mode: 'blocked', reason: 'conflicted' }
+        ? { mode: 'blocked', reason: 'conflicted', recoverable: blockedRecoverable }
         : responseProtocolAvailable
-          ? selectModernUserDecisionInteraction(attempt)
+          ? selectModernUserDecisionInteraction(attempt, blockedRecoverable)
           : validPendingRequest
             ? selectLegacyUserDecisionInteraction(
                 validPendingRequest,
@@ -587,7 +602,11 @@ export function selectAskUserDecisionProjection(
               )
             : attempt
               ? { mode: 'syncing', frozen: true }
-              : { mode: 'blocked', reason: 'legacy_route_unavailable' }
+              : {
+                  mode: 'blocked',
+                  reason: 'legacy_route_unavailable',
+                  recoverable: blockedRecoverable,
+                }
     return {
       source: 'server',
       toolUseId: decision.decisionId,
@@ -730,7 +749,13 @@ export function selectAskUserDecisionInteraction(
   > | undefined,
   decisionId: string,
 ): AskUserDecisionInteraction {
-  if (!session) return { mode: 'blocked', reason: 'legacy_route_unavailable' }
+  if (!session) {
+    return {
+      mode: 'blocked',
+      reason: 'legacy_route_unavailable',
+      recoverable: false,
+    }
+  }
   if (hasSuccessfulToolResultEvidence(session.messages, decisionId)) {
     return { mode: 'settled' }
   }
@@ -750,7 +775,11 @@ export function selectAskUserDecisionInteraction(
     )
   }
 
-  return { mode: 'blocked', reason: 'legacy_route_unavailable' }
+  return {
+    mode: 'blocked',
+    reason: 'legacy_route_unavailable',
+    recoverable: false,
+  }
 }
 
 function reconcileAskPermissionsWithUserDecisions(
@@ -2395,7 +2424,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   resyncUserDecision: (sessionId, decisionId) => {
     const session = get().sessions[sessionId]
-    if (selectAskUserDecisionInteraction(session, decisionId).mode !== 'resync') {
+    const interaction = selectAskUserDecisionInteraction(session, decisionId)
+    if (
+      interaction.mode !== 'resync' &&
+      !(interaction.mode === 'blocked' && interaction.recoverable)
+    ) {
       return 'not-dispatched'
     }
 

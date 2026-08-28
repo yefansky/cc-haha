@@ -772,7 +772,7 @@ describe('AskUserQuestion', () => {
     expect(repeated.response).toEqual(original.response)
   })
 
-  it('does not guess a replay policy for a non-editable rejection', () => {
+  it('refreshes a server-blocked decision without replaying its frozen answer', () => {
     const decisionId = 'tool-verify-busy'
     publishDecision(decisionId, 'Continue once?', ['Yes'])
     render(<AskUserQuestion toolUseId={decisionId} input={{}} />)
@@ -802,6 +802,141 @@ describe('AskUserQuestion', () => {
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
     expect(option).toHaveProperty('disabled', true)
     expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh question/i }))
+
+    expect(forceReconnectMock).toHaveBeenCalledWith(ACTIVE_TAB)
+    expect(sendMock.mock.calls
+      .map(([, message]) => message as { type?: string })
+      .filter((message) => message.type === 'user_decision_response')).toEqual([original])
+  })
+
+  it.each([
+    ['conflicted', 'conflicted'],
+    ['legacy route unavailable', 'legacy_route_unavailable'],
+  ] as const)(
+    'offers refresh for an active %s Ask without sending an answer',
+    (_label, reason) => {
+      const decisionId = `tool-${reason}`
+      publishDecision(decisionId, 'Which path?', ['A'])
+      act(() => {
+        useChatStore.setState((state) => {
+          const session = state.sessions[ACTIVE_TAB]!
+          const snapshot = session.userDecisionSnapshot!
+          const decision = snapshot.decisions[0]!
+          return {
+            sessions: {
+              ...state.sessions,
+              [ACTIVE_TAB]: {
+                ...session,
+                userDecisionSnapshot: {
+                  ...snapshot,
+                  ...(reason === 'legacy_route_unavailable'
+                    ? { userDecisionResponseProtocol: undefined }
+                    : {}),
+                  decisions: [{
+                    ...decision,
+                    ...(reason === 'conflicted' ? { conflicted: true } : {}),
+                    ...(reason === 'legacy_route_unavailable'
+                      ? { responseCapability: undefined }
+                      : {}),
+                  }],
+                },
+              },
+            },
+          }
+        })
+      })
+      render(<AskUserQuestion toolUseId={decisionId} input={{}} />)
+      const decisionSendsBefore = sendMock.mock.calls.filter(([, message]) =>
+        (message as { type?: string }).type === 'user_decision_response').length
+
+      fireEvent.click(screen.getByRole('button', { name: /refresh question/i }))
+
+      expect(forceReconnectMock).toHaveBeenCalledWith(ACTIVE_TAB)
+      expect(sendMock.mock.calls.filter(([, message]) =>
+        (message as { type?: string }).type === 'user_decision_response'))
+        .toHaveLength(decisionSendsBefore)
+      expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+    },
+  )
+
+  it('offers refresh only on the latest blocked Ask in one authoritative snapshot', () => {
+    const olderId = 'older-snapshot-blocked'
+    const latestId = 'latest-snapshot-blocked'
+    const makeDecision = (decisionId: string) => ({
+      decisionId,
+      semanticState: { status: 'open' as const },
+      runtimeBinding: { status: 'detached' as const },
+      responseCapability: { status: 'orphaned_recovery' as const },
+      response: null,
+      input: { question: `Question ${decisionId}?`, options: [{ label: 'A' }] },
+      inputSource: 'transcript' as const,
+      conflicted: true,
+    })
+    const older = makeDecision(olderId)
+    const latest = makeDecision(latestId)
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          userDecisionResponseProtocol: 'orphaned-permission-v1',
+          decisions: [older, latest],
+        },
+      } as never)
+    })
+    const { rerender } = render(
+      <AskUserQuestion toolUseId={olderId} input={older.input} />,
+    )
+
+    expect(screen.queryByRole('button', { name: /refresh question/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^A$/ })).toHaveProperty('disabled', true)
+
+    rerender(<AskUserQuestion toolUseId={latestId} input={latest.input} />)
+    const decisionSendsBefore = sendMock.mock.calls.filter(([, message]) =>
+      (message as { type?: string }).type === 'user_decision_response').length
+    fireEvent.click(screen.getByRole('button', { name: /refresh question/i }))
+
+    expect(forceReconnectMock).toHaveBeenCalledWith(ACTIVE_TAB)
+    expect(sendMock.mock.calls.filter(([, message]) =>
+      (message as { type?: string }).type === 'user_decision_response'))
+      .toHaveLength(decisionSendsBefore)
+  })
+
+  it('keeps a historical legacy blocked Ask read-only', () => {
+    const decisionId = 'historical-legacy-blocked'
+    const input = { question: 'Old question?', options: [{ label: 'A' }] }
+    act(() => {
+      useChatStore.setState((state) => ({
+        sessions: {
+          ...state.sessions,
+          [ACTIVE_TAB]: {
+            ...state.sessions[ACTIVE_TAB]!,
+            messages: [{
+              id: 'historical-ask-message',
+              type: 'tool_use',
+              toolName: 'AskUserQuestion',
+              toolUseId: decisionId,
+              input,
+              timestamp: 1,
+            }],
+            pendingPermission: null,
+            pendingPermissions: {},
+            userDecisionSnapshot: undefined,
+          },
+        },
+      }))
+    })
+
+    render(<AskUserQuestion toolUseId={decisionId} input={input} />)
+
+    expect(screen.queryByRole('button', { name: /refresh question/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^A$/ })).toHaveProperty('disabled', true)
+    expect(forceReconnectMock).not.toHaveBeenCalled()
   })
 
   it('resyncs through reconnect without resubmitting the frozen answer', () => {
