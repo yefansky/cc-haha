@@ -4196,6 +4196,214 @@ describe('chatStore history mapping', () => {
     expect(pending?.responseState).toBe('submitting')
   })
 
+  describe('legacy Ask response watchdog', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+      forceReconnectMock.mockClear()
+    })
+
+    afterEach(() => {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    })
+
+    const receiveLegacyAsk = (
+      requestId = 'legacy-watchdog-request',
+      toolUseId = 'legacy-watchdog-tool',
+    ) => {
+      useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_request',
+        requestId,
+        toolName: 'AskUserQuestion',
+        toolUseId,
+        input: { questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }] },
+      })
+    }
+
+    it('offers resync exactly at 10 seconds without sending or reconnecting', () => {
+      useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+      receiveLegacyAsk()
+      const store = useChatStore.getState()
+      expect(store.respondToPermission(TEST_SESSION_ID, 'legacy-watchdog-request', true))
+        .toBe('dispatched')
+      const sendsAtDispatch = sendMock.mock.calls.slice()
+
+      vi.advanceTimersByTime(9_999)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+        'legacy-watchdog-tool',
+      ).mode).toBe('syncing')
+
+      vi.advanceTimersByTime(1)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+        'legacy-watchdog-tool',
+      ).mode).toBe('resync')
+      expect(sendMock.mock.calls).toEqual(sendsAtDispatch)
+      expect(forceReconnectMock).not.toHaveBeenCalled()
+
+      expect(store.resyncUserDecision(TEST_SESSION_ID, 'legacy-watchdog-tool'))
+        .toBe('dispatched')
+      expect(forceReconnectMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not let a duplicate permission event cancel or extend the original deadline', () => {
+      useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+      receiveLegacyAsk()
+      useChatStore.getState().respondToPermission(
+        TEST_SESSION_ID,
+        'legacy-watchdog-request',
+        true,
+      )
+      const sendsAtDispatch = sendMock.mock.calls.slice()
+
+      vi.advanceTimersByTime(5_000)
+      receiveLegacyAsk()
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.pendingPermissions?.['legacy-watchdog-request']?.responseState).toBe('submitting')
+
+      vi.advanceTimersByTime(5_000)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+        'legacy-watchdog-tool',
+      ).mode).toBe('resync')
+      expect(sendMock.mock.calls).toEqual(sendsAtDispatch)
+      expect(forceReconnectMock).not.toHaveBeenCalled()
+    })
+
+    it('does not let a reused request id carry the old deadline onto another Ask', () => {
+      useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+      receiveLegacyAsk()
+      useChatStore.getState().respondToPermission(
+        TEST_SESSION_ID,
+        'legacy-watchdog-request',
+        true,
+      )
+
+      vi.advanceTimersByTime(5_000)
+      receiveLegacyAsk('legacy-watchdog-request', 'legacy-watchdog-replacement')
+      vi.advanceTimersByTime(5_000)
+
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+        'legacy-watchdog-replacement',
+      )).toEqual({
+        mode: 'editing',
+        channel: 'legacy',
+        requestId: 'legacy-watchdog-request',
+      })
+      expect(forceReconnectMock).not.toHaveBeenCalled()
+    })
+
+    it('ignores an old deadline after a retry starts a new local attempt', () => {
+      useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+      receiveLegacyAsk()
+      const store = useChatStore.getState()
+      store.respondToPermission(TEST_SESSION_ID, 'legacy-watchdog-request', true)
+
+      vi.advanceTimersByTime(5_000)
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_response_failed',
+        requestId: 'legacy-watchdog-request',
+        permissionType: 'tool',
+        code: 'PERMISSION_DELIVERY_FAILED',
+        retryable: true,
+        message: 'retry',
+      })
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+        'legacy-watchdog-tool',
+      ).mode).toBe('editing')
+      store.respondToPermission(TEST_SESSION_ID, 'legacy-watchdog-request', true)
+
+      vi.advanceTimersByTime(5_000)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+        'legacy-watchdog-tool',
+      ).mode).toBe('syncing')
+      vi.advanceTimersByTime(5_000)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+        'legacy-watchdog-tool',
+      ).mode).toBe('resync')
+      expect(forceReconnectMock).not.toHaveBeenCalled()
+    })
+
+    it('ignores a disconnected deadline and lets a fresh legacy snapshot restore editing', () => {
+      useChatStore.setState({
+        sessions: { [TEST_SESSION_ID]: makeSession({ connectionState: 'disconnected' }) },
+      })
+      const store = useChatStore.getState()
+      store.connectToSession(TEST_SESSION_ID, {
+        prewarm: false,
+        applyRuntimeSelection: false,
+        minimalBootstrap: true,
+      })
+      const setConnectionState = connectionStateHandlers.get(TEST_SESSION_ID)!
+      setConnectionState('connected')
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: true,
+      })
+      receiveLegacyAsk()
+      expect(store.respondToPermission(TEST_SESSION_ID, 'legacy-watchdog-request', true))
+        .toBe('dispatched')
+
+      vi.advanceTimersByTime(5_000)
+      setConnectionState('reconnecting')
+      vi.advanceTimersByTime(3_000)
+      setConnectionState('connected')
+      vi.advanceTimersByTime(2_000)
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+        'legacy-watchdog-tool',
+      )).toEqual({ mode: 'syncing', frozen: false })
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.pendingPermissions?.['legacy-watchdog-request']?.responseState).toBe('submitting')
+
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: ['legacy-watchdog-request'],
+        computerUseRequestIds: [],
+        turnActive: true,
+      })
+
+      expect(selectAskUserDecisionInteraction(
+        useChatStore.getState().sessions[TEST_SESSION_ID],
+        'legacy-watchdog-tool',
+      )).toEqual({
+        mode: 'editing',
+        channel: 'legacy',
+        requestId: 'legacy-watchdog-request',
+      })
+      expect(forceReconnectMock).not.toHaveBeenCalled()
+    })
+
+    it('does not recreate a removed session and lets a fresh snapshot remove a missing request', () => {
+      useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
+      receiveLegacyAsk()
+      const store = useChatStore.getState()
+      store.respondToPermission(TEST_SESSION_ID, 'legacy-watchdog-request', true)
+
+      vi.advanceTimersByTime(5_000)
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: [],
+        computerUseRequestIds: [],
+        turnActive: true,
+      })
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]
+        ?.pendingPermissions).not.toHaveProperty('legacy-watchdog-request')
+
+      useChatStore.getState().disconnectSession(TEST_SESSION_ID)
+      vi.advanceTimersByTime(5_001)
+      expect(useChatStore.getState().sessions).not.toHaveProperty(TEST_SESSION_ID)
+      expect(forceReconnectMock).not.toHaveBeenCalled()
+    })
+  })
+
   it('restores a submitting AskUserQuestion after a retryable delivery failure', () => {
     useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession() } })
     const store = useChatStore.getState()

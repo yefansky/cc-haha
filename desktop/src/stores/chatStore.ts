@@ -98,7 +98,9 @@ export type PendingPermission = {
   input: unknown
   description?: string
   /** The response was handed to the local websocket manager, not yet accepted by the server. */
-  responseState?: 'submitting'
+  responseState?: 'submitting' | 'resync'
+  /** Correlates one local legacy delivery deadline without changing the wire protocol. */
+  responseAttemptId?: string
 }
 
 export type PermissionResponseDispatchResult = 'dispatched' | 'not-dispatched'
@@ -491,6 +493,19 @@ function selectModernUserDecisionInteraction(
   return { mode: 'syncing', frozen: true }
 }
 
+function selectLegacyUserDecisionInteraction(
+  permission: PendingPermission,
+  attempt: UserDecisionResponseAttempt | undefined,
+  connectionSnapshotReady: boolean | undefined,
+): AskUserDecisionInteraction {
+  if (connectionSnapshotReady === false) return { mode: 'syncing', frozen: false }
+  if (permission.responseState === 'resync') return { mode: 'resync' }
+  if (attempt || permission.responseState === 'submitting') {
+    return { mode: 'syncing', frozen: true }
+  }
+  return { mode: 'editing', channel: 'legacy', requestId: permission.requestId }
+}
+
 /**
  * The only desktop AskUserQuestion projection. R2 bindings join by requestId;
  * original/scoped tool ids have already been resolved by the server read model.
@@ -522,11 +537,11 @@ export function selectAskUserDecisionProjection(
           decision: null,
           pendingRequest: permission,
           terminal: false,
-          interaction: attempt || permission.responseState === 'submitting'
-            ? { mode: 'syncing', frozen: true }
-            : session.connectionSnapshotReady === false
-              ? { mode: 'syncing', frozen: false }
-              : { mode: 'editing', channel: 'legacy', requestId: permission.requestId },
+          interaction: selectLegacyUserDecisionInteraction(
+            permission,
+            attempt,
+            session.connectionSnapshotReady,
+          ),
           ...(attempt ? { deliveryState: attempt.state } : {}),
           ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
         }
@@ -564,14 +579,14 @@ export function selectAskUserDecisionProjection(
         ? { mode: 'blocked', reason: 'conflicted' }
         : responseProtocolAvailable
           ? selectModernUserDecisionInteraction(attempt)
-          : attempt
-            ? { mode: 'syncing', frozen: true }
-            : validPendingRequest
-              ? {
-                  mode: 'editing',
-                  channel: 'legacy',
-                  requestId: validPendingRequest.requestId,
-                }
+          : validPendingRequest
+            ? selectLegacyUserDecisionInteraction(
+                validPendingRequest,
+                attempt,
+                session.connectionSnapshotReady,
+              )
+            : attempt
+              ? { mode: 'syncing', frozen: true }
               : { mode: 'blocked', reason: 'legacy_route_unavailable' }
     return {
       source: 'server',
@@ -600,13 +615,11 @@ export function selectAskUserDecisionProjection(
     const attempt = session.userDecisionResponseAttempts?.[permission.toolUseId]
     const interaction: AskUserDecisionInteraction = responseProtocolAvailable
       ? selectModernUserDecisionInteraction(attempt)
-      : attempt || permission.responseState === 'submitting'
-        ? { mode: 'syncing', frozen: true }
-        : {
-            mode: 'editing',
-            channel: 'legacy',
-            requestId: permission.requestId,
-          }
+      : selectLegacyUserDecisionInteraction(
+          permission,
+          attempt,
+          session.connectionSnapshotReady,
+        )
     views.push({
       source: 'legacy',
       toolUseId: permission.toolUseId,
@@ -1853,6 +1866,43 @@ function shouldPrewarmSession(sessionId: string): boolean {
 
 const USER_DECISION_WATCHDOG_MS = 10_000
 
+function scheduleLegacyAskPermissionWatchdog(
+  set: StoreApi<ChatStore>['setState'],
+  sessionId: string,
+  requestId: string,
+  toolUseId: string | undefined,
+  responseAttemptId: string,
+): void {
+  setTimeout(() => {
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (session) => {
+        const pendingPermissions = getPendingPermissionRecord(session)
+        const current = pendingPermissions[requestId]
+        if (
+          session.connectionState !== 'connected' ||
+          session.connectionSnapshotReady === false ||
+          current?.toolName !== 'AskUserQuestion' ||
+          current.toolUseId !== toolUseId ||
+          current.responseState !== 'submitting' ||
+          current.responseAttemptId !== responseAttemptId
+        ) return {}
+
+        const resyncPermission: PendingPermission = {
+          ...current,
+          responseState: 'resync',
+        }
+        pendingPermissions[requestId] = resyncPermission
+        return {
+          pendingPermissions,
+          pendingPermission: session.pendingPermission?.requestId === requestId
+            ? resyncPermission
+            : session.pendingPermission ?? resyncPermission,
+        }
+      }),
+    }))
+  }, USER_DECISION_WATCHDOG_MS)
+}
+
 function scheduleUserDecisionWatchdog(
   set: StoreApi<ChatStore>['setState'],
   sessionId: string,
@@ -2200,6 +2250,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     if (keepUntilResolved) {
       if (!wsManager.sendIfOpen(sessionId, response)) return 'not-dispatched'
+      const responseAttemptId = crypto.randomUUID()
+      let watchdogArmed = false
       set((s) => ({
         sessions: updateSessionIn(s.sessions, sessionId, (session) => {
           const pendingPermissions = getPendingPermissionRecord(session)
@@ -2209,7 +2261,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const submittingPermission: PendingPermission = {
             ...current,
             responseState: 'submitting',
+            responseAttemptId,
           }
+          watchdogArmed = true
           pendingPermissions[requestId] = submittingPermission
           return {
             pendingPermissions,
@@ -2220,6 +2274,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
         }),
       }))
+      if (watchdogArmed) {
+        scheduleLegacyAskPermissionWatchdog(
+          set,
+          sessionId,
+          requestId,
+          pendingPermission.toolUseId,
+          responseAttemptId,
+        )
+      }
       return 'dispatched'
     }
 
@@ -3531,14 +3594,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const askUserQuestionToolUseId =
             msg.toolName === 'AskUserQuestion' ? msg.toolUseId : undefined
           const previousPermission = getPendingPermissionRecord(s)[msg.requestId]
+          const preservesResponseAttempt =
+            previousPermission?.toolName === msg.toolName &&
+            previousPermission.toolUseId === msg.toolUseId
           const pendingPermission: PendingPermission = {
             requestId: msg.requestId,
             toolName: msg.toolName,
             toolUseId: msg.toolUseId,
             input: msg.input,
             description: msg.description,
-            ...(previousPermission?.responseState
+            ...(preservesResponseAttempt && previousPermission.responseState
               ? { responseState: previousPermission.responseState }
+              : {}),
+            ...(preservesResponseAttempt && previousPermission.responseAttemptId
+              ? { responseAttemptId: previousPermission.responseAttemptId }
               : {}),
           }
           const pendingPermissions = {
@@ -3719,7 +3788,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           ) return {}
 
           if (msg.retryable) {
-            const { responseState: _responseState, ...retryablePermission } = current
+            const {
+              responseState: _responseState,
+              responseAttemptId: _responseAttemptId,
+              ...retryablePermission
+            } = current
             pendingPermissions[msg.requestId] = retryablePermission
             return {
               pendingPermissions,
@@ -3791,7 +3864,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const toolRequestIds = new Set(msg.toolRequestIds)
           const legacyFilteredPermissions = Object.fromEntries(
             Object.entries(getPendingPermissionRecord(session))
-              .filter(([requestId]) => toolRequestIds.has(requestId)),
+              .filter(([requestId]) => toolRequestIds.has(requestId))
+              .map(([requestId, permission]) => {
+                if (
+                  !freshConnectionSnapshot ||
+                  msg.userDecisions !== undefined ||
+                  permission.toolName !== 'AskUserQuestion'
+                ) {
+                  return [requestId, permission]
+                }
+                const {
+                  responseState: _responseState,
+                  responseAttemptId: _responseAttemptId,
+                  ...editablePermission
+                } = permission
+                return [requestId, editablePermission]
+              }),
           )
           const pendingPermissions = reconcileAskPermissionsWithUserDecisions(
             session,
