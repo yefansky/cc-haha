@@ -255,6 +255,76 @@ describe('ContextUsageIndicator request behavior', () => {
     })
   })
 
+  it('shows an estimated percentage while the server refreshes live context', async () => {
+    sessionsApiMock.getInspection.mockResolvedValueOnce({
+      ...baseInspection,
+      context: undefined,
+      contextEstimate: { ...baseInspection.context, percentage: 18 },
+      contextStatus: { source: 'transcript', freshness: 'estimated', refreshing: true },
+    })
+    render(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />)
+
+    await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('18%'))
+    expect(screen.queryByLabelText('Context usage loading')).not.toBeInTheDocument()
+  })
+
+  it('keeps same-identity context visible when the server reports pending refresh', async () => {
+    sessionsApiMock.getInspection
+      .mockResolvedValueOnce(baseInspection)
+      .mockResolvedValueOnce({
+        ...baseInspection,
+        context: undefined,
+        contextStatus: { source: 'none', freshness: 'pending', refreshing: true },
+      })
+      .mockRejectedValueOnce(new Error('refresh failed'))
+    render(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />)
+    await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%'))
+
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+    await waitFor(() => expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
+    expect(screen.queryByLabelText('Context usage loading')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+    await waitFor(() => expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(3))
+    expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
+    expect(screen.queryByLabelText('Context usage loading')).not.toBeInTheDocument()
+  })
+
+  it('settles first-load pending into a stable placeholder instead of a spinner', async () => {
+    sessionsApiMock.getInspection
+      .mockResolvedValueOnce({
+        active: true,
+        status: baseInspection.status,
+        contextStatus: { source: 'none', freshness: 'pending', refreshing: true },
+      })
+      .mockRejectedValueOnce(new Error('refresh failed'))
+    render(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />)
+
+    expect(await screen.findByLabelText('Context usage not calculated')).toHaveTextContent('--')
+    expect(screen.queryByLabelText('Context usage loading')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+    expect(await screen.findByLabelText('Context usage unavailable')).toHaveTextContent('--')
+    expect(screen.queryByLabelText('Context usage loading')).not.toBeInTheDocument()
+  })
+
+  it('allows an unavailable context response to be retried by clicking the indicator', async () => {
+    sessionsApiMock.getInspection
+      .mockResolvedValueOnce({
+        active: true,
+        status: baseInspection.status,
+        contextStatus: { source: 'none', freshness: 'unavailable', refreshing: false },
+      })
+      .mockResolvedValueOnce(baseInspection)
+    render(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />)
+    expect(await screen.findByLabelText('Context usage unavailable')).toHaveTextContent('--')
+
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+    await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%'))
+    expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps the last context visible while the switched runtime is still starting', async () => {
     const nextInspection = deferred<typeof baseInspection>()
     sessionsApiMock.getInspection

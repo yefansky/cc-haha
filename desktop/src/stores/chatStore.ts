@@ -1,4 +1,4 @@
-import { create } from 'zustand'
+import { create, type StoreApi } from 'zustand'
 import { wsManager } from '../api/websocket'
 import { sessionsApi } from '../api/sessions'
 import { useTeamStore } from './teamStore'
@@ -40,6 +40,9 @@ import type {
   ServerMessage,
   TokenUsage,
   PermissionUpdate,
+  UserDecisionResponse,
+  UserDecisionSnapshot,
+  UserDecisionSnapshotEntry,
 } from '../types/chat'
 import type {
   SlashCommandKind,
@@ -66,6 +69,7 @@ export type RepositoryLaunchDraftState = {
 
 export type QueuedUserMessage = {
   id: string
+  messageUuid: string
   content: string
   attachments?: AttachmentRef[]
   displayContent: string
@@ -93,7 +97,38 @@ export type PendingPermission = {
   toolUseId?: string
   input: unknown
   description?: string
+  /** The response was handed to the local websocket manager, not yet accepted by the server. */
+  responseState?: 'submitting' | 'resync'
+  /** Correlates one local legacy delivery deadline without changing the wire protocol. */
+  responseAttemptId?: string
 }
+
+export type PermissionResponseDispatchResult = 'dispatched' | 'not-dispatched'
+
+export type UserDecisionResponseAttempt = Readonly<{
+  attemptId: string
+  response: UserDecisionResponse
+  state:
+    | 'submitting'
+    | 'accepted'
+    | 'already_resolved'
+    | 'indeterminate'
+    | 'retryable_failed'
+    | 'rejected'
+  error?: Readonly<{ code: string; message: string }>
+  nextAction?: UserDecisionFailureNextAction
+  /** True after the user explicitly rechecks this exact frozen attempt. */
+  manualVerifyUsed?: boolean
+}>
+
+type UserDecisionResponseAttempts = Record<string, UserDecisionResponseAttempt>
+
+type UserDecisionFailureNextAction =
+  | 'edit_response'
+  | 'retry_new_attempt'
+  | 'verify_same_attempt'
+  | 'resync'
+  | 'blocked'
 
 type PendingPermissions = Record<string, PendingPermission>
 
@@ -110,6 +145,13 @@ export type PerSessionState = {
   connectionState: ConnectionState
   /** True after the server's authoritative reconnect snapshot has arrived. */
   connectionSnapshotReady?: boolean
+  /** Present only when the connected server supplies the R2 decision projection. */
+  userDecisionSnapshot?: UserDecisionSnapshot
+  /**
+   * Transport outbox bounded to this session's open decisions. This is not a
+   * semantic registry; truth remains in userDecisionSnapshot/tool_result.
+   */
+  userDecisionResponseAttempts?: UserDecisionResponseAttempts
   historyStatus?: 'idle' | 'loading' | 'ready' | 'error'
   historyError?: string | null
   streamingText: string
@@ -185,6 +227,7 @@ const DEFAULT_SESSION_STATE: PerSessionState = {
   activeThinkingId: null,
   pendingPermission: null,
   pendingPermissions: {},
+  userDecisionResponseAttempts: {},
   pendingComputerUsePermission: null,
   pendingComputerUsePermissions: {},
   tokenUsage: { input_tokens: 0, output_tokens: 0 },
@@ -230,6 +273,123 @@ function getPendingPermissionRecord(
     pendingPermissions[session.pendingPermission.requestId] = session.pendingPermission
   }
   return pendingPermissions
+}
+
+function freezeUserDecisionResponse(response: UserDecisionResponse): UserDecisionResponse {
+  if (response.kind === 'clarify') {
+    return Object.freeze({ kind: 'clarify', message: response.message })
+  }
+  return Object.freeze({
+    kind: 'answer',
+    answers: Object.freeze({ ...response.answers }),
+  })
+}
+
+type UserDecisionResponseResultMessage = Extract<
+  ServerMessage,
+  { type: 'user_decision_response_result' }
+>
+
+function isUserDecisionResponseResultMessage(
+  value: unknown,
+): value is UserDecisionResponseResultMessage {
+  if (!value || typeof value !== 'object') return false
+  const message = value as Record<string, unknown>
+  if (
+    message.type !== 'user_decision_response_result' ||
+    typeof message.decisionId !== 'string' ||
+    typeof message.attemptId !== 'string'
+  ) return false
+
+  if (message.state === 'accepted') {
+    return message.nextAction === undefined &&
+      (message.route === 'runtime_callback' || message.route === 'orphaned_recovery')
+  }
+  if (message.state === 'already_resolved') return message.nextAction === undefined
+  if (
+    message.state !== 'retryable_failed' &&
+    message.state !== 'indeterminate' &&
+    message.state !== 'rejected'
+  ) return false
+
+  if (!message.error || typeof message.error !== 'object') return false
+  const error = message.error as Record<string, unknown>
+  if (typeof error.code !== 'string' || typeof error.message !== 'string') return false
+  if (message.state === 'retryable_failed') return message.nextAction === 'retry_new_attempt'
+  if (message.state === 'indeterminate') return message.nextAction === 'verify_same_attempt'
+  return message.nextAction === 'edit_response' ||
+    message.nextAction === 'resync' ||
+    message.nextAction === 'blocked'
+}
+
+function getUserDecisionResponseResultTarget(
+  value: unknown,
+): { decisionId: string; attemptId: string } | null {
+  if (!value || typeof value !== 'object') return null
+  const message = value as Record<string, unknown>
+  return message.type === 'user_decision_response_result' &&
+    typeof message.decisionId === 'string' &&
+    typeof message.attemptId === 'string'
+    ? { decisionId: message.decisionId, attemptId: message.attemptId }
+    : null
+}
+
+function reconcileUserDecisionResponseAttempts(
+  attempts: UserDecisionResponseAttempts | undefined,
+  snapshot: UserDecisionSnapshot | undefined,
+  freshConnectionSnapshot = false,
+): UserDecisionResponseAttempts {
+  if (!attempts) return {}
+  if (!snapshot?.transcriptEvidenceComplete) return attempts
+  const openDecisionIds = new Set(
+    snapshot.decisions
+      .filter((decision) => decision.semanticState.status === 'open')
+      .map((decision) => decision.decisionId),
+  )
+  return Object.fromEntries(
+    Object.entries(attempts).filter(([decisionId, attempt]) =>
+      openDecisionIds.has(decisionId) &&
+      !(freshConnectionSnapshot && attempt.nextAction === 'resync')),
+  )
+}
+
+function resyncInFlightUserDecisionAttempts(
+  attempts: UserDecisionResponseAttempts | undefined,
+  error?: Readonly<{ code: string; message: string }>,
+): UserDecisionResponseAttempts {
+  if (!attempts) return {}
+  let changed = false
+  const reconciled = Object.fromEntries(
+    Object.entries(attempts).map(([decisionId, attempt]) => {
+      if (
+        attempt.state !== 'submitting' &&
+        attempt.state !== 'accepted' &&
+        attempt.state !== 'indeterminate'
+      ) return [decisionId, attempt]
+      changed = true
+      return [decisionId, Object.freeze({
+        attemptId: attempt.attemptId,
+        response: attempt.response,
+        state: 'rejected' as const,
+        nextAction: 'resync' as const,
+        ...(error ? { error } : {}),
+        ...(attempt.manualVerifyUsed ? { manualVerifyUsed: true } : {}),
+      })]
+    }),
+  )
+  return changed ? reconciled : attempts
+}
+
+function removeUserDecisionResponseAttempts(
+  attempts: UserDecisionResponseAttempts | undefined,
+  decisionIds: readonly (string | undefined)[],
+): UserDecisionResponseAttempts {
+  if (!attempts) return {}
+  const ids = new Set(decisionIds.filter((id): id is string => Boolean(id)))
+  if (ids.size === 0 || ![...ids].some((id) => attempts[id])) return attempts
+  return Object.fromEntries(
+    Object.entries(attempts).filter(([decisionId]) => !ids.has(decisionId)),
+  )
 }
 
 function getPendingComputerUsePermissionRecord(
@@ -289,6 +449,380 @@ export function getPendingPermission(
   )
 }
 
+export type AskUserDecisionInteraction =
+  | { mode: 'editing'; channel: 'modern' }
+  | { mode: 'editing'; channel: 'legacy'; requestId: string }
+  | { mode: 'retryable' }
+  | { mode: 'verifiable' }
+  | { mode: 'resync' }
+  | { mode: 'syncing'; frozen: boolean }
+  | { mode: 'settled' }
+  | {
+      mode: 'blocked'
+      reason: 'conflicted' | 'legacy_route_unavailable' | 'delivery_rejected'
+      recoverable: boolean
+    }
+
+export type AskUserDecisionView = {
+  source: 'server' | 'legacy'
+  toolUseId: string
+  input: unknown
+  decision: UserDecisionSnapshotEntry | null
+  pendingRequest: PendingPermission | null
+  terminal: boolean
+  interaction: AskUserDecisionInteraction
+  deliveryState?: UserDecisionResponseAttempt['state']
+  error?: string
+}
+
+export type AskUserDecisionProjection = {
+  source: 'server' | 'legacy'
+  active: AskUserDecisionView | null
+  views: AskUserDecisionView[]
+}
+
+function selectModernUserDecisionInteraction(
+  attempt: UserDecisionResponseAttempt | undefined,
+  blockedRecoverable = false,
+): AskUserDecisionInteraction {
+  if (!attempt) return { mode: 'editing', channel: 'modern' }
+  if (attempt.state === 'already_resolved') return { mode: 'settled' }
+  if (attempt.nextAction === 'edit_response') return { mode: 'editing', channel: 'modern' }
+  if (attempt.nextAction === 'retry_new_attempt') return { mode: 'retryable' }
+  if (attempt.nextAction === 'verify_same_attempt') return { mode: 'verifiable' }
+  if (attempt.nextAction === 'resync') return { mode: 'resync' }
+  if (attempt.nextAction === 'blocked') {
+    return {
+      mode: 'blocked',
+      reason: 'delivery_rejected',
+      recoverable: blockedRecoverable,
+    }
+  }
+  return { mode: 'syncing', frozen: true }
+}
+
+function selectLegacyUserDecisionInteraction(
+  permission: PendingPermission,
+  attempt: UserDecisionResponseAttempt | undefined,
+  connectionSnapshotReady: boolean | undefined,
+): AskUserDecisionInteraction {
+  if (connectionSnapshotReady === false) return { mode: 'syncing', frozen: false }
+  if (permission.responseState === 'resync') return { mode: 'resync' }
+  if (attempt || permission.responseState === 'submitting') {
+    return { mode: 'syncing', frozen: true }
+  }
+  return { mode: 'editing', channel: 'legacy', requestId: permission.requestId }
+}
+
+/**
+ * The only desktop AskUserQuestion projection. R2 bindings join by requestId;
+ * original/scoped tool ids have already been resolved by the server read model.
+ */
+export function selectAskUserDecisionProjection(
+  session: Pick<
+    PerSessionState,
+    | 'messages'
+    | 'pendingPermission'
+    | 'pendingPermissions'
+    | 'connectionSnapshotReady'
+    | 'userDecisionSnapshot'
+    | 'userDecisionResponseAttempts'
+  > | undefined,
+): AskUserDecisionProjection {
+  if (!session) return { source: 'legacy', active: null, views: [] }
+
+  const pendingPermissions = getPendingPermissionRecord(session)
+  const snapshot = session.userDecisionSnapshot
+  if (!snapshot) {
+    const views = Object.values(pendingPermissions)
+      .filter((permission) => permission.toolName === 'AskUserQuestion' && permission.toolUseId)
+      .map((permission): AskUserDecisionView => {
+        const attempt = session.userDecisionResponseAttempts?.[permission.toolUseId!]
+        return {
+          source: 'legacy',
+          toolUseId: permission.toolUseId!,
+          input: permission.input,
+          decision: null,
+          pendingRequest: permission,
+          terminal: false,
+          interaction: selectLegacyUserDecisionInteraction(
+            permission,
+            attempt,
+            session.connectionSnapshotReady,
+          ),
+          ...(attempt ? { deliveryState: attempt.state } : {}),
+          ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
+        }
+      })
+    return {
+      source: 'legacy',
+      active: selectLatestActiveAskView(session.messages, views),
+      views,
+    }
+  }
+
+  const claimedRequestIds = new Set<string>()
+  const snapshotDecisionIds = new Set(snapshot.decisions.map((decision) => decision.decisionId))
+  const responseProtocolAvailable =
+    snapshot.userDecisionResponseProtocol === 'orphaned-permission-v1'
+  const recoverableBlockedDecisionId = session.connectionSnapshotReady === true
+    ? [...snapshot.decisions].reverse().find((decision) =>
+        decision.semanticState.status === 'open' &&
+        !hasSuccessfulToolResultEvidence(session.messages, decision.decisionId))
+      ?.decisionId
+    : undefined
+  const views = snapshot.decisions.map((decision): AskUserDecisionView => {
+    const attachedRequestId = decision.runtimeBinding.status === 'attached'
+      ? decision.runtimeBinding.requestId
+      : null
+    if (attachedRequestId) claimedRequestIds.add(attachedRequestId)
+    const terminal = decision.semanticState.status !== 'open'
+    const matchingPendingRequests = terminal || decision.conflicted
+      ? []
+      : Object.values(pendingPermissions).filter((permission) =>
+        permission.toolName === 'AskUserQuestion' &&
+        permission.toolUseId === decision.decisionId)
+    const validPendingRequest = matchingPendingRequests.length === 1
+      ? matchingPendingRequests[0]!
+      : null
+    if (validPendingRequest) claimedRequestIds.add(validPendingRequest.requestId)
+    const attempt = session.userDecisionResponseAttempts?.[decision.decisionId]
+    const blockedRecoverable = decision.decisionId === recoverableBlockedDecisionId
+    const interaction: AskUserDecisionInteraction = terminal
+      ? { mode: 'settled' }
+      : decision.conflicted
+        ? { mode: 'blocked', reason: 'conflicted', recoverable: blockedRecoverable }
+        : responseProtocolAvailable
+          ? selectModernUserDecisionInteraction(attempt, blockedRecoverable)
+          : validPendingRequest
+            ? selectLegacyUserDecisionInteraction(
+                validPendingRequest,
+                attempt,
+                session.connectionSnapshotReady,
+              )
+            : attempt
+              ? { mode: 'syncing', frozen: true }
+              : {
+                  mode: 'blocked',
+                  reason: 'legacy_route_unavailable',
+                  recoverable: blockedRecoverable,
+                }
+    return {
+      source: 'server',
+      toolUseId: decision.decisionId,
+      input: decision.input,
+      decision,
+      pendingRequest: validPendingRequest,
+      terminal,
+      interaction,
+      ...(attempt ? { deliveryState: attempt.state } : {}),
+      ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
+    }
+  })
+
+  // Permission events produced after the atomic snapshot are ordinary live
+  // increments. They keep the established path until the next snapshot.
+  for (const permission of Object.values(pendingPermissions)) {
+    if (
+      permission.toolName !== 'AskUserQuestion' ||
+      !permission.toolUseId ||
+      claimedRequestIds.has(permission.requestId) ||
+      snapshotDecisionIds.has(permission.toolUseId)
+    ) {
+      continue
+    }
+    const attempt = session.userDecisionResponseAttempts?.[permission.toolUseId]
+    const interaction: AskUserDecisionInteraction = responseProtocolAvailable
+      ? selectModernUserDecisionInteraction(attempt)
+      : selectLegacyUserDecisionInteraction(
+          permission,
+          attempt,
+          session.connectionSnapshotReady,
+        )
+    views.push({
+      source: 'legacy',
+      toolUseId: permission.toolUseId,
+      input: permission.input,
+      decision: null,
+      pendingRequest: permission,
+      terminal: false,
+      interaction,
+      ...(attempt ? { deliveryState: attempt.state } : {}),
+      ...(attempt?.error?.message ? { error: attempt.error.message } : {}),
+    })
+  }
+
+  return {
+    source: 'server',
+    active: selectLatestActiveAskView(session.messages, views),
+    views,
+  }
+}
+
+function hasToolResultEvidence(messages: UIMessage[], decisionId: string): boolean {
+  return messages.some((message) =>
+    message.type === 'tool_result' &&
+    (message.toolUseId === decisionId || message.originalToolUseId === decisionId))
+}
+
+function isLatestUnresolvedLocalAsk(messages: UIMessage[], decisionId: string): boolean {
+  const resolvedIds = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue
+    resolvedIds.add(message.toolUseId)
+    if (message.originalToolUseId) resolvedIds.add(message.originalToolUseId)
+  }
+  const candidateIds: string[] = []
+  for (const message of messages) {
+    if (
+      message.type === 'tool_use' &&
+      message.toolName === 'AskUserQuestion' &&
+      !message.parentToolUseId &&
+      !resolvedIds.has(message.toolUseId)
+    ) {
+      candidateIds.push(message.toolUseId)
+    }
+  }
+  if (candidateIds.filter((candidateId) => candidateId === decisionId).length !== 1) {
+    return false
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (
+      message?.type !== 'tool_use' ||
+      message.toolName !== 'AskUserQuestion' ||
+      message.parentToolUseId ||
+      resolvedIds.has(message.toolUseId)
+    ) {
+      continue
+    }
+    return message.toolUseId === decisionId
+  }
+  return false
+}
+
+function hasSuccessfulToolResultEvidence(
+  messages: UIMessage[],
+  decisionId: string,
+): boolean {
+  return messages.some((message) =>
+    message.type === 'tool_result' &&
+    message.isError !== true &&
+    (message.toolUseId === decisionId || message.originalToolUseId === decisionId))
+}
+
+function selectLatestActiveAskView(
+  messages: UIMessage[],
+  views: AskUserDecisionView[],
+): AskUserDecisionView | null {
+  const activeViewsById = new Map(
+    views
+      .filter((view) =>
+        view.interaction.mode !== 'settled' &&
+        view.interaction.mode !== 'blocked' &&
+        !hasSuccessfulToolResultEvidence(messages, view.toolUseId))
+      .map((view) => [view.toolUseId, view]),
+  )
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.type !== 'tool_use' || message.toolName !== 'AskUserQuestion') continue
+    const candidate = activeViewsById.get(message.toolUseId)
+    if (candidate) return candidate
+  }
+  return [...views].reverse().find((view) => activeViewsById.has(view.toolUseId)) ?? null
+}
+
+/**
+ * The single interaction decision consumed by both the Ask card and dispatch
+ * actions. An incomplete modern snapshot may omit the latest locally observed
+ * Ask; the server fresh-reads transcript evidence when that user intent arrives.
+ */
+export function selectAskUserDecisionInteraction(
+  session: Pick<
+    PerSessionState,
+    | 'messages'
+    | 'pendingPermission'
+    | 'pendingPermissions'
+    | 'connectionSnapshotReady'
+    | 'userDecisionSnapshot'
+    | 'userDecisionResponseAttempts'
+  > | undefined,
+  decisionId: string,
+): AskUserDecisionInteraction {
+  if (!session) {
+    return {
+      mode: 'blocked',
+      reason: 'legacy_route_unavailable',
+      recoverable: false,
+    }
+  }
+  if (hasSuccessfulToolResultEvidence(session.messages, decisionId)) {
+    return { mode: 'settled' }
+  }
+  const view = selectAskUserDecisionProjection(session).views.find(
+    (candidate) => candidate.toolUseId === decisionId,
+  )
+  if (view) return view.interaction
+
+  if (
+    session.userDecisionSnapshot?.userDecisionResponseProtocol ===
+      'orphaned-permission-v1' &&
+    session.userDecisionSnapshot.transcriptEvidenceComplete === false &&
+    isLatestUnresolvedLocalAsk(session.messages, decisionId)
+  ) {
+    return selectModernUserDecisionInteraction(
+      session.userDecisionResponseAttempts?.[decisionId],
+    )
+  }
+
+  return {
+    mode: 'blocked',
+    reason: 'legacy_route_unavailable',
+    recoverable: false,
+  }
+}
+
+function reconcileAskPermissionsWithUserDecisions(
+  session: Pick<PerSessionState, 'messages'>,
+  pendingPermissions: PendingPermissions,
+  snapshot: UserDecisionSnapshot | undefined,
+): PendingPermissions {
+  if (!snapshot) return pendingPermissions
+
+  const decisionsByRequestId = new Map<string, UserDecisionSnapshotEntry[]>()
+  for (const decision of snapshot.decisions) {
+    if (decision.runtimeBinding.status !== 'attached') continue
+    const candidates = decisionsByRequestId.get(decision.runtimeBinding.requestId) ?? []
+    candidates.push(decision)
+    decisionsByRequestId.set(decision.runtimeBinding.requestId, candidates)
+  }
+
+  const reconciled: PendingPermissions = {}
+  for (const [requestId, permission] of Object.entries(pendingPermissions)) {
+    if (permission.toolName !== 'AskUserQuestion') {
+      reconciled[requestId] = permission
+      continue
+    }
+    const candidates = decisionsByRequestId.get(permission.requestId) ?? []
+    if (candidates.length !== 1) continue
+    const decision = candidates[0]!
+    if (
+      decision.semanticState.status !== 'open' ||
+      decision.conflicted ||
+      permission.toolUseId !== decision.decisionId ||
+      hasToolResultEvidence(session.messages, decision.decisionId)
+    ) {
+      continue
+    }
+    reconciled[requestId] = {
+      ...permission,
+      input: decision.input,
+      ...(decision.description ? { description: decision.description } : {}),
+    }
+  }
+  return reconciled
+}
+
 type ChatStore = {
   sessions: Record<string, PerSessionState>
 
@@ -311,6 +845,7 @@ type ChatStore = {
       displayAttachments?: AttachmentRef[]
       hideDisplayContent?: boolean
       replaceFromMessageId?: string
+      messageUuid?: string
     },
   ) => void
   respondToPermission: (
@@ -323,7 +858,16 @@ type ChatStore = {
       denyMessage?: string
       permissionUpdates?: PermissionUpdate[]
     },
-  ) => void
+  ) => PermissionResponseDispatchResult
+  respondToUserDecision: (
+    sessionId: string,
+    decisionId: string,
+    response: UserDecisionResponse,
+  ) => PermissionResponseDispatchResult
+  resyncUserDecision: (
+    sessionId: string,
+    decisionId: string,
+  ) => PermissionResponseDispatchResult
   respondToComputerUsePermission: (
     sessionId: string,
     requestId: string,
@@ -357,7 +901,7 @@ type ChatStore = {
   clearRepositoryLaunchDraft: (sessionId: string) => void
   queueUserMessage: (
     sessionId: string,
-    message: Omit<QueuedUserMessage, 'id' | 'createdAt'>,
+    message: Omit<QueuedUserMessage, 'id' | 'messageUuid' | 'createdAt'>,
   ) => string
   updateQueuedUserMessage: (sessionId: string, messageId: string, content: string) => void
   removeQueuedUserMessage: (sessionId: string, messageId: string) => void
@@ -891,13 +1435,29 @@ function mergeRestoredTranscriptMessageIds(
 
   if (restoredCandidates.length === 0) return messages
 
+  const restoredIdentities = new Set(restoredCandidates.map((message) => (
+    `${message.type}:${message.transcriptMessageId}`
+  )))
   let restoredCursor = 0
   let changed = false
   const merged = messages.map((message) => {
-    if (
-      (message.type !== 'user_text' && message.type !== 'assistant_text') ||
-      message.transcriptMessageId
-    ) {
+    if (message.type !== 'user_text' && message.type !== 'assistant_text') {
+      return message
+    }
+    if (message.transcriptMessageId) {
+      if (
+        message.type === 'user_text' &&
+        (message.pending || message.optimisticQueued) &&
+        restoredIdentities.has(`${message.type}:${message.transcriptMessageId}`)
+      ) {
+        const {
+          pending: _pending,
+          optimisticQueued: _optimisticQueued,
+          ...confirmedMessage
+        } = message
+        changed = true
+        return confirmedMessage
+      }
       return message
     }
 
@@ -1333,6 +1893,89 @@ function shouldPrewarmSession(sessionId: string): boolean {
   return knownSession?.messageCount === 0
 }
 
+const USER_DECISION_WATCHDOG_MS = 10_000
+
+function scheduleLegacyAskPermissionWatchdog(
+  set: StoreApi<ChatStore>['setState'],
+  sessionId: string,
+  requestId: string,
+  toolUseId: string | undefined,
+  responseAttemptId: string,
+): void {
+  setTimeout(() => {
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (session) => {
+        const pendingPermissions = getPendingPermissionRecord(session)
+        const current = pendingPermissions[requestId]
+        if (
+          session.connectionState !== 'connected' ||
+          session.connectionSnapshotReady === false ||
+          current?.toolName !== 'AskUserQuestion' ||
+          current.toolUseId !== toolUseId ||
+          current.responseState !== 'submitting' ||
+          current.responseAttemptId !== responseAttemptId
+        ) return {}
+
+        const resyncPermission: PendingPermission = {
+          ...current,
+          responseState: 'resync',
+        }
+        pendingPermissions[requestId] = resyncPermission
+        return {
+          pendingPermissions,
+          pendingPermission: session.pendingPermission?.requestId === requestId
+            ? resyncPermission
+            : session.pendingPermission ?? resyncPermission,
+        }
+      }),
+    }))
+  }, USER_DECISION_WATCHDOG_MS)
+}
+
+function scheduleUserDecisionWatchdog(
+  set: StoreApi<ChatStore>['setState'],
+  sessionId: string,
+  decisionId: string,
+  expectedAttempt: UserDecisionResponseAttempt,
+  expectedState: 'submitting' | 'accepted',
+): void {
+  setTimeout(() => {
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (session) => {
+        const attempts = session.userDecisionResponseAttempts ?? {}
+        const current = attempts[decisionId]
+        if (
+          session.connectionState !== 'connected' ||
+          current !== expectedAttempt ||
+          current.attemptId !== expectedAttempt.attemptId ||
+          current.state !== expectedState ||
+          current.manualVerifyUsed !== expectedAttempt.manualVerifyUsed
+        ) return {}
+
+        const verificationTimedOut =
+          expectedState === 'submitting' && current.manualVerifyUsed === true
+        const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
+          attemptId: current.attemptId,
+          response: current.response,
+          state: verificationTimedOut || expectedState === 'accepted'
+            ? 'rejected'
+            : 'indeterminate',
+          nextAction: verificationTimedOut || expectedState === 'accepted'
+            ? 'resync'
+            : 'verify_same_attempt',
+          ...(current.manualVerifyUsed ? { manualVerifyUsed: true } : {}),
+        })
+        return {
+          userDecisionResponseAttempts: {
+            ...attempts,
+            [decisionId]: nextAttempt,
+          },
+        }
+      }),
+    }))
+  }, USER_DECISION_WATCHDOG_MS)
+}
+
 export const useChatStore = create<ChatStore>((set, get) => ({
   sessions: {},
 
@@ -1362,6 +2005,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           ...createDefaultSessionState(),
           connectionState: 'connecting',
           connectionSnapshotReady: false,
+          userDecisionSnapshot: undefined,
+          userDecisionResponseAttempts: existing?.userDecisionResponseAttempts ?? {},
           messages: existing?.messages ?? [],
           activeGoal: existing?.activeGoal ?? null,
           composerDraft: existing?.composerDraft ?? null,
@@ -1378,14 +2023,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     wsManager.onConnectionState(sessionId, (connectionState) => {
       if (!get().sessions[sessionId]) return
       set((s) => ({
-        sessions: updateSessionIn(s.sessions, sessionId, (session) => ({
-          connectionState,
-          connectionSnapshotReady: false,
-          stoppingBackgroundTaskIds:
-            connectionState === 'connected' || session.stopAllSubagentsRequested
-              ? session.stoppingBackgroundTaskIds
-              : {},
-        })),
+        sessions: updateSessionIn(s.sessions, sessionId, (session) => {
+          const leftConnected = session.connectionState === 'connected' &&
+            connectionState !== 'connected'
+          return {
+            connectionState,
+            connectionSnapshotReady: false,
+            userDecisionSnapshot: undefined,
+            userDecisionResponseAttempts: leftConnected
+              ? resyncInFlightUserDecisionAttempts(
+                  session.userDecisionResponseAttempts,
+                )
+              : session.userDecisionResponseAttempts,
+            stoppingBackgroundTaskIds:
+              connectionState === 'connected' || session.stopAllSubagentsRequested
+                ? session.stoppingBackgroundTaskIds
+                : {},
+          }
+        }),
       }))
     })
     wsManager.onMessage(sessionId, (msg) => {
@@ -1393,6 +2048,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, () => ({
           connectionState: 'connected',
           connectionSnapshotReady: false,
+          userDecisionSnapshot: undefined,
         })) }))
       }
       get().handleServerMessage(sessionId, msg)
@@ -1446,6 +2102,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   sendMessage: (sessionId, content, attachments, options) => {
     const isMemberSession = !!useTeamStore.getState().getMemberBySessionId(sessionId)
+    const messageUuid = isMemberSession
+      ? undefined
+      : options?.messageUuid ?? crypto.randomUUID()
     const hideDisplayContent = !isMemberSession && options?.hideDisplayContent === true
     const userFacingContent =
       hideDisplayContent
@@ -1513,10 +2172,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         id: nextId(),
         type: 'user_text',
         content: userFacingContent,
+        ...(messageUuid ? { transcriptMessageId: messageUuid } : {}),
         ...(userFacingContent !== modelFacingContent ? { modelContent: modelFacingContent } : {}),
         attachments: isMemberSession ? undefined : uiAttachments,
         timestamp: now,
-        ...(isMemberSession ? { pending: true } : {}),
+        pending: true,
       })
 
       if (!isMemberSession && session.elapsedTimer) clearInterval(session.elapsedTimer)
@@ -1575,11 +2235,39 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return
     }
 
-    wsManager.send(sessionId, { type: 'user_message', content, attachments })
+    wsManager.send(sessionId, { type: 'user_message', messageUuid, content, attachments })
   },
 
   respondToPermission: (sessionId, requestId, allowed, options) => {
-    wsManager.send(sessionId, {
+    const currentSession = get().sessions[sessionId]
+    const pendingPermission = getPendingPermission(currentSession, requestId)
+    // AskUserQuestion keeps its card until an authoritative server event settles it.
+    // Other permission dialogs retain their existing optimistic cleanup in this phase.
+    const keepUntilResolved = pendingPermission?.toolName === 'AskUserQuestion'
+    if (keepUntilResolved) {
+      if (pendingPermission.toolUseId) {
+        const interaction = selectAskUserDecisionInteraction(
+          currentSession,
+          pendingPermission.toolUseId,
+        )
+        if (
+          interaction.mode !== 'editing' ||
+          interaction.channel !== 'legacy' ||
+          interaction.requestId !== requestId
+        ) return 'not-dispatched'
+      } else if (
+        currentSession?.connectionSnapshotReady === false ||
+        currentSession?.userDecisionSnapshot?.userDecisionResponseProtocol ===
+          'orphaned-permission-v1' ||
+        pendingPermission.responseState === 'submitting'
+      ) {
+        // Old permission streams may omit toolUseId. Keep that compatibility
+        // only while no modern decision route has been advertised.
+        return 'not-dispatched'
+      }
+    }
+
+    const response = {
       type: 'permission_response',
       requestId,
       allowed,
@@ -1587,7 +2275,47 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ...(options?.updatedInput ? { updatedInput: options.updatedInput } : {}),
       ...(options?.denyMessage ? { denyMessage: options.denyMessage } : {}),
       ...(options?.permissionUpdates?.length ? { permissionUpdates: options.permissionUpdates } : {}),
-    })
+    } as const
+
+    if (keepUntilResolved) {
+      if (!wsManager.sendIfOpen(sessionId, response)) return 'not-dispatched'
+      const responseAttemptId = crypto.randomUUID()
+      let watchdogArmed = false
+      set((s) => ({
+        sessions: updateSessionIn(s.sessions, sessionId, (session) => {
+          const pendingPermissions = getPendingPermissionRecord(session)
+          const current = pendingPermissions[requestId]
+          if (!current || current.toolName !== 'AskUserQuestion') return {}
+
+          const submittingPermission: PendingPermission = {
+            ...current,
+            responseState: 'submitting',
+            responseAttemptId,
+          }
+          watchdogArmed = true
+          pendingPermissions[requestId] = submittingPermission
+          return {
+            pendingPermissions,
+            pendingPermission: session.pendingPermission?.requestId === requestId
+              ? submittingPermission
+              : session.pendingPermission ?? submittingPermission,
+            chatState: 'permission_pending',
+          }
+        }),
+      }))
+      if (watchdogArmed) {
+        scheduleLegacyAskPermissionWatchdog(
+          set,
+          sessionId,
+          requestId,
+          pendingPermission.toolUseId,
+          responseAttemptId,
+        )
+      }
+      return 'dispatched'
+    }
+
+    wsManager.send(sessionId, response)
     set((s) => ({
       sessions: updateSessionIn(s.sessions, sessionId, (session) => {
         const pendingPermissions = getPendingPermissionRecord(session)
@@ -1604,6 +2332,110 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
       }),
     }))
+    return 'dispatched'
+  },
+
+  respondToUserDecision: (sessionId, decisionId, response) => {
+    let attemptId: string | undefined
+    let claimed = false
+    let previousAttempt: UserDecisionResponseAttempt | undefined
+    let responseToSend: UserDecisionResponse | undefined
+    let dispatchedAttempt: UserDecisionResponseAttempt | undefined
+
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (session) => {
+        const snapshot = session.userDecisionSnapshot
+        const previous = session.userDecisionResponseAttempts?.[decisionId]
+        const interaction = selectAskUserDecisionInteraction(session, decisionId)
+        if (
+          snapshot?.userDecisionResponseProtocol !==
+            'orphaned-permission-v1' ||
+          (
+            interaction.mode !== 'editing' &&
+            interaction.mode !== 'retryable' &&
+            interaction.mode !== 'verifiable'
+          ) ||
+          (
+            interaction.mode === 'editing' &&
+            interaction.channel !== 'modern'
+          )
+        ) return {}
+
+        previousAttempt = previous
+        if (interaction.mode === 'verifiable') {
+          if (previousAttempt?.nextAction !== 'verify_same_attempt') return {}
+          attemptId = previousAttempt.attemptId
+          responseToSend = previousAttempt.response
+        } else if (interaction.mode === 'retryable') {
+          if (previousAttempt?.nextAction !== 'retry_new_attempt') return {}
+          attemptId = crypto.randomUUID()
+          responseToSend = previousAttempt.response
+        } else {
+          if (previousAttempt && previousAttempt.nextAction !== 'edit_response') return {}
+          attemptId = crypto.randomUUID()
+          responseToSend = freezeUserDecisionResponse(response)
+        }
+        const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
+          attemptId: attemptId!,
+          response: responseToSend,
+          state: 'submitting',
+          ...(interaction.mode === 'verifiable' ? { manualVerifyUsed: true } : {}),
+        })
+        dispatchedAttempt = nextAttempt
+        claimed = true
+        return {
+          userDecisionResponseAttempts: {
+            ...(session.userDecisionResponseAttempts ?? {}),
+            [decisionId]: nextAttempt,
+          },
+        }
+      }),
+    }))
+    if (!claimed || !attemptId || !responseToSend) return 'not-dispatched'
+
+    const dispatched = wsManager.sendIfOpen(sessionId, {
+        type: 'user_decision_response',
+        decisionId,
+        attemptId,
+        response: responseToSend,
+      })
+    if (!dispatched) {
+      set((state) => ({
+        sessions: updateSessionIn(state.sessions, sessionId, (session) => {
+          const attempts = session.userDecisionResponseAttempts ?? {}
+          if (attempts[decisionId]?.attemptId !== attemptId) return {}
+          const nextAttempts = { ...attempts }
+          if (previousAttempt) nextAttempts[decisionId] = previousAttempt
+          else delete nextAttempts[decisionId]
+          return { userDecisionResponseAttempts: nextAttempts }
+        }),
+      }))
+      return 'not-dispatched'
+    }
+    scheduleUserDecisionWatchdog(
+      set,
+      sessionId,
+      decisionId,
+      dispatchedAttempt!,
+      'submitting',
+    )
+    return 'dispatched'
+  },
+
+  resyncUserDecision: (sessionId, decisionId) => {
+    const session = get().sessions[sessionId]
+    const interaction = selectAskUserDecisionInteraction(session, decisionId)
+    if (
+      interaction.mode !== 'resync' &&
+      !(interaction.mode === 'blocked' && interaction.recoverable)
+    ) {
+      return 'not-dispatched'
+    }
+
+    // `sync_state` refreshes only the turn state. A normal reconnect is the
+    // existing protocol path that rebuilds the authoritative Ask projection.
+    // Keep the attempt frozen until that fresh, complete snapshot arrives.
+    return wsManager.forceReconnect(sessionId) ? 'dispatched' : 'not-dispatched'
   },
 
   respondToComputerUsePermission: (sessionId, requestId, response) => {
@@ -2068,6 +2900,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   queueUserMessage: (sessionId, message) => {
     const id = `queued-user-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const messageUuid = crypto.randomUUID()
     set((state) => {
       const session = state.sessions[sessionId] ?? createDefaultSessionState()
       return {
@@ -2080,6 +2913,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               {
                 ...message,
                 id,
+                messageUuid,
                 createdAt: Date.now(),
               },
             ],
@@ -2129,6 +2963,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         {
           displayContent: queuedMessage.displayContent,
           displayAttachments: queuedMessage.displayAttachments,
+          messageUuid: queuedMessage.messageUuid,
         },
       )
       return
@@ -2154,6 +2989,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     wsManager.send(sessionId, {
       type: 'user_message',
+      messageUuid: queuedMessage.messageUuid,
       content: queuedMessage.content,
       attachments: queuedMessage.attachments,
     })
@@ -2173,6 +3009,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       suppressNextTaskNotificationResponse: false,
       replaceHistoryOnCompletion: false,
       queuedUserMessages: [],
+      userDecisionResponseAttempts: {},
     })) }))
   },
 
@@ -2748,6 +3585,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
           return {
             messages,
+            userDecisionResponseAttempts: removeUserDecisionResponseAttempts(
+              s.userDecisionResponseAttempts,
+              [msg.toolUseId, msg.originalToolUseId],
+            ),
             ...(stoppedTask ? { backgroundAgentTasks } : {}),
             chatState: parentToolUseId
               ? s.chatState
@@ -2764,6 +3605,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
 
       case 'permission_request':
+        if (msg.toolName === 'AskUserQuestion' && msg.toolUseId) {
+          // canUseTool may run before the stream emits tool_use_complete. The
+          // permission request already carries the authoritative, fully parsed
+          // input, so leaving the matching tool block pending hides the actual
+          // question behind a generic "Preparing tool" card until the turn is
+          // stopped. Cancel any delayed partial-input flush before promoting it.
+          clearPendingToolInputDelta(sessionId)
+        }
         notifyDesktop({
           dedupeKey: `permission:${msg.requestId}`,
           cooldownScope: 'permission-prompt',
@@ -2775,12 +3624,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           target: { type: 'session', sessionId },
         })
         update((s) => {
+          const askUserQuestionToolUseId =
+            msg.toolName === 'AskUserQuestion' ? msg.toolUseId : undefined
+          const previousPermission = getPendingPermissionRecord(s)[msg.requestId]
+          const preservesResponseAttempt =
+            previousPermission?.toolName === msg.toolName &&
+            previousPermission.toolUseId === msg.toolUseId
           const pendingPermission: PendingPermission = {
             requestId: msg.requestId,
             toolName: msg.toolName,
             toolUseId: msg.toolUseId,
             input: msg.input,
             description: msg.description,
+            ...(preservesResponseAttempt && previousPermission.responseState
+              ? { responseState: previousPermission.responseState }
+              : {}),
+            ...(preservesResponseAttempt && previousPermission.responseAttemptId
+              ? { responseAttemptId: previousPermission.responseAttemptId }
+              : {}),
           }
           const pendingPermissions = {
             ...getPendingPermissionRecord(s),
@@ -2788,6 +3649,30 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
           const hasPermissionMessage = s.messages.some((message) =>
             message.type === 'permission_request' && message.requestId === msg.requestId)
+          const messages = askUserQuestionToolUseId
+            ? upsertToolUseMessage(s.messages, askUserQuestionToolUseId, (existing) => ({
+                id: existing?.id ?? nextId(),
+                type: 'tool_use',
+                toolName: msg.toolName,
+                toolUseId: askUserQuestionToolUseId,
+                originalToolUseId: existing?.originalToolUseId,
+                input: msg.input,
+                timestamp: existing?.timestamp ?? Date.now(),
+                parentToolUseId: existing?.parentToolUseId,
+                isPending: false,
+              }))
+            : hasPermissionMessage
+              ? s.messages
+              : [...s.messages, {
+                  id: nextId(),
+                  type: 'permission_request' as const,
+                  requestId: msg.requestId,
+                  toolName: msg.toolName,
+                  toolUseId: msg.toolUseId,
+                  input: msg.input,
+                  description: msg.description,
+                  timestamp: Date.now(),
+                }]
 
           return {
             pendingPermission,
@@ -2796,19 +3681,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             activeThinkingId: null,
             apiRetry: null,
             streamingFallback: null,
-            messages:
-              msg.toolName === 'AskUserQuestion' || hasPermissionMessage
-                ? s.messages
-                : [...s.messages, {
-                    id: nextId(),
-                    type: 'permission_request',
-                    requestId: msg.requestId,
-                    toolName: msg.toolName,
-                    toolUseId: msg.toolUseId,
-                    input: msg.input,
-                    description: msg.description,
-                    timestamp: Date.now(),
-                  }],
+            messages,
+            ...(askUserQuestionToolUseId && s.activeToolUseId === askUserQuestionToolUseId
+              ? {
+                  activeToolUseId: null,
+                  activeToolName: null,
+                  streamingToolInput: '',
+                }
+              : {}),
           }
         })
         break
@@ -2841,6 +3721,132 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             activeThinkingId: null,
             apiRetry: null,
             streamingFallback: null,
+          }
+        })
+        break
+
+      case 'user_decision_response_result': {
+        // WebSocket payloads are external input. The compile-time ServerMessage
+        // union cannot protect this reducer from malformed or version-skewed
+        // frames. A correlated invalid result is itself uncertainty, so route
+        // it to authoritative resync instead of guessing from an error code.
+        if (!isUserDecisionResponseResultMessage(msg)) {
+          const target = getUserDecisionResponseResultTarget(msg)
+          if (!target) break
+          update((session) => {
+            const attempts = session.userDecisionResponseAttempts ?? {}
+            const current = attempts[target.decisionId]
+            if (
+              !current ||
+              current.attemptId !== target.attemptId ||
+              current.state === 'already_resolved'
+            ) return {}
+            return {
+              userDecisionResponseAttempts: {
+                ...attempts,
+                [target.decisionId]: Object.freeze({
+                  attemptId: current.attemptId,
+                  response: current.response,
+                  state: 'rejected',
+                  nextAction: 'resync',
+                  ...(current.manualVerifyUsed ? { manualVerifyUsed: true } : {}),
+                }),
+              },
+            }
+          })
+          break
+        }
+        let acceptedAttempt: UserDecisionResponseAttempt | undefined
+        update((session) => {
+          const attempts = session.userDecisionResponseAttempts ?? {}
+          const current = attempts[msg.decisionId]
+          if (
+            !current ||
+            current.attemptId !== msg.attemptId ||
+            current.state === 'already_resolved'
+          ) return {}
+          if (current.state === 'accepted' && msg.state !== 'already_resolved') return {}
+          if (
+            current.state === 'rejected' &&
+            current.nextAction === 'resync' &&
+            msg.state !== 'already_resolved'
+          ) return {}
+          const indeterminateAfterManualVerify =
+            msg.state === 'indeterminate' && current.manualVerifyUsed === true
+          const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
+            attemptId: current.attemptId,
+            response: current.response,
+            state: indeterminateAfterManualVerify ? 'rejected' : msg.state,
+            ...(indeterminateAfterManualVerify
+              ? {
+                  error: Object.freeze({ ...msg.error }),
+                  nextAction: 'resync' as const,
+                }
+              : 'error' in msg
+              ? { error: Object.freeze({ ...msg.error }) }
+              : {}),
+            ...(!indeterminateAfterManualVerify && 'nextAction' in msg
+              ? { nextAction: msg.nextAction }
+              : {}),
+            ...(current.manualVerifyUsed ? { manualVerifyUsed: true } : {}),
+          })
+          if (nextAttempt.state === 'accepted') acceptedAttempt = nextAttempt
+          return {
+            userDecisionResponseAttempts: {
+              ...attempts,
+              [msg.decisionId]: nextAttempt,
+            },
+          }
+        })
+        if (acceptedAttempt) {
+          scheduleUserDecisionWatchdog(
+            set,
+            sessionId,
+            msg.decisionId,
+            acceptedAttempt,
+            'accepted',
+          )
+        }
+        break
+      }
+
+      case 'permission_response_failed':
+        update((session) => {
+          const pendingPermissions = getPendingPermissionRecord(session)
+          const current = pendingPermissions[msg.requestId]
+          if (
+            !current ||
+            current.toolName !== 'AskUserQuestion' ||
+            current.responseState !== 'submitting'
+          ) return {}
+
+          if (msg.retryable) {
+            const {
+              responseState: _responseState,
+              responseAttemptId: _responseAttemptId,
+              ...retryablePermission
+            } = current
+            pendingPermissions[msg.requestId] = retryablePermission
+            return {
+              pendingPermissions,
+              pendingPermission: session.pendingPermission?.requestId === msg.requestId
+                ? retryablePermission
+                : session.pendingPermission ?? retryablePermission,
+              chatState: 'permission_pending',
+            }
+          }
+
+          delete pendingPermissions[msg.requestId]
+          const remainingPermissions = Object.values(pendingPermissions)
+          return {
+            pendingPermissions,
+            pendingPermission: remainingPermissions[remainingPermissions.length - 1] ?? null,
+            chatState: getChatStateAfterPermissionResolution(
+              session,
+              remainingPermissions.length > 0 ||
+                Object.keys(getPendingComputerUsePermissionRecord(session)).length > 0,
+              undefined,
+            ),
           }
         })
         break
@@ -2885,12 +3891,33 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         })
         break
 
-      case 'permission_requests_snapshot':
+      case 'permission_requests_snapshot': {
         update((session) => {
+          const freshConnectionSnapshot = session.connectionSnapshotReady === false
           const toolRequestIds = new Set(msg.toolRequestIds)
-          const pendingPermissions = Object.fromEntries(
+          const legacyFilteredPermissions = Object.fromEntries(
             Object.entries(getPendingPermissionRecord(session))
-              .filter(([requestId]) => toolRequestIds.has(requestId)),
+              .filter(([requestId]) => toolRequestIds.has(requestId))
+              .map(([requestId, permission]) => {
+                if (
+                  !freshConnectionSnapshot ||
+                  msg.userDecisions !== undefined ||
+                  permission.toolName !== 'AskUserQuestion'
+                ) {
+                  return [requestId, permission]
+                }
+                const {
+                  responseState: _responseState,
+                  responseAttemptId: _responseAttemptId,
+                  ...editablePermission
+                } = permission
+                return [requestId, editablePermission]
+              }),
+          )
+          const pendingPermissions = reconcileAskPermissionsWithUserDecisions(
+            session,
+            legacyFilteredPermissions,
+            msg.userDecisions,
           )
           const computerUseRequestIds = new Set(msg.computerUseRequestIds)
           const pendingComputerUsePermissions = Object.fromEntries(
@@ -2901,9 +3928,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const remainingComputerUsePermissions = Object.values(pendingComputerUsePermissions)
           const hasRemainingPermissions = remainingPermissions.length > 0 ||
             remainingComputerUsePermissions.length > 0
+          const reconciledAttempts = reconcileUserDecisionResponseAttempts(
+            session.userDecisionResponseAttempts,
+            msg.userDecisions,
+            freshConnectionSnapshot,
+          )
 
           return {
             connectionSnapshotReady: true,
+            userDecisionSnapshot: msg.userDecisions,
+            userDecisionResponseAttempts: reconciledAttempts,
             pendingPermissions,
             pendingPermission: remainingPermissions[remainingPermissions.length - 1] ?? null,
             pendingComputerUsePermissions,
@@ -2921,6 +3955,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
         })
         break
+      }
 
       case 'message_complete': {
         const session = get().sessions[sessionId]
@@ -3027,7 +4062,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             ? appendAssistantTextMessage(session.messages, pendingText, Date.now())
             : session.messages
           return {
-            messages: appendReplayedUserMessage(baseMessages, msg.content, Date.now()),
+            messages: appendReplayedUserMessage(
+              baseMessages,
+              msg.content,
+              Date.now(),
+              msg.messageUuid,
+            ),
             ...(pendingText.trim() ? { streamingText: '' } : {}),
             activeThinkingId: null,
             suppressNextTaskNotificationResponse: false,
@@ -3060,6 +4100,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           ]
           return {
             messages: newMessages,
+            userDecisionResponseAttempts: resyncInFlightUserDecisionAttempts(
+              s.userDecisionResponseAttempts,
+              Object.freeze({
+                code: msg.code ?? 'CLIENT_SESSION_ERROR',
+                message: msg.message,
+              }),
+            ),
             chatState: 'idle',
             activeThinkingId: null,
             streamingText: '',
@@ -4505,7 +5552,17 @@ export function appendReplayedUserMessage(
   messages: UIMessage[],
   content: string,
   timestamp: number,
+  messageUuid?: string,
 ): UIMessage[] {
+  if (messageUuid) {
+    const replayedMessageIndex = messages.findIndex((message) => (
+      message.type === 'user_text' && message.transcriptMessageId === messageUuid
+    ))
+    if (replayedMessageIndex >= 0) {
+      return confirmReplayedUserMessage(messages, replayedMessageIndex)
+    }
+  }
+
   // The replayed text carries server-appended image-metadata lines that the
   // optimistic message never had. Normalize them away (same as the history
   // mapping) so the dedupe below can match the already-rendered message instead
@@ -4516,18 +5573,11 @@ export function appendReplayedUserMessage(
   if (!displayContent && !parsed.attachments?.length) return messages
 
   const modelContent = parsed.modelContent ?? sanitized
-  const currentTurnUserIndex = findCurrentTurnUserMessageIndex(messages, modelContent, parsed)
-  if (currentTurnUserIndex >= 0) {
-    const optimisticMessage = messages[currentTurnUserIndex]
-    if (optimisticMessage?.type === 'user_text' && optimisticMessage.optimisticQueued) {
-      const { optimisticQueued: _optimisticQueued, ...confirmedMessage } = optimisticMessage
-      return [
-        ...messages.slice(0, currentTurnUserIndex),
-        confirmedMessage,
-        ...messages.slice(currentTurnUserIndex + 1),
-      ]
+  if (!messageUuid) {
+    const currentTurnUserIndex = findCurrentTurnUserMessageIndex(messages, modelContent, parsed)
+    if (currentTurnUserIndex >= 0) {
+      return confirmReplayedUserMessage(messages, currentTurnUserIndex)
     }
-    return messages
   }
 
   return [
@@ -4536,10 +5586,28 @@ export function appendReplayedUserMessage(
       id: nextId(),
       type: 'user_text',
       content: displayContent,
+      ...(messageUuid ? { transcriptMessageId: messageUuid } : {}),
       ...(parsed.modelContent ? { modelContent: parsed.modelContent } : {}),
       ...(parsed.attachments ? { attachments: parsed.attachments } : {}),
       timestamp,
     },
+  ]
+}
+
+function confirmReplayedUserMessage(messages: UIMessage[], messageIndex: number): UIMessage[] {
+  const optimisticMessage = messages[messageIndex]
+  if (optimisticMessage?.type !== 'user_text') return messages
+  if (!optimisticMessage.pending && !optimisticMessage.optimisticQueued) return messages
+
+  const {
+    pending: _pending,
+    optimisticQueued: _optimisticQueued,
+    ...confirmedMessage
+  } = optimisticMessage
+  return [
+    ...messages.slice(0, messageIndex),
+    confirmedMessage,
+    ...messages.slice(messageIndex + 1),
   ]
 }
 
@@ -4559,9 +5627,11 @@ function appendOptimisticQueuedUserMessage(
       id: nextId(),
       type: 'user_text',
       content: displayContent,
+      transcriptMessageId: message.messageUuid,
       ...(modelContent && modelContent !== displayContent ? { modelContent } : {}),
       ...(attachments ? { attachments } : {}),
       timestamp,
+      pending: true,
       optimisticQueued: true,
     },
   ]

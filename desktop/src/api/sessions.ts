@@ -146,6 +146,20 @@ export type SessionRewindResponse = {
   mode?: SessionRewindMode
 }
 
+/** Response for editing a sent prompt; it never restores or inspects files. */
+export type SessionMessageReplacementResponse = {
+  target: {
+    targetUserMessageId: string
+    userMessageIndex: number
+    userMessageCount: number
+  }
+  conversation: {
+    messagesRemoved: number
+    removedMessageIds: string[]
+  }
+  mode: 'edit'
+}
+
 /**
  * `both` restores files and trims the transcript; `files` restores files while
  * preserving the transcript; `conversation` only trims.
@@ -246,6 +260,12 @@ export type SessionContextSnapshot = {
   } | null
 }
 
+export type SessionContextStatus = {
+  source: 'live' | 'transcript' | 'none'
+  freshness: 'fresh' | 'stale' | 'estimated' | 'pending' | 'unavailable'
+  refreshing: boolean
+}
+
 export type SessionInspectionResponse = {
   active: boolean
   status: {
@@ -265,6 +285,7 @@ export type SessionInspectionResponse = {
   usage?: SessionUsageSnapshot
   context?: SessionContextSnapshot
   contextEstimate?: SessionContextSnapshot
+  contextStatus?: SessionContextStatus
   errors?: Record<string, string>
 }
 
@@ -563,5 +584,16 @@ export const sessionsApi = {
     return api.post<SessionRewindResponse>(`/api/sessions/${sessionId}/rewind`, body, {
       timeout: 60_000,
     })
+  },
+
+  replaceMessage(sessionId: string, body: {
+    targetUserMessageId: string
+    expectedContent?: string
+  }) {
+    return api.post<SessionMessageReplacementResponse>(
+      `/api/sessions/${sessionId}/replace-message`,
+      body,
+      { timeout: 2_000 },
+    )
   },
 }

@@ -8,7 +8,7 @@ import type { RuntimeSelection } from './runtime'
 export type ClientMessage =
   | { type: 'prewarm_session' }
   | { type: 'sync_state' }
-  | { type: 'user_message'; content: string; attachments?: AttachmentRef[] }
+  | { type: 'user_message'; messageUuid?: string; content: string; attachments?: AttachmentRef[] }
   | {
       type: 'permission_response'
       requestId: string
@@ -22,6 +22,12 @@ export type ClientMessage =
       type: 'computer_use_permission_response'
       requestId: string
       response: ComputerUsePermissionResponse
+    }
+  | {
+      type: 'user_decision_response'
+      decisionId: string
+      attemptId: string
+      response: UserDecisionResponse
     }
   | { type: 'set_permission_mode'; mode: PermissionMode }
   | ({ type: 'set_runtime_config' } & RuntimeSelection)
@@ -81,6 +87,72 @@ export type UIAttachment = {
 
 // ─── Server → Client ──────────────────────────────────────────────
 
+export type UserDecisionResponse =
+  | { kind: 'answer'; answers: Readonly<Record<string, string>> }
+  | { kind: 'clarify'; message: string }
+
+export type UserDecisionSemanticState =
+  | { status: 'open' }
+  | { status: 'answered' }
+  | { status: 'superseded'; supersededById: string }
+  | { status: 'cancelled'; reason: string }
+
+export type UserDecisionRuntimeBinding =
+  | { status: 'attached'; requestId: string }
+  | { status: 'detached' }
+
+export type UserDecisionSnapshotEntry = {
+  decisionId: string
+  semanticState: UserDecisionSemanticState
+  runtimeBinding: UserDecisionRuntimeBinding
+  /** Missing on older v1 sidecars; consumers must fail closed for detached decisions. */
+  responseCapability?:
+    | { status: 'runtime_callback' | 'orphaned_recovery' | 'already_resolved' }
+    | {
+        status: 'unavailable'
+        code:
+          | 'DECISION_NOT_FOUND'
+          | 'DECISION_CONFLICTED'
+          | 'EVIDENCE_INCOMPLETE'
+          | 'RECOVERY_UNAVAILABLE'
+      }
+  response: UserDecisionResponse | null
+  input: Record<string, unknown>
+  inputSource: 'transcript' | 'live'
+  conflicted: boolean
+  description?: string
+}
+
+export type UserDecisionSnapshot = {
+  transcriptEvidenceComplete: boolean
+  decisions: UserDecisionSnapshotEntry[]
+  userDecisionResponseProtocol?: 'orphaned-permission-v1'
+}
+
+export type UserDecisionResponseResult = {
+  type: 'user_decision_response_result'
+  decisionId: string
+  attemptId: string
+} & (
+  | { state: 'accepted'; route: 'runtime_callback' | 'orphaned_recovery' }
+  | { state: 'already_resolved' }
+  | {
+      state: 'retryable_failed'
+      error: { code: string; message: string }
+      nextAction: 'retry_new_attempt'
+    }
+  | {
+      state: 'indeterminate'
+      error: { code: string; message: string }
+      nextAction: 'verify_same_attempt'
+    }
+  | {
+      state: 'rejected'
+      error: { code: string; message: string }
+      nextAction: 'edit_response' | 'resync' | 'blocked'
+    }
+)
+
 export type ServerMessage =
   | { type: 'connected'; sessionId: string }
   | { type: 'session_state'; turnState: 'running' | 'idle' }
@@ -108,12 +180,25 @@ export type ServerMessage =
       allowed?: boolean
     }
   | {
+      type: 'permission_response_failed'
+      requestId: string
+      permissionType: 'tool'
+      code:
+        | 'PERMISSION_REQUEST_NOT_FOUND'
+        | 'PERMISSION_SESSION_UNAVAILABLE'
+        | 'PERMISSION_DELIVERY_FAILED'
+      retryable: boolean
+      message: string
+    }
+  | {
       type: 'permission_requests_snapshot'
       toolRequestIds: string[]
       computerUseRequestIds: string[]
       turnActive: boolean
+      userDecisions?: UserDecisionSnapshot
     }
-  | { type: 'user_message_replay'; content: string }
+  | UserDecisionResponseResult
+  | { type: 'user_message_replay'; messageUuid?: string; content: string }
   | { type: 'message_complete'; usage: TokenUsage }
   /** `complete` marks a whole thinking block; without it `text` is a stream fragment. */
   | { type: 'thinking'; text: string; complete?: boolean }

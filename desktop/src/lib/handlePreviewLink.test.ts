@@ -110,12 +110,12 @@ describe('handlePreviewLink', () => {
     expect(withColumn.openFilePreview).toHaveBeenCalledWith('s1', 'src/app.ts', { line: 42, column: 8 })
   })
 
-  it('routes remote http(s) to openExternal with the url', () => {
+  it('routes remote http(s) to the in-app browser with the url', () => {
     const deps = makeDeps()
     const handled = handlePreviewLink('https://example.com/', deps)
     expect(handled).toBe(true)
-    expect(deps.openExternal).toHaveBeenCalledWith('https://example.com/')
-    expect(deps.openBrowser).not.toHaveBeenCalled()
+    expect(deps.openBrowser).toHaveBeenCalledWith('s1', 'https://example.com/')
+    expect(deps.openExternal).not.toHaveBeenCalled()
     expect(deps.openFilePreview).not.toHaveBeenCalled()
   })
 

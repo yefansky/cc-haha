@@ -31,6 +31,8 @@ import { clearWindowSelection, getSelectionPopoverPosition, useSelectionPopoverD
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { createWorkspaceMarkdownImageResolver } from '../../lib/markdownImages'
 import { getServerBaseUrl } from '../../lib/desktopRuntime'
+import { isHtmlFilePath } from '../../lib/htmlPreviewPolicy'
+import { openPreviewLink } from '../../lib/openPreviewLink'
 import {
   getFileExtension,
   normalizePrismLanguage,
@@ -1774,6 +1776,17 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const handleOpenFile = (path: string) => {
     if (!isVscodeLayout) setIsNavigatorOpen(false)
     void openPreview(sessionId, path, 'file')
+    if (isHtmlFilePath(path)) {
+      // HTML has a source tab in this workspace already, but its default view
+      // must be the native browser surface. Unlike a renderer iframe, the
+      // Electron WebContentsView is the proven path for local HTML, remote
+      // pages, and their page-level scripts/styles. The workbench's 文件 tab
+      // remains the explicit source-mode switch for this same loaded file.
+      const absolutePath = status?.workDir && !/^(?:[A-Za-z]:[\\/]|\/)/.test(path)
+        ? `${status.workDir.replace(/[\\/]+$/, '')}/${path.replace(/^[/\\]+/, '')}`
+        : path
+      openPreviewLink(absolutePath, sessionId)
+    }
     focusPreviewAfterOpen()
   }
 

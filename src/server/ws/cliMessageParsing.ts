@@ -20,6 +20,7 @@ import {
   getCommandMetadataDisplayText,
   shouldHideCommandMetadataContent,
 } from '../../utils/commandMetadata.js'
+export { normalizeAskUserQuestionToolResult } from '../askUserQuestionResult.js'
 
 export function extractAssistantStreamTextForTitle(cliMsg: any): string | null {
   const event = cliMsg?.event
@@ -85,21 +86,6 @@ export function extractAssistantText(cliMsg: any): string {
       typeof (block as { text?: unknown }).text === 'string',
   )
   return textBlock?.text || ''
-}
-
-function readObject(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  return value as Record<string, unknown>
-}
-
-export function normalizeAskUserQuestionToolResult(content: unknown, toolUseResult: unknown): unknown {
-  const result = readObject(toolUseResult)
-  const answers = readObject(result?.answers)
-  if (!result || !answers || !Array.isArray(result.questions)) return content
-  return {
-    questions: result.questions,
-    answers,
-  }
 }
 
 export function classifyRuntimeErrorCode(message: string, fallbackCode: string): string {

@@ -246,14 +246,24 @@ export type PendingPermissionRequest = {
   description?: string
 }
 
-type SessionStartOptions = {
+export type PermissionResponseResult =
+  | { status: 'accepted'; transport: 'sent' | 'queued' }
+  | { status: 'rejected'; reason: 'session_unavailable' | 'unknown_request' }
+  | { status: 'delivery_failed'; error: string }
+
+export type TranscriptStartupPolicy = 'default' | 'preserve_existing'
+
+export type SessionStartOptions = {
   permissionMode?: string
   model?: string
   effort?: string
   thinking?: 'enabled' | 'adaptive' | 'disabled'
   providerId?: string | null
   resumeInterruptedTurn?: boolean
+  transcriptStartupPolicy?: TranscriptStartupPolicy
 }
+
+export type ReplacementSessionStopResult = 'not_running' | 'stopped' | 'unconfirmed'
 
 export class ConversationStartupError extends Error {
   constructor(
@@ -264,6 +274,7 @@ export class ConversationStartupError extends Error {
       | 'CLI_SESSION_CONFLICT'
       | 'CLI_START_FAILED'
       | 'CLI_SPAWN_FAILED'
+      | 'CLI_SHUTDOWN_UNCONFIRMED'
       | 'SESSION_DELETED',
     readonly retryable = false,
   ) {
@@ -275,6 +286,7 @@ export class ConversationStartupError extends Error {
 export class ConversationService {
   private sessions = new Map<string, SessionProcess>()
   private deletedSessions = new Set<string>()
+  private replacementShutdownLatches = new Map<string, Promise<boolean>>()
   private providerService = new ProviderService()
   private pendingPermissionModeChanges = new Map<string, Map<string, number>>()
 
@@ -341,6 +353,13 @@ export class ConversationService {
     sdkUrl: string,
     options?: SessionStartOptions,
   ): Promise<void> {
+    if (this.replacementShutdownLatches.has(sessionId)) {
+      throw new ConversationStartupError(
+        `The previous CLI runtime has not confirmed process exit: ${sessionId}`,
+        'CLI_SHUTDOWN_UNCONFIRMED',
+        true,
+      )
+    }
     if (this.deletedSessions.has(sessionId)) {
       throw new ConversationStartupError(
         `Session was deleted before startup completed: ${sessionId}`,
@@ -353,6 +372,7 @@ export class ConversationService {
     const shouldResume = !!launchInfo && launchInfo.transcriptMessageCount > 0
     const shouldReplacePlaceholder =
       !!launchInfo && launchInfo.transcriptMessageCount === 0
+    const transcriptStartupPolicy = options?.transcriptStartupPolicy ?? 'default'
     const shouldCreateWorktree =
       !!launchInfo && shouldCreateWorktreeForSessionLaunch(launchInfo)
     const hasMaterializedWorktree =
@@ -372,7 +392,7 @@ export class ConversationService {
       )
     }
 
-    if (shouldReplacePlaceholder) {
+    if (transcriptStartupPolicy === 'default' && shouldReplacePlaceholder) {
       await sessionService.clearSessionTranscript(sessionId, workDir)
     }
 
@@ -559,7 +579,10 @@ export class ConversationService {
       options?.providerId !== undefined ||
       !!options?.model ||
       !!options?.effort
-    if (shouldReplacePlaceholder || !launchInfo || shouldPersistRuntimeMetadata) {
+    if (
+      transcriptStartupPolicy === 'default' &&
+      (shouldReplacePlaceholder || !launchInfo || shouldPersistRuntimeMetadata)
+    ) {
       await sessionService.appendSessionMetadata(sessionId, {
         workDir: launchWorkDir,
         customTitle: launchInfo?.customTitle ?? null,
@@ -686,13 +709,120 @@ export class ConversationService {
     denyMessage?: string,
     permissionUpdates?: unknown[],
   ): boolean {
+    return this.sendPermissionResponse(
+      sessionId,
+      requestId,
+      allowed,
+      rule,
+      updatedInput,
+      denyMessage,
+      permissionUpdates,
+      false,
+    ).status === 'accepted'
+  }
+
+  respondToTrackedPermission(
+    sessionId: string,
+    requestId: string,
+    allowed: boolean,
+    rule?: string,
+    updatedInput?: Record<string, unknown>,
+    denyMessage?: string,
+    permissionUpdates?: unknown[],
+  ): PermissionResponseResult {
+    return this.sendPermissionResponse(
+      sessionId,
+      requestId,
+      allowed,
+      rule,
+      updatedInput,
+      denyMessage,
+      permissionUpdates,
+      true,
+    )
+  }
+
+  respondToOrphanedPermission(
+    sessionId: string,
+    toolUseId: string,
+    allowed: boolean,
+    updatedInput?: Record<string, unknown>,
+    denyMessage?: string,
+  ): PermissionResponseResult {
     const session = this.sessions.get(sessionId)
-    const pendingRequest = session?.pendingPermissionRequests.get(requestId)
-    if (session) {
-      session.pendingPermissionRequests.delete(requestId)
+    if (!session) {
+      return { status: 'rejected', reason: 'session_unavailable' }
+    }
+    const sdkSocket = session.sdkSocket
+    if (!sdkSocket) {
+      return { status: 'rejected', reason: 'session_unavailable' }
     }
 
-    return this.sendSdkMessage(sessionId, {
+    // The CLI deliberately routes an *unexpected* control_response into its
+    // transcript-based orphan recovery. A client attempt id could collide with
+    // a live control request, so it must never be reused as the transport id.
+    let recoveryRequestId = crypto.randomUUID()
+    while (
+      session.pendingPermissionRequests.has(recoveryRequestId) ||
+      session.pendingControlRequests.has(recoveryRequestId)
+    ) {
+      recoveryRequestId = crypto.randomUUID()
+    }
+
+    const payload = {
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: recoveryRequestId,
+        response: allowed
+          ? {
+              behavior: 'allow',
+              updatedInput: updatedInput ?? {},
+              toolUseID: toolUseId,
+            }
+          : {
+              behavior: 'deny',
+              message: buildDenyMessage('AskUserQuestion', denyMessage),
+              toolUseID: toolUseId,
+            },
+      },
+    }
+    try {
+      sdkSocket.send(JSON.stringify(payload) + '\n')
+    } catch (error) {
+      return {
+        status: 'delivery_failed',
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+    return { status: 'accepted', transport: 'sent' }
+  }
+
+  private sendPermissionResponse(
+    sessionId: string,
+    requestId: string,
+    allowed: boolean,
+    rule: string | undefined,
+    updatedInput: Record<string, unknown> | undefined,
+    denyMessage: string | undefined,
+    permissionUpdates: unknown[] | undefined,
+    requireTrackedRequest: boolean,
+  ): PermissionResponseResult {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      return { status: 'rejected', reason: 'session_unavailable' }
+    }
+    const pendingRequest = session.pendingPermissionRequests.get(requestId)
+    if (requireTrackedRequest && !pendingRequest) {
+      return { status: 'rejected', reason: 'unknown_request' }
+    }
+    const isTrackedAsk = requireTrackedRequest && pendingRequest?.toolName === 'AskUserQuestion'
+    const askSocket = isTrackedAsk ? session.sdkSocket : null
+    if (isTrackedAsk && !askSocket) {
+      return { status: 'rejected', reason: 'session_unavailable' }
+    }
+
+    const payload = {
       type: 'control_response',
       response: {
         subtype: 'success',
@@ -728,7 +858,23 @@ export class ConversationService {
               message: buildDenyMessage(pendingRequest?.toolName, denyMessage),
             },
       },
-    })
+    }
+    const transport = session.sdkSocket ? 'sent' : 'queued'
+    try {
+      if (askSocket) {
+        askSocket.send(JSON.stringify(payload) + '\n')
+      } else if (!this.sendSdkMessage(sessionId, payload)) {
+        return { status: 'rejected', reason: 'session_unavailable' }
+      }
+    } catch (error) {
+      return {
+        status: 'delivery_failed',
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+
+    session.pendingPermissionRequests.delete(requestId)
+    return { status: 'accepted', transport }
   }
 
   async setPermissionMode(sessionId: string, mode: string, timeoutMs = 10_000): Promise<boolean> {
@@ -1271,6 +1417,62 @@ export class ConversationService {
     await this.stopProcessAndWait(sessionId, session, timeoutMs)
   }
 
+  /**
+   * Stop a runtime before a recoverable transcript replacement.
+   *
+   * Unlike the ordinary shutdown path, this method reports whether both the
+   * child exit and its stdout/stderr drain were actually observed. A timeout is
+   * not writer quiescence. The caller must hold the per-session mutation slot
+   * before calling this method and through its decision to mutate the transcript;
+   * this narrow API does not add a general startup-in-flight registry. Until the
+   * original child's exit and output drain both succeed, startSession rejects a
+   * second runtime for the same session. A rejected drain remains fail-closed.
+   */
+  async stopSessionForReplacementAndConfirm(
+    sessionId: string,
+    timeoutMs = DESKTOP_CLI_GRACEFUL_SHUTDOWN_TIMEOUT_MS,
+  ): Promise<ReplacementSessionStopResult> {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      const existingLatch = this.replacementShutdownLatches.get(sessionId)
+      if (!existingLatch) return 'not_running'
+      return await this.waitForReplacementShutdownLatch(existingLatch, timeoutMs)
+        ? 'not_running'
+        : 'unconfirmed'
+    }
+
+    this.cancelPendingControlRequests(session)
+    this.sessions.delete(sessionId)
+
+    const quiescenceLatch = Promise.all([
+      session.proc.exited,
+      session.outputDrain ?? Promise.resolve(),
+    ]).then(
+      () => true,
+      () => false,
+    )
+    this.replacementShutdownLatches.set(sessionId, quiescenceLatch)
+    void quiescenceLatch.then((confirmed) => {
+      if (
+        confirmed &&
+        this.replacementShutdownLatches.get(sessionId) === quiescenceLatch
+      ) {
+        this.replacementShutdownLatches.delete(sessionId)
+      }
+    })
+
+    this.killProcess(sessionId, session, 'SIGTERM')
+    if (await this.waitForReplacementShutdownLatch(quiescenceLatch, timeoutMs)) {
+      return 'stopped'
+    }
+
+    this.killProcess(sessionId, session, 'SIGKILL')
+    const forcedConfirmationMs = Math.max(0, Math.min(timeoutMs, 500))
+    return await this.waitForReplacementShutdownLatch(quiescenceLatch, forcedConfirmationMs)
+      ? 'stopped'
+      : 'unconfirmed'
+  }
+
   stopAllSessions(): void {
     for (const sessionId of this.getActiveSessions()) {
       this.stopSession(sessionId)
@@ -1315,6 +1517,23 @@ export class ConversationService {
     await this.waitForProcessOutputDrain(session, timeoutMs)
   }
 
+  private async waitForReplacementShutdownLatch(
+    latch: Promise<boolean>,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        latch,
+        new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => resolve(false), Math.max(0, timeoutMs))
+        }),
+      ])
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout)
+    }
+  }
+
   private killProcess(
     sessionId: string,
     session: SessionProcess,
@@ -1334,6 +1553,10 @@ export class ConversationService {
   markSessionDeleted(sessionId: string): void {
     this.deletedSessions.add(sessionId)
     this.stopSession(sessionId)
+  }
+
+  isSessionDeleted(sessionId: string): boolean {
+    return this.deletedSessions.has(sessionId)
   }
 
   markSessionsDeleted(sessionIds: string[]): void {

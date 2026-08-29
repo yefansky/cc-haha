@@ -4,6 +4,12 @@
  * 定义客户端与服务器之间 WebSocket 通信的消息类型。
  */
 
+import type {
+  RuntimeBinding,
+  UserDecisionResponse,
+  UserDecisionSemanticState,
+} from '../userDecision.js'
+
 // ============================================================================
 // Client → Server
 // ============================================================================
@@ -16,10 +22,40 @@ export type PermissionMode =
   | 'dontAsk'
   | 'auto'
 
+export type ReplaceUserTurnRequest = {
+  type: 'replace_user_turn'
+  operationId: string
+  targetUserMessageId: string
+  expectedLatestUserMessageId: string
+  expectedContent: string
+  replacementMessageUuid: string
+  content: string
+  attachments?: AttachmentRef[]
+}
+
+export type ReplaceUserTurnStatusRequest = {
+  type: 'replace_user_turn_status'
+  operationId: string
+}
+
+export const USER_DECISION_RESPONSE_PROTOCOL = 'orphaned-permission-v1' as const
+
+export type UserDecisionResponseRequest = {
+  type: 'user_decision_response'
+  decisionId: string
+  attemptId: string
+  response: UserDecisionResponse
+}
+
 export type ClientMessage =
   | { type: 'prewarm_session' }
   | { type: 'sync_state' }
-  | { type: 'user_message'; content: string; attachments?: AttachmentRef[] }
+  | {
+      type: 'user_message'
+      content: string
+      attachments?: AttachmentRef[]
+      messageUuid?: string
+    }
   | {
       type: 'permission_response'
       requestId: string
@@ -38,6 +74,9 @@ export type ClientMessage =
   | { type: 'set_runtime_config'; providerId: string | null; modelId: string; effortLevel?: string }
   | { type: 'stop_generation' }
   | { type: 'stop_background_task'; taskId: string }
+  | ReplaceUserTurnRequest
+  | ReplaceUserTurnStatusRequest
+  | UserDecisionResponseRequest
   | { type: 'ping' }
 
 export type AttachmentRef = {
@@ -54,6 +93,116 @@ export type AttachmentRef = {
 // ============================================================================
 
 export const RUNTIME_CONFIG_APPLIED_EVENT = 'runtime_config_applied' as const
+
+export type PermissionResponseFailureCode =
+  | 'PERMISSION_REQUEST_NOT_FOUND'
+  | 'PERMISSION_SESSION_UNAVAILABLE'
+  | 'PERMISSION_DELIVERY_FAILED'
+
+export type ReplaceUserTurnState =
+  | 'queued'
+  | 'running'
+  | 'admitted'
+  | 'committed'
+  | 'failed'
+  | 'indeterminate'
+
+export type ReplaceUserTurnPhase =
+  | 'preflight'
+  | 'stopping'
+  | 'trimmed'
+  | 'starting_runtime'
+  | 'admitting'
+  | 'awaiting_replay'
+
+export type ReplaceUserTurnError = {
+  code: string
+  message: string
+  retryable: boolean
+  newOperationRequired: boolean
+}
+
+export type ReplaceUserTurnResult = {
+  messagesRemoved: number
+}
+
+export type ReplaceUserTurnAck = {
+  type: 'replace_user_turn_ack'
+  operationId: string
+  targetUserMessageId: string
+  replacementMessageUuid: string
+  state: ReplaceUserTurnState
+  phase?: ReplaceUserTurnPhase
+  result?: ReplaceUserTurnResult
+  error?: ReplaceUserTurnError
+  updatedAt: number
+}
+
+export type UserDecisionSnapshotEntry = {
+  decisionId: string
+  semanticState: UserDecisionSemanticState
+  runtimeBinding: RuntimeBinding
+  /** Optional so a new Desktop fails closed against an older v1 sidecar. */
+  responseCapability?:
+    | { status: 'runtime_callback' | 'orphaned_recovery' | 'already_resolved' }
+    | {
+        status: 'unavailable'
+        code:
+          | 'DECISION_NOT_FOUND'
+          | 'DECISION_CONFLICTED'
+          | 'EVIDENCE_INCOMPLETE'
+          | 'RECOVERY_UNAVAILABLE'
+      }
+  response: UserDecisionResponse | null
+  input: Record<string, unknown>
+  inputSource: 'transcript' | 'live'
+  conflicted: boolean
+  description?: string
+}
+
+export type UserDecisionSnapshot = {
+  transcriptEvidenceComplete: boolean
+  decisions: UserDecisionSnapshotEntry[]
+  userDecisionResponseProtocol?: typeof USER_DECISION_RESPONSE_PROTOCOL
+}
+
+export type UserDecisionResponseResult = {
+  type: 'user_decision_response_result'
+  decisionId: string
+  attemptId: string
+} & (
+  | {
+      state: 'accepted'
+      route: 'runtime_callback' | 'orphaned_recovery'
+    }
+  | {
+      state: 'already_resolved'
+    }
+  | {
+      state: 'retryable_failed'
+      nextAction: 'retry_new_attempt'
+      error: {
+        code: string
+        message: string
+      }
+    }
+  | {
+      state: 'indeterminate'
+      nextAction: 'verify_same_attempt'
+      error: {
+        code: string
+        message: string
+      }
+    }
+  | {
+      state: 'rejected'
+      nextAction: 'edit_response' | 'resync' | 'blocked'
+      error: {
+        code: string
+        message: string
+      }
+    }
+)
 
 export type ServerMessage =
   | { type: 'connected'; sessionId: string }
@@ -82,12 +231,21 @@ export type ServerMessage =
       allowed?: boolean
     }
   | {
+      type: 'permission_response_failed'
+      requestId: string
+      permissionType: 'tool'
+      code: PermissionResponseFailureCode
+      retryable: boolean
+      message: string
+    }
+  | {
       type: 'permission_requests_snapshot'
       toolRequestIds: string[]
       computerUseRequestIds: string[]
       turnActive: boolean
+      userDecisions?: UserDecisionSnapshot
     }
-  | { type: 'user_message_replay'; content: string }
+  | { type: 'user_message_replay'; content: string; messageUuid?: string }
   | { type: 'message_complete'; usage: TokenUsage }
   /**
    * `text` is a fragment when the CLI streams `thinking_delta`, and a whole block when
@@ -128,6 +286,8 @@ export type ServerMessage =
   | { type: 'team_deleted'; teamName: string }
   | { type: 'task_update'; taskId: string; status: string; progress?: string }
   | { type: 'session_title_updated'; sessionId: string; title: string }
+  | UserDecisionResponseResult
+  | ReplaceUserTurnAck
 
 export type TokenUsage = {
   input_tokens: number

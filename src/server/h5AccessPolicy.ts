@@ -327,6 +327,38 @@ export function isH5AccessControlPath(pathname: string): boolean {
 }
 
 /**
+ * Browser CORS preflights cannot carry the Electron process credential. Let a
+ * preflight through only when both the TCP peer and request target are
+ * loopback and the browser Origin is one of the desktop's local origins. The
+ * actual control request still has to present the process credential.
+ */
+export function isLocalH5AccessControlPreflight(
+  request: Request,
+  url: URL,
+  context: H5RequestContext,
+): boolean {
+  if (request.method !== 'OPTIONS' || !isH5AccessControlPath(url.pathname)) {
+    return false
+  }
+
+  const origin = request.headers.get('Origin')
+  if (
+    !origin ||
+    (!LOCAL_DESKTOP_ORIGINS.has(origin) && !isLoopbackBrowserOrigin(origin))
+  ) {
+    return false
+  }
+
+  const clientAddress = context.clientAddress
+  return Boolean(
+    clientAddress &&
+    !hasProxyTraceHeaders(request.headers) &&
+    isLoopbackHost(clientAddress) &&
+    isLoopbackHost(url.hostname),
+  )
+}
+
+/**
  * The control plane — enabling remote access, minting and revoking H5 tokens —
  * is the one surface where loopback alone is deliberately not enough. Once the
  * desktop shell has injected its process token, only components holding that

@@ -36,7 +36,9 @@ import {
   listSessionTurnCheckpoints,
   parseSessionRewindMode,
   previewSessionRewind,
+  replaceSessionMessage,
   type RewindTargetSelector,
+  type SessionMessageReplacementSelector,
 } from '../services/sessionRewindService.js'
 import { SessionStore } from '../../../adapters/common/session-store.js'
 import {
@@ -53,6 +55,8 @@ import { localIndexCoordinator } from '../services/localIndex/coordinator.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { isPetAccessAuthorized } from '../localAccessAuth.js'
 import { PET_SESSION_LIMIT } from '../petAccessPolicy.js'
+import { sessionMutationCoordinator } from '../services/sessionMutationCoordinator.js'
+import { sessionContextReadModel } from '../services/sessionContextReadModel.js'
 
 const DEFAULT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
 
@@ -179,6 +183,16 @@ export async function handleSessionsApi(
         )
       }
       return await rewindSession(req, sessionId)
+    }
+
+    if (subResource === 'replace-message') {
+      if (req.method !== 'POST') {
+        return Response.json(
+          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+          { status: 405 }
+        )
+      }
+      return await replaceMessage(req, sessionId)
     }
 
     if (subResource === 'branch') {
@@ -918,6 +932,11 @@ async function getSessionInspection(req: Request, sessionId: string, url: URL): 
     if (transcriptContextEstimate) {
       response.contextEstimate = transcriptContextEstimate
     }
+    if (contextOnly) {
+      response.contextStatus = transcriptContextEstimate
+        ? { source: 'transcript', freshness: 'estimated', refreshing: false }
+        : { source: 'none', freshness: 'unavailable', refreshing: false }
+    }
     if (transcriptUsage) {
       response.usage = transcriptUsage
     }
@@ -930,23 +949,21 @@ async function getSessionInspection(req: Request, sessionId: string, url: URL): 
 
   const errors: Record<string, string> = {}
   if (contextOnly) {
-    try {
-      response.context = await conversationService.requestControl(
+    const contextRead = await sessionContextReadModel.read({
+      sessionId,
+      identity: initMessage ?? sessionId,
+      readTranscript: async () => (await getTranscriptSnapshot())?.contextEstimate ?? null,
+      readLive: async signal => await conversationService.requestControl(
         sessionId,
         { subtype: 'get_context_usage', estimateOnly: true },
         20_000,
-        req.signal,
-      )
-    } catch (error) {
-      throwIfRequestAborted(req)
-      errors.context = error instanceof Error ? error.message : String(error)
-    }
-    if (!response.context) {
-      const transcriptContextEstimate = (await getTranscriptSnapshot())?.contextEstimate ?? null
-      if (transcriptContextEstimate) {
-        response.contextEstimate = transcriptContextEstimate
-      }
-    }
+        signal,
+      ),
+    })
+    if (contextRead.context) response.context = contextRead.context
+    if (contextRead.contextEstimate) response.contextEstimate = contextRead.contextEstimate
+    response.contextStatus = contextRead.contextStatus
+    if (contextRead.error) errors.context = contextRead.error
   } else {
     const basicControlTimeoutMs = includeContext ? 10_000 : 4_000
     const [usageResult, contextResult, mcpResult] = await Promise.allSettled([
@@ -1205,9 +1222,48 @@ async function rewindSession(req: Request, sessionId: string): Promise<Response>
   }
   const result = body.dryRun
     ? await previewSessionRewind(sessionId, body)
-    : await executeSessionRewind(sessionId, body, mode, paths)
+    : await sessionMutationCoordinator.enqueue(
+        sessionId,
+        () => executeSessionRewind(sessionId, body, mode, paths),
+      )
 
   return Response.json(result)
+}
+
+/**
+ * Editing a sent prompt is a transcript replacement, not a file rewind. Keep
+ * this endpoint separate from /rewind so it cannot accidentally inherit
+ * checkpoint/diff work or its long client timeout.
+ */
+async function replaceMessage(req: Request, sessionId: string): Promise<Response> {
+  let body: Record<string, unknown>
+  try {
+    const parsed = await req.json()
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw ApiError.badRequest('Request body must be an object')
+    }
+    body = parsed as Record<string, unknown>
+  } catch {
+    throw ApiError.badRequest('Invalid JSON body')
+  }
+
+  if (typeof body.targetUserMessageId !== 'string' || body.targetUserMessageId.trim().length === 0) {
+    throw ApiError.badRequest(
+      'targetUserMessageId (non-empty string) is required; userMessageIndex is not supported for message replacement',
+    )
+  }
+  if (body.expectedContent !== undefined && typeof body.expectedContent !== 'string') {
+    throw ApiError.badRequest('expectedContent must be a string when provided')
+  }
+
+  const selector: SessionMessageReplacementSelector = {
+    targetUserMessageId: body.targetUserMessageId,
+    ...(body.expectedContent !== undefined ? { expectedContent: body.expectedContent } : {}),
+  }
+  return Response.json(await sessionMutationCoordinator.enqueue(
+    sessionId,
+    () => replaceSessionMessage(sessionId, selector),
+  ))
 }
 
 async function branchSession(req: Request, sessionId: string): Promise<Response> {

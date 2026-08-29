@@ -12,17 +12,36 @@ import type {
   PermissionMode,
   ServerMessage,
   TokenUsage,
+  UserDecisionResponseResult,
+  UserDecisionSnapshot,
 } from './events.js'
-import { RUNTIME_CONFIG_APPLIED_EVENT } from './events.js'
+import {
+  RUNTIME_CONFIG_APPLIED_EVENT,
+  USER_DECISION_RESPONSE_PROTOCOL,
+} from './events.js'
 import * as os from 'node:os'
 import {
   ConversationStartupError,
   conversationService,
 } from '../services/conversationService.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
+import { sessionMutationCoordinator } from '../services/sessionMutationCoordinator.js'
 import {
   sessionService,
 } from '../services/sessionService.js'
+import {
+  projectUserDecisions,
+  selectUserDecisionDeliveryCapability,
+  type SessionUserDecisionSnapshot,
+  type UserDecisionReadEntry,
+} from '../services/userDecisionReadModel.js'
+import {
+  UserDecisionDeliveryCoordinator,
+  type UserDecisionDeliveryClaimResult,
+  type UserDecisionDeliveryLease,
+  type UserDecisionDeliverySnapshot,
+} from '../services/userDecisionDeliveryCoordinator.js'
+import type { UserDecisionResponse } from '../userDecision.js'
 import { SettingsService } from '../services/settingsService.js'
 import { ProviderService } from '../services/providerService.js'
 import { getPresetDefaultEnv } from '../services/providerRuntimeEnv.js'
@@ -53,6 +72,7 @@ import {
 } from '../services/titleService.js'
 import { parseSlashCommand } from '../../utils/slashCommandParsing.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
+import { withTimeout } from '../../utils/sleep.js'
 import { archiveRemoteSession } from '../../utils/teleport/api.js'
 import { shouldCreateWorktreeForSessionLaunch } from '../services/repositoryLaunchService.js'
 import { getDisconnectGraceMs } from './disconnectGraceConfig.js'
@@ -119,6 +139,91 @@ import type {
 
 const settingsService = new SettingsService()
 const providerService = new ProviderService()
+function createUserDecisionDeliveryCoordinator(): UserDecisionDeliveryCoordinator {
+  return new UserDecisionDeliveryCoordinator({
+    capacity: 256,
+    maxAttemptsPerDecision: 8,
+    maxResponseBytes: 64 * 1_024,
+    maxFailureBytes: 4 * 1_024,
+  })
+}
+let userDecisionDeliveryCoordinator = createUserDecisionDeliveryCoordinator()
+const MAX_USER_DECISION_ID_BYTES = 2_048
+const MAX_USER_DECISION_ATTEMPT_ID_BYTES = 128
+
+type UserDecisionFailureNextAction =
+  | 'edit_response'
+  | 'resync'
+  | 'blocked'
+  | 'retry_new_attempt'
+  | 'verify_same_attempt'
+
+type UserDecisionClaimRejectionCode = Extract<
+  UserDecisionDeliveryClaimResult,
+  { status: 'rejected' }
+>['code']
+
+type UserDecisionUnavailableCode = Extract<
+  ReturnType<typeof selectUserDecisionDeliveryCapability>,
+  { status: 'unavailable' }
+>['code']
+
+type UserDecisionHandlerFailureCode =
+  | UserDecisionClaimRejectionCode
+  | UserDecisionUnavailableCode
+  | 'INVALID_USER_DECISION_IDENTIFIERS'
+  | 'INVALID_USER_DECISION_RESPONSE'
+  | 'USER_DECISION_RESPONSE_TOO_LARGE'
+  | 'DECISION_RESPONSE_MISMATCH'
+  | 'USER_DECISION_DELIVERY_BUSY'
+  | 'USER_DECISION_RESPONSE_FAILED'
+  | 'PERMISSION_DELIVERY_INDETERMINATE'
+  | 'ORPHANED_DELIVERY_INDETERMINATE'
+  | 'USER_DECISION_DELIVERY_IN_PROGRESS'
+  | 'RUNTIME_CALLBACK_UNAVAILABLE'
+  | 'SESSION_RUNTIME_BUSY'
+  | 'CLI_RECOVERY_PREPARE_FAILED'
+  | 'CLI_SHUTDOWN_FAILED'
+  | 'CLI_SHUTDOWN_UNCONFIRMED'
+  | 'DECISION_EVIDENCE_READ_FAILED'
+  | 'USER_DECISION_ROUTE_CHANGED'
+  | 'CLI_RECOVERY_START_FAILED'
+  | 'RECOVERY_SESSION_UNAVAILABLE'
+  | 'FAILURE_DETAIL_TOO_LARGE'
+
+const USER_DECISION_FAILURE_ACTIONS = {
+  INVALID_USER_DECISION_IDENTIFIERS: 'resync',
+  INVALID_USER_DECISION_RESPONSE: 'edit_response',
+  USER_DECISION_RESPONSE_TOO_LARGE: 'edit_response',
+  DECISION_NOT_FOUND: 'resync',
+  DECISION_CONFLICTED: 'resync',
+  EVIDENCE_INCOMPLETE: 'resync',
+  RECOVERY_UNAVAILABLE: 'resync',
+  DECISION_RESPONSE_MISMATCH: 'resync',
+  USER_DECISION_DELIVERY_BUSY: 'resync',
+  ATTEMPT_RESPONSE_MISMATCH: 'resync',
+  RESPONSE_MISMATCH: 'resync',
+  ATTEMPT_ALREADY_USED: 'retry_new_attempt',
+  ATTEMPT_CAPACITY_EXHAUSTED: 'blocked',
+  RESPONSE_TOO_LARGE: 'edit_response',
+  // No coordinator entry or delivery side effect exists when global capacity
+  // rejects a claim, so a fresh attempt is safe once capacity becomes available.
+  CAPACITY_EXHAUSTED: 'retry_new_attempt',
+  USER_DECISION_RESPONSE_FAILED: 'verify_same_attempt',
+  PERMISSION_DELIVERY_INDETERMINATE: 'verify_same_attempt',
+  ORPHANED_DELIVERY_INDETERMINATE: 'verify_same_attempt',
+  USER_DECISION_DELIVERY_IN_PROGRESS: 'verify_same_attempt',
+  RUNTIME_CALLBACK_UNAVAILABLE: 'retry_new_attempt',
+  SESSION_RUNTIME_BUSY: 'retry_new_attempt',
+  CLI_RECOVERY_PREPARE_FAILED: 'retry_new_attempt',
+  CLI_SHUTDOWN_FAILED: 'retry_new_attempt',
+  CLI_SHUTDOWN_UNCONFIRMED: 'retry_new_attempt',
+  DECISION_EVIDENCE_READ_FAILED: 'retry_new_attempt',
+  USER_DECISION_ROUTE_CHANGED: 'resync',
+  CLI_RECOVERY_START_FAILED: 'retry_new_attempt',
+  RECOVERY_SESSION_UNAVAILABLE: 'retry_new_attempt',
+  FAILURE_DETAIL_TOO_LARGE: 'retry_new_attempt',
+} as const satisfies Record<UserDecisionHandlerFailureCode, UserDecisionFailureNextAction>
 
 function buildSdkWebSocketUrl(
   ws: ServerWebSocket<WebSocketData>,
@@ -445,10 +550,7 @@ function isPermissionMode(value: unknown): value is PermissionMode {
   return typeof value === 'string' && validPermissionModes.has(value as PermissionMode)
 }
 
-const runtimeTransitionPromises = new Map<string, Promise<void>>()
 const sessionStartupPromises = new Map<string, Promise<void>>()
-const runtimeOverrideVersions = new Map<string, number>()
-const sessionStartupRuntimeVersions = new Map<string, number>()
 const lastResolvedStartupWorkDirs = new Map<string, string>()
 const prewarmPendingSessions = new Set<string>()
 const prewarmedSessions = new Set<string>()
@@ -510,6 +612,17 @@ export type WebSocketData = {
 const activeSessions = new Map<string, Set<ServerWebSocket<WebSocketData>>>()
 let activePetClient: ServerWebSocket<WebSocketData> | null = null
 
+const USER_DECISION_SNAPSHOT_TIMEOUT_MS = 1_500
+const MAX_CONNECTION_SNAPSHOT_QUEUED_MESSAGES = 256
+type ConnectionSnapshotBarrier = {
+  token: symbol
+  queuedMessages: ServerMessage[]
+}
+const connectionSnapshotBarriers = new WeakMap<
+  ServerWebSocket<WebSocketData>,
+  ConnectionSnapshotBarrier
+>()
+
 const clientOutputCallbacks = new Map<
   ServerWebSocket<WebSocketData>,
   {
@@ -546,6 +659,9 @@ export const handleWebSocket = {
 
     console.log(`[WS] Client connected for session: ${sessionId}`)
 
+    const usesConnectionSnapshotBarrier = ws.data.clientKind !== 'pet'
+    if (usesConnectionSnapshotBarrier) installConnectionSnapshotBarrier(ws)
+
     // Cancel pending cleanup timer if client reconnects
     const pendingTimer = sessionCleanupTimers.get(sessionId)
     if (pendingTimer) {
@@ -564,16 +680,22 @@ export const handleWebSocket = {
     }
 
     const msg: ServerMessage = { type: 'connected', sessionId }
-    sendMessage(ws, msg)
-    const toolRequestIds = replayPendingPermissionRequests(ws, sessionId)
-    const computerUseRequestIds = replayPendingComputerUsePermissionRequests(ws, sessionId)
-    sendMessage(ws, {
-      type: 'permission_requests_snapshot',
-      toolRequestIds,
-      computerUseRequestIds,
-      turnActive: hasLiveUserTurnForClient(sessionId),
-    })
-    replayAgentStopFailures(ws, sessionId)
+    sendMessageImmediately(ws, msg)
+    if (usesConnectionSnapshotBarrier) {
+      void hydrateConnectionSnapshot(ws, sessionId)
+    } else {
+      const pendingRequests = conversationService.getPendingPermissionRequests(sessionId)
+      const computerUseRequests = computerUseApprovalService.getPendingRequests(sessionId)
+      replayPendingPermissionRequests(ws, pendingRequests, true)
+      replayPendingComputerUsePermissionRequests(ws, computerUseRequests, true)
+      sendMessageImmediately(ws, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: pendingRequests.map(request => request.requestId),
+        computerUseRequestIds: computerUseRequests.map(request => request.requestId),
+        turnActive: hasLiveUserTurnForClient(sessionId),
+      })
+      replayAgentStopFailures(ws, sessionId)
+    }
   },
 
   message(ws: ServerWebSocket<WebSocketData>, rawMessage: string | Buffer) {
@@ -646,6 +768,17 @@ export const handleWebSocket = {
           handlePermissionResponse(ws, message)
           break
 
+        case 'user_decision_response':
+          void handleUserDecisionResponse(ws, message).catch((error) => {
+            console.error('[WS] User decision response failed:', error)
+            sendUserDecisionFailureResult(ws, {
+              decisionId: typeof message.decisionId === 'string' ? message.decisionId : '',
+              attemptId: typeof message.attemptId === 'string' ? message.attemptId : '',
+            }, 'USER_DECISION_RESPONSE_FAILED',
+            'User decision response could not be processed.')
+          })
+          break
+
         case 'computer_use_permission_response':
           handleComputerUsePermissionResponse(ws, message)
           break
@@ -701,6 +834,7 @@ export const handleWebSocket = {
     }
 
     if (activePetClient === ws) activePetClient = null
+    connectionSnapshotBarriers.delete(ws)
 
     console.log(`[WS] Client disconnected from session: ${sessionId} (${code}: ${reason})`)
     if (!removeActiveClient(sessionId, ws)) {
@@ -774,7 +908,10 @@ async function handleUserMessage(
   // Send thinking status
   sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
 
-  activeTurn.expectedReplayUuid = crypto.randomUUID()
+  activeTurn.expectedReplayUuid =
+    typeof message.messageUuid === 'string' && message.messageUuid.trim()
+      ? message.messageUuid
+      : crypto.randomUUID()
   activeTurn.expectedLocalCommand = desktopSlashCommand ?? undefined
   activeTurn.replacementAfterStop =
     sessionStopRequested.has(sessionId) || agentStopRequestedSessions.has(sessionId)
@@ -786,13 +923,17 @@ async function handleUserMessage(
   // request. Start the replacement on a clean runtime instead, so retry is
   // bounded by a short process restart rather than the upstream timeout.
   if (activeTurn.replacementAfterStop && conversationService.hasSession(sessionId)) {
-    console.log(`[WS] Restarting stopped CLI runtime before replacement turn: ${sessionId}`)
-    pendingInterruptedTurnResults.delete(sessionId)
-    runtimeExitStoppedSessions.add(sessionId)
-    await conversationService.stopSessionAndWait(
-      sessionId,
-      STOPPED_TURN_RESTART_SHUTDOWN_TIMEOUT_MS,
-    )
+    await enqueueRuntimeTransition(sessionId, async () => {
+      if (activeUserTurns.get(sessionId) !== activeTurn || activeTurn.cancelled) return
+      if (!conversationService.hasSession(sessionId)) return
+      console.log(`[WS] Restarting stopped CLI runtime before replacement turn: ${sessionId}`)
+      pendingInterruptedTurnResults.delete(sessionId)
+      runtimeExitStoppedSessions.add(sessionId)
+      await conversationService.stopSessionAndWait(
+        sessionId,
+        STOPPED_TURN_RESTART_SHUTDOWN_TIMEOUT_MS,
+      )
+    })
     if (activeUserTurns.get(sessionId) !== activeTurn || activeTurn.cancelled) return
   }
 
@@ -893,41 +1034,54 @@ async function handleUserMessage(
   let userMessageSent = false
   const shouldForwardCurrentTurnLocalCommand =
     createCurrentTurnLocalCommandForwarder(desktopSlashCommand)
-  const removeTitleOutputCallback = titleTurnNumber === null
-    ? null
-    : bindTitleSessionOutput(ws, sessionId, activeTurn, () => userMessageSent)
+  let removeTitleOutputCallback: (() => void) | null = null
+  let removeActiveTurnOutputCallback = () => {}
+  const sent = await enqueueRuntimeTransition(sessionId, async () => {
+    if (activeUserTurns.get(sessionId) !== activeTurn || activeTurn.cancelled) return false
 
-  bindAllClientSessionOutputs(sessionId, {
-    shouldForward: (cliMsg) => {
-      if (userMessageSent || (cliMsg.type === 'result' && cliMsg.is_error)) {
-        return true
-      }
-      return shouldForwardCurrentTurnLocalCommand(cliMsg)
-    },
+    try {
+      removeTitleOutputCallback = titleTurnNumber === null
+        ? null
+        : bindTitleSessionOutput(ws, sessionId, activeTurn, () => userMessageSent)
+
+      bindAllClientSessionOutputs(sessionId, {
+        shouldForward: (cliMsg) => {
+          if (userMessageSent || (cliMsg.type === 'result' && cliMsg.is_error)) {
+            return true
+          }
+          return shouldForwardCurrentTurnLocalCommand(cliMsg)
+        },
+      })
+      removeActiveTurnOutputCallback = bindActiveUserTurnCompletion(ws, sessionId, activeTurn)
+
+      // The renderer may have left while the CLI was still starting, before this
+      // turn could flip messageSent=true. The disconnect handler cannot attach an
+      // effective output watcher until the ConversationService session exists, so
+      // refresh it here, immediately before sending the turn, to observe a
+      // permission request that arrives after the disconnect.
+      refreshDisconnectedTurnCleanupWatcher(sessionId)
+
+      activeTurn.sendStarted = true
+      return await conversationService.sendMessage(
+        sessionId,
+        message.content,
+        message.attachments,
+        {
+          canSend: () =>
+            activeUserTurns.get(sessionId) === activeTurn && !activeTurn.cancelled,
+          messageUuid: activeTurn.expectedReplayUuid,
+          onCommitted: () => {
+            activeTurn.messageSent = true
+          },
+        },
+      )
+    } catch (error) {
+      removeActiveTurnOutputCallback()
+      removeTitleOutputCallback?.()
+      discardActiveTitleTurn(sessionId, titleTurnNumber)
+      throw error
+    }
   })
-  const removeActiveTurnOutputCallback = bindActiveUserTurnCompletion(ws, sessionId, activeTurn)
-
-  // The renderer may have left while the CLI was still starting, before this
-  // turn could flip messageSent=true. The disconnect handler cannot attach an
-  // effective output watcher until the ConversationService session exists, so
-  // refresh it here, immediately before sending the turn, to observe a
-  // permission request that arrives after the disconnect.
-  refreshDisconnectedTurnCleanupWatcher(sessionId)
-
-  activeTurn.sendStarted = true
-  const sent = await conversationService.sendMessage(
-    sessionId,
-    message.content,
-    message.attachments,
-    {
-      canSend: () =>
-        activeUserTurns.get(sessionId) === activeTurn && !activeTurn.cancelled,
-      messageUuid: activeTurn.expectedReplayUuid,
-      onCommitted: () => {
-        activeTurn.messageSent = true
-      },
-    },
-  )
   if (activeUserTurns.get(sessionId) !== activeTurn || activeTurn.cancelled) {
     // Once onCommitted has run the SDK owns this turn and will still emit its
     // terminal result. Keep the completion callback long enough to consume
@@ -1185,7 +1339,6 @@ async function performDesktopClearCommand(
   if (turnToCancel) clearActiveUserTurn(sessionId, turnToCancel)
   const activeTitleState = sessionTitleState.get(sessionId)
   if (activeTitleState) activeTitleState.activeTurn = undefined
-  const pendingStartup = sessionStartupPromises.get(sessionId)
   conversationService.stopSession(sessionId)
   pendingInterruptedTurnResults.delete(sessionId)
   // Clearing replaces the transcript, so do not enqueue terminal bookends that
@@ -1194,15 +1347,6 @@ async function performDesktopClearCommand(
   // on an independent bounded retry path after the transcript replacement.
   conversationService.clearOutputCallbacks(sessionId)
   clearPrewarmState(sessionId)
-
-  if (pendingStartup) {
-    await pendingStartup.catch(() => undefined)
-    // The startup may have created a runtime after the first stopSession call.
-    // Keep the clear transition locked until that stale admission is drained.
-    conversationService.stopSession(sessionId)
-    conversationService.clearOutputCallbacks(sessionId)
-    clearPrewarmState(sessionId)
-  }
 
   try {
     await sessionService.clearSessionTranscript(sessionId, workDir || undefined, permissionMode)
@@ -1220,6 +1364,8 @@ async function performDesktopClearCommand(
     sendToSession(sessionId, { type: 'status', state: 'idle' })
     return
   }
+
+  userDecisionDeliveryCoordinator.clearPermanentlyDeletedSession(sessionId)
 
   sessionTranscriptEpochs.set(
     sessionId,
@@ -1309,7 +1455,7 @@ function handlePermissionResponse(
   message: Extract<ClientMessage, { type: 'permission_response' }>
 ) {
   const { sessionId } = ws.data
-  const resolved = conversationService.respondToPermission(
+  const result = conversationService.respondToTrackedPermission(
     sessionId,
     message.requestId,
     message.allowed,
@@ -1318,15 +1464,742 @@ function handlePermissionResponse(
     message.denyMessage,
     message.permissionUpdates,
   )
-  if (resolved) {
+  if (result.status === 'accepted') {
     sendToSession(sessionId, {
       type: 'permission_resolved',
       requestId: message.requestId,
       permissionType: 'tool',
       allowed: message.allowed,
     })
+    console.log(`[WS] Permission response for ${message.requestId}: ${message.allowed}`)
+    return
   }
-  console.log(`[WS] Permission response for ${message.requestId}: ${message.allowed}`)
+
+  if (result.status === 'delivery_failed') {
+    console.warn(
+      `[WS] Permission response transport failed for ${message.requestId} in ${sessionId}: ${result.error}`,
+    )
+    sendMessage(ws, {
+      type: 'permission_response_failed',
+      requestId: message.requestId,
+      permissionType: 'tool',
+      code: 'PERMISSION_DELIVERY_FAILED',
+      retryable: true,
+      message: 'Permission response could not be sent.',
+    })
+    return
+  }
+
+  const requestMissing = result.reason === 'unknown_request'
+  sendMessage(ws, {
+    type: 'permission_response_failed',
+    requestId: message.requestId,
+    permissionType: 'tool',
+    code: requestMissing
+      ? 'PERMISSION_REQUEST_NOT_FOUND'
+      : 'PERMISSION_SESSION_UNAVAILABLE',
+    retryable: false,
+    message: requestMissing
+      ? 'Permission request was not found.'
+      : 'Permission session is unavailable.',
+  })
+}
+
+async function handleUserDecisionResponse(
+  ws: ServerWebSocket<WebSocketData>,
+  message: Extract<ClientMessage, { type: 'user_decision_response' }>,
+): Promise<void> {
+  const validated = validateUserDecisionResponse(message)
+  if (!validated.ok) {
+    sendUserDecisionFailureResult(ws, {
+      decisionId: validated.decisionId,
+      attemptId: validated.attemptId,
+    }, validated.code, validated.message)
+    return
+  }
+
+  const { sessionId } = ws.data
+  await enqueueRuntimeTransition(sessionId, async () => {
+    const freshSnapshot = await readFreshPermissionRequestsSnapshot(sessionId)
+    const snapshot = freshSnapshot.userDecisions
+    const capability = selectUserDecisionDeliveryCapability(
+      snapshot,
+      validated.decisionId,
+    )
+    if (capability.status === 'already_resolved') {
+      userDecisionDeliveryCoordinator.reconcileTerminal(
+        sessionId,
+        validated.decisionId,
+        capability.semanticState,
+      )
+      sendUserDecisionResponseResult(ws, {
+        type: 'user_decision_response_result',
+        decisionId: validated.decisionId,
+        attemptId: validated.attemptId,
+        state: 'already_resolved',
+      })
+      sendMessage(ws, buildPermissionRequestsSnapshotMessage(freshSnapshot))
+      return
+    }
+    if (capability.status === 'unavailable') {
+      sendUnavailableUserDecisionResult(ws, validated, capability.code)
+      return
+    }
+
+    const entry = snapshot.decisions.find(
+      ({ decision }) => decision.decisionId === validated.decisionId,
+    )!
+    if (!isResponseCompleteForDecision(validated.response, entry.input)) {
+      sendUserDecisionFailureResult(
+        ws,
+        validated,
+        'DECISION_RESPONSE_MISMATCH',
+        'The response does not match the current decision questions.',
+      )
+      return
+    }
+
+    const claim = userDecisionDeliveryCoordinator.claim({
+      sessionId,
+      decisionId: validated.decisionId,
+      attemptId: validated.attemptId,
+      response: validated.response,
+      runtimeBinding: capability.status === 'runtime_callback'
+        ? { status: 'attached', requestId: capability.requestId }
+        : { status: 'detached' },
+    })
+    if (claim.status === 'replayed') {
+      sendReplayedUserDecisionResult(ws, validated, claim.delivery)
+      return
+    }
+    if (claim.status === 'busy') {
+      sendUserDecisionFailureResult(
+        ws,
+        validated,
+        'USER_DECISION_DELIVERY_BUSY',
+        'Another delivery attempt is already active.',
+      )
+      return
+    }
+    if (claim.status === 'rejected') {
+      sendUserDecisionFailureResult(
+        ws,
+        validated,
+        claim.code,
+        'The delivery attempt was rejected.',
+      )
+      return
+    }
+
+    if (capability.status === 'runtime_callback') {
+      deliverAttachedUserDecision(
+        ws,
+        snapshot,
+        validated,
+        capability.requestId,
+        claim.lease,
+      )
+      return
+    }
+    await deliverDetachedUserDecision(ws, validated, claim.lease)
+  })
+}
+
+type ValidatedUserDecisionResponse = {
+  decisionId: string
+  attemptId: string
+  response: UserDecisionResponse
+}
+
+function validateUserDecisionResponse(
+  message: Extract<ClientMessage, { type: 'user_decision_response' }>,
+):
+  | ({ ok: true } & ValidatedUserDecisionResponse)
+  | {
+      ok: false
+      decisionId: string
+      attemptId: string
+      code:
+        | 'INVALID_USER_DECISION_IDENTIFIERS'
+        | 'INVALID_USER_DECISION_RESPONSE'
+        | 'USER_DECISION_RESPONSE_TOO_LARGE'
+      message: string
+    } {
+  const decisionId = typeof message.decisionId === 'string' ? message.decisionId : ''
+  const attemptId = typeof message.attemptId === 'string' ? message.attemptId : ''
+  const invalidId = (
+    value: string,
+    maxBytes: number,
+  ) => !value || value !== value.trim() || Buffer.byteLength(value, 'utf8') > maxBytes
+  if (
+    invalidId(decisionId, MAX_USER_DECISION_ID_BYTES) ||
+    invalidId(attemptId, MAX_USER_DECISION_ATTEMPT_ID_BYTES)
+  ) {
+    return {
+      ok: false,
+      decisionId,
+      attemptId,
+      code: 'INVALID_USER_DECISION_IDENTIFIERS',
+      message: 'Decision and attempt identifiers are invalid.',
+    }
+  }
+
+  const response = message.response
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    return {
+      ok: false,
+      decisionId,
+      attemptId,
+      code: 'INVALID_USER_DECISION_RESPONSE',
+      message: 'Decision response is invalid.',
+    }
+  }
+  let normalized: UserDecisionResponse
+  if (response.kind === 'answer') {
+    if (
+      !response.answers ||
+      typeof response.answers !== 'object' ||
+      Array.isArray(response.answers) ||
+      !Object.entries(response.answers).every(
+        ([question, answer]) => question.trim() && typeof answer === 'string',
+      )
+    ) {
+      return {
+        ok: false,
+        decisionId,
+        attemptId,
+        code: 'INVALID_USER_DECISION_RESPONSE',
+        message: 'Decision answers are invalid.',
+      }
+    }
+    normalized = { kind: 'answer', answers: { ...response.answers } }
+  } else if (
+    response.kind === 'clarify' &&
+    typeof response.message === 'string' &&
+    response.message.trim()
+  ) {
+    normalized = { kind: 'clarify', message: response.message }
+  } else {
+    return {
+      ok: false,
+      decisionId,
+      attemptId,
+      code: 'INVALID_USER_DECISION_RESPONSE',
+      message: 'Decision response is invalid.',
+    }
+  }
+  if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > 64 * 1_024) {
+    return {
+      ok: false,
+      decisionId,
+      attemptId,
+      code: 'USER_DECISION_RESPONSE_TOO_LARGE',
+      message: 'Decision response is too large.',
+    }
+  }
+  return { ok: true, decisionId, attemptId, response: normalized }
+}
+
+function isResponseCompleteForDecision(
+  response: UserDecisionResponse,
+  input: Record<string, unknown>,
+): boolean {
+  if (response.kind === 'clarify') return true
+  if (!Array.isArray(input.questions) || input.questions.length === 0) return false
+  const questions = input.questions.map((question) => {
+    if (!question || typeof question !== 'object' || Array.isArray(question)) return null
+    const text = (question as Record<string, unknown>).question
+    return typeof text === 'string' && text.trim() ? text : null
+  })
+  if (questions.some((question) => question === null)) return false
+  const expected = new Set(questions as string[])
+  const answers = Object.entries(response.answers)
+  return expected.size === questions.length &&
+    answers.length === expected.size &&
+    answers.every(([question, answer]) => expected.has(question) && answer.trim().length > 0)
+}
+
+type FreshPermissionRequestsSnapshot = Readonly<{
+  pendingRequests: ReturnType<typeof conversationService.getPendingPermissionRequests>
+  computerUseRequests: ReturnType<typeof computerUseApprovalService.getPendingRequests>
+  turnActive: boolean
+  userDecisions: SessionUserDecisionSnapshot
+}>
+
+async function readFreshPermissionRequestsSnapshot(
+  sessionId: string,
+): Promise<FreshPermissionRequestsSnapshot> {
+  const transcript = await sessionService.getSessionMessagesWithEvidence(sessionId)
+  return sampleFreshPermissionRequestsSnapshot(
+    sessionId,
+    transcript.messages,
+    transcript.transcriptEvidenceComplete,
+  )
+}
+
+function sampleFreshPermissionRequestsSnapshot(
+  sessionId: string,
+  messages: Awaited<ReturnType<typeof sessionService.getSessionMessagesWithEvidence>>['messages'],
+  transcriptEvidenceComplete: boolean,
+): FreshPermissionRequestsSnapshot {
+  // Capture all mutable runtime projections without an await so the request ID
+  // lists and UserDecision bindings describe one authoritative boundary.
+  const pendingRequests = conversationService.getPendingPermissionRequests(sessionId)
+  const computerUseRequests = computerUseApprovalService.getPendingRequests(sessionId)
+  const turnActive = hasLiveUserTurnForClient(sessionId)
+  const userDecisions = projectUserDecisions({
+    sessionId,
+    messages,
+    pendingRequests,
+    transcriptEvidenceComplete,
+  })
+  reconcileTerminalUserDecisionDeliveries(userDecisions)
+  return {
+    pendingRequests,
+    computerUseRequests,
+    turnActive,
+    userDecisions,
+  }
+}
+
+function buildPermissionRequestsSnapshotMessage(
+  snapshot: FreshPermissionRequestsSnapshot,
+): Extract<ServerMessage, { type: 'permission_requests_snapshot' }> {
+  return {
+    type: 'permission_requests_snapshot',
+    toolRequestIds: snapshot.pendingRequests.map(request => request.requestId),
+    computerUseRequestIds: snapshot.computerUseRequests.map(request => request.requestId),
+    turnActive: snapshot.turnActive,
+    userDecisions: toUserDecisionSnapshot(snapshot.userDecisions),
+  }
+}
+
+function reconcileTerminalUserDecisionDeliveries(
+  snapshot: SessionUserDecisionSnapshot,
+): void {
+  for (const { decision, hasToolResultEvidence } of snapshot.decisions) {
+    if (hasToolResultEvidence) {
+      userDecisionDeliveryCoordinator.reconcileTerminal(
+        snapshot.sessionId,
+        decision.decisionId,
+        decision.semanticState.status === 'open'
+          ? { status: 'cancelled', reason: 'tool_result_observed' }
+          : decision.semanticState,
+      )
+      continue
+    }
+    if (decision.semanticState.status === 'open') continue
+    userDecisionDeliveryCoordinator.reconcileTerminal(
+      snapshot.sessionId,
+      decision.decisionId,
+      decision.semanticState,
+    )
+  }
+}
+
+function sendUnavailableUserDecisionResult(
+  ws: ServerWebSocket<WebSocketData>,
+  request: ValidatedUserDecisionResponse,
+  code: UserDecisionUnavailableCode,
+): void {
+  sendUserDecisionFailureResult(
+    ws,
+    request,
+    code,
+    code === 'EVIDENCE_INCOMPLETE'
+      ? 'Decision evidence is incomplete. Synchronize before responding.'
+      : 'This decision cannot be delivered from the current evidence.',
+  )
+}
+
+function sendReplayedUserDecisionResult(
+  ws: ServerWebSocket<WebSocketData>,
+  request: ValidatedUserDecisionResponse,
+  delivery: UserDecisionDeliverySnapshot,
+): void {
+  const attempt = delivery.deliveryAttempt
+  if (attempt.status === 'accepted') {
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'accepted',
+      route: attempt.route.status === 'runtime_callback'
+        ? 'runtime_callback'
+        : 'orphaned_recovery',
+    })
+    return
+  }
+  if (attempt.status === 'retryable_failed') {
+    emitUserDecisionFailureResult(
+      ws,
+      request,
+      { state: 'retryable_failed', nextAction: 'retry_new_attempt' },
+      attempt.error,
+    )
+    return
+  }
+  if (attempt.status === 'indeterminate') {
+    const attached = attempt.route.status === 'runtime_callback'
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      attached
+        ? 'PERMISSION_DELIVERY_INDETERMINATE'
+        : 'ORPHANED_DELIVERY_INDETERMINATE',
+      attached
+        ? 'The live delivery outcome could not be confirmed.'
+        : 'The recovery delivery outcome could not be confirmed.',
+    )
+    return
+  }
+  sendUserDecisionFailureResult(
+    ws,
+    request,
+    'USER_DECISION_DELIVERY_IN_PROGRESS',
+    'The delivery outcome is not yet known.',
+  )
+}
+
+function deliverAttachedUserDecision(
+  ws: ServerWebSocket<WebSocketData>,
+  snapshot: SessionUserDecisionSnapshot,
+  request: ValidatedUserDecisionResponse,
+  requestId: string,
+  lease: UserDecisionDeliveryLease,
+): void {
+  const entry = snapshot.decisions.find(
+    ({ decision }) => decision.decisionId === request.decisionId,
+  )!
+  let result: ReturnType<typeof conversationService.respondToTrackedPermission>
+  try {
+    result = conversationService.respondToTrackedPermission(
+      snapshot.sessionId,
+      requestId,
+      request.response.kind === 'answer',
+      undefined,
+      request.response.kind === 'answer'
+        ? { ...entry.input, answers: request.response.answers }
+        : undefined,
+      request.response.kind === 'clarify' ? request.response.message : undefined,
+    )
+  } catch (error) {
+    console.error('[WS] Live user decision delivery outcome is unknown:', error)
+    userDecisionDeliveryCoordinator.markIndeterminate(lease)
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      'PERMISSION_DELIVERY_INDETERMINATE',
+      'The live delivery outcome could not be confirmed.',
+    )
+    return
+  }
+  if (result.status === 'accepted') {
+    userDecisionDeliveryCoordinator.accept(lease)
+    sendToSession(snapshot.sessionId, {
+      type: 'permission_resolved',
+      requestId,
+      permissionType: 'tool',
+      allowed: request.response.kind === 'answer',
+    })
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'accepted',
+      route: 'runtime_callback',
+    })
+    return
+  }
+  if (result.status === 'delivery_failed') {
+    console.error('[WS] Live user decision delivery outcome is unknown:', result.error)
+    userDecisionDeliveryCoordinator.markIndeterminate(lease)
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      'PERMISSION_DELIVERY_INDETERMINATE',
+      'The live delivery outcome could not be confirmed.',
+    )
+    return
+  }
+  userDecisionDeliveryCoordinator.failRetryable(lease, {
+    code: 'RUNTIME_CALLBACK_UNAVAILABLE',
+    message: 'The live permission callback is no longer available.',
+  })
+  sendUserDecisionFailureResult(
+    ws,
+    request,
+    'RUNTIME_CALLBACK_UNAVAILABLE',
+    'The live permission callback is no longer available.',
+  )
+}
+
+async function deliverDetachedUserDecision(
+  ws: ServerWebSocket<WebSocketData>,
+  request: ValidatedUserDecisionResponse,
+  lease: UserDecisionDeliveryLease,
+): Promise<void> {
+  const { sessionId } = ws.data
+
+  if (hasActiveSessionWork(sessionId)) {
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'SESSION_RUNTIME_BUSY',
+      message: 'The session has newer active work. Retry after it finishes.',
+    })
+    return
+  }
+
+  let prepared: {
+    workDir: string
+    runtimeSettings: Awaited<ReturnType<typeof getRuntimeSettings>>
+    sdkUrl: string
+  }
+  try {
+    const workDir = await resolveSessionWorkDir(sessionId)
+    prepared = {
+      workDir,
+      runtimeSettings: await getRuntimeSettings(sessionId),
+      sdkUrl: buildSdkWebSocketUrl(ws, sessionId),
+    }
+  } catch (error) {
+    console.error('[WS] Could not prepare user decision recovery:', error)
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'CLI_RECOVERY_PREPARE_FAILED',
+      message: 'The recovery runtime could not be prepared.',
+    })
+    return
+  }
+
+  // Preparing runtime inputs crosses async persistence/settings boundaries.
+  // Re-check the shared-work authority immediately before the synchronous stop
+  // call so work that appeared in that window is never killed for recovery.
+  if (hasActiveSessionWork(sessionId)) {
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'SESSION_RUNTIME_BUSY',
+      message: 'The session has newer active work. Retry after it finishes.',
+    })
+    return
+  }
+
+  runtimeExitStoppedSessions.add(sessionId)
+  let stopped: Awaited<ReturnType<typeof conversationService.stopSessionForReplacementAndConfirm>>
+  try {
+    stopped = await conversationService.stopSessionForReplacementAndConfirm(sessionId)
+  } catch (error) {
+    console.error('[WS] Could not stop runtime for user decision recovery:', error)
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'CLI_SHUTDOWN_FAILED',
+      message: 'The previous runtime could not be stopped.',
+    })
+    return
+  }
+  if (stopped === 'unconfirmed') {
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'CLI_SHUTDOWN_UNCONFIRMED',
+      message: 'The previous runtime did not confirm shutdown.',
+    })
+    return
+  }
+
+  let freshSnapshot: FreshPermissionRequestsSnapshot
+  try {
+    freshSnapshot = await readFreshPermissionRequestsSnapshot(sessionId)
+  } catch (error) {
+    console.error('[WS] Could not read decision evidence after runtime shutdown:', error)
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'DECISION_EVIDENCE_READ_FAILED',
+      message: 'Decision evidence could not be read after runtime shutdown.',
+    })
+    return
+  }
+  const snapshot = freshSnapshot.userDecisions
+  const capability = selectUserDecisionDeliveryCapability(snapshot, request.decisionId)
+  if (capability.status === 'already_resolved') {
+    userDecisionDeliveryCoordinator.reconcileTerminal(
+      sessionId,
+      request.decisionId,
+      capability.semanticState,
+    )
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'already_resolved',
+    })
+    sendMessage(ws, buildPermissionRequestsSnapshotMessage(freshSnapshot))
+    return
+  }
+  if (capability.status !== 'orphaned_recovery') {
+    const code = capability.status === 'unavailable'
+      ? capability.code
+      : 'USER_DECISION_ROUTE_CHANGED'
+    const message = 'Detached recovery is no longer authoritative.'
+    userDecisionDeliveryCoordinator.failRetryable(lease, { code, message })
+    sendUserDecisionFailureResult(ws, request, code, message)
+    return
+  }
+
+  try {
+    lastResolvedStartupWorkDirs.set(sessionId, prepared.workDir)
+    await conversationService.startSession(
+      sessionId,
+      prepared.workDir,
+      prepared.sdkUrl,
+      {
+        ...prepared.runtimeSettings,
+        resumeInterruptedTurn: false,
+        transcriptStartupPolicy: 'preserve_existing',
+      },
+    )
+    runtimeExitStoppedSessions.delete(sessionId)
+    bindAllClientSessionOutputs(sessionId)
+  } catch (error) {
+    console.error('[WS] Could not start user decision recovery runtime:', error)
+    failDetachedUserDecision(ws, request, lease, {
+      code: 'CLI_RECOVERY_START_FAILED',
+      message: 'The recovery runtime could not be started.',
+    })
+    return
+  }
+
+  const entry = snapshot.decisions.find(
+    ({ decision }) => decision.decisionId === request.decisionId,
+  )!
+  let result: ReturnType<typeof conversationService.respondToOrphanedPermission>
+  try {
+    result = conversationService.respondToOrphanedPermission(
+      sessionId,
+      capability.toolUseId,
+      request.response.kind === 'answer',
+      request.response.kind === 'answer'
+        ? { ...entry.input, answers: request.response.answers }
+        : undefined,
+      request.response.kind === 'clarify' ? request.response.message : undefined,
+    )
+  } catch (error) {
+    console.error('[WS] Orphaned user decision delivery outcome is unknown:', error)
+    userDecisionDeliveryCoordinator.markIndeterminate(lease)
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      'ORPHANED_DELIVERY_INDETERMINATE',
+      'The recovery delivery outcome could not be confirmed.',
+    )
+    return
+  }
+  if (result.status === 'accepted') {
+    userDecisionDeliveryCoordinator.accept(lease)
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      state: 'accepted',
+      route: 'orphaned_recovery',
+    })
+    return
+  }
+  if (result.status === 'delivery_failed') {
+    console.error('[WS] Orphaned user decision delivery outcome is unknown:', result.error)
+    userDecisionDeliveryCoordinator.markIndeterminate(lease)
+    sendUserDecisionFailureResult(
+      ws,
+      request,
+      'ORPHANED_DELIVERY_INDETERMINATE',
+      'The recovery delivery outcome could not be confirmed.',
+    )
+    return
+  }
+  failDetachedUserDecision(ws, request, lease, {
+    code: 'RECOVERY_SESSION_UNAVAILABLE',
+    message: 'The recovery runtime is unavailable.',
+  })
+}
+
+function failDetachedUserDecision(
+  ws: ServerWebSocket<WebSocketData>,
+  request: ValidatedUserDecisionResponse,
+  lease: UserDecisionDeliveryLease,
+  error: { code: UserDecisionHandlerFailureCode; message: string },
+): void {
+  userDecisionDeliveryCoordinator.failRetryable(lease, error)
+  sendUserDecisionFailureResult(ws, request, error.code, error.message)
+}
+
+function sendUserDecisionFailureResult(
+  ws: ServerWebSocket<WebSocketData>,
+  request: Pick<ValidatedUserDecisionResponse, 'decisionId' | 'attemptId'>,
+  code: UserDecisionHandlerFailureCode,
+  message: string,
+): void {
+  const classification = classifyUserDecisionFailure(code)
+  emitUserDecisionFailureResult(ws, request, classification, { code, message })
+}
+
+function emitUserDecisionFailureResult(
+  ws: ServerWebSocket<WebSocketData>,
+  request: Pick<ValidatedUserDecisionResponse, 'decisionId' | 'attemptId'>,
+  classification: UserDecisionFailureClassification,
+  error: { code: string; message: string },
+): void {
+  if (classification.state === 'retryable_failed') {
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      ...classification,
+      error,
+    })
+    return
+  }
+  if (classification.state === 'indeterminate') {
+    sendUserDecisionResponseResult(ws, {
+      type: 'user_decision_response_result',
+      decisionId: request.decisionId,
+      attemptId: request.attemptId,
+      ...classification,
+      error,
+    })
+    return
+  }
+  sendUserDecisionResponseResult(ws, {
+    type: 'user_decision_response_result',
+    decisionId: request.decisionId,
+    attemptId: request.attemptId,
+    ...classification,
+    error,
+  })
+}
+
+type UserDecisionFailureClassification =
+  | { state: 'retryable_failed'; nextAction: 'retry_new_attempt' }
+  | { state: 'indeterminate'; nextAction: 'verify_same_attempt' }
+  | { state: 'rejected'; nextAction: 'edit_response' | 'resync' | 'blocked' }
+
+function classifyUserDecisionFailure(
+  code: UserDecisionHandlerFailureCode,
+): UserDecisionFailureClassification {
+  const nextAction = USER_DECISION_FAILURE_ACTIONS[code]
+  if (nextAction === 'retry_new_attempt') {
+    return { state: 'retryable_failed', nextAction }
+  }
+  if (nextAction === 'verify_same_attempt') {
+    return { state: 'indeterminate', nextAction }
+  }
+  return { state: 'rejected', nextAction }
+}
+
+function sendUserDecisionResponseResult(
+  ws: ServerWebSocket<WebSocketData>,
+  result: UserDecisionResponseResult,
+): void {
+  if ('error' in result && Buffer.byteLength(result.error.message, 'utf8') > 2_048) {
+    sendMessage(ws, {
+      ...result,
+      error: { code: result.error.code, message: 'User decision delivery failed.' },
+    })
+    return
+  }
+  sendMessage(ws, result)
 }
 
 function handleComputerUsePermissionResponse(
@@ -1506,10 +2379,6 @@ async function handleSetRuntimeConfig(
     }
 
     runtimeOverrides.set(sessionId, nextOverride)
-    runtimeOverrideVersions.set(
-      sessionId,
-      (runtimeOverrideVersions.get(sessionId) ?? 0) + 1,
-    )
 
     if (shouldDeferRuntimeRestartForActiveTurn(sessionId)) {
       deferredRuntimeRestarts.set(sessionId, nextOverride)
@@ -1525,27 +2394,24 @@ async function handleSetRuntimeConfig(
 
     const pendingStartup = sessionStartupPromises.get(sessionId)
     if (pendingStartup) {
-      const startupRuntimeVersion = sessionStartupRuntimeVersions.get(sessionId) ?? 0
-      const currentRuntimeVersion = runtimeOverrideVersions.get(sessionId) ?? 0
-      if (startupRuntimeVersion >= currentRuntimeVersion) {
-        await persistSessionRuntimeConfig(sessionId, nextOverride)
-        await pendingStartup
-        broadcastAppliedRuntimeConfig(sessionId)
-        return
-      }
-
       await persistSessionRuntimeConfig(sessionId, nextOverride)
-      await pendingStartup.catch(() => undefined)
-      const currentOverride = runtimeOverrides.get(sessionId)
-      if (
-        currentOverride?.providerId !== nextOverride.providerId ||
-        currentOverride.modelId !== nextOverride.modelId ||
-        currentOverride.effort !== nextOverride.effort ||
-        !conversationService.hasSession(sessionId)
-      ) {
-        return
-      }
-      await restartSessionWithRuntimeConfig(ws, sessionId)
+      // Startup now owns a coordinator slot. If it is visible while this
+      // transition owns the same session, it is queued behind us and will read
+      // the override above when its slot starts; awaiting it here would self-lock.
+      void pendingStartup.then(
+        () => {
+          const currentOverride = runtimeOverrides.get(sessionId)
+          if (
+            currentOverride?.providerId === nextOverride.providerId &&
+            currentOverride.modelId === nextOverride.modelId &&
+            currentOverride.effort === nextOverride.effort &&
+            conversationService.hasSession(sessionId)
+          ) {
+            broadcastAppliedRuntimeConfig(sessionId)
+          }
+        },
+        () => undefined,
+      )
       return
     }
 
@@ -2580,7 +3446,6 @@ function cleanupSessionRuntimeState(
   interruptedSessionChats.delete(sessionId)
   deferredRuntimeRestarts.delete(sessionId)
   deferredPermissionModes.delete(sessionId)
-  runtimeTransitionPromises.delete(sessionId)
   sessionStartupPromises.delete(sessionId)
   lastResolvedStartupWorkDirs.delete(sessionId)
   taskNotificationPersistence.delete(sessionId)
@@ -2712,10 +3577,8 @@ async function ensureCliSessionStarted(
 
   if (conversationService.hasSession(sessionId)) return
 
-  const startupRuntimeVersion = runtimeOverrideVersions.get(sessionId) ?? 0
-  sessionStartupRuntimeVersions.set(sessionId, startupRuntimeVersion)
-
-  const startup = (async () => {
+  const startup = enqueueRuntimeTransition(sessionId, async () => {
+    if (conversationService.hasSession(sessionId)) return
     const workDir = await resolveSessionWorkDir(sessionId)
     lastResolvedStartupWorkDirs.set(sessionId, workDir)
     const runtimeSettings = await getRuntimeSettings(sessionId)
@@ -2727,7 +3590,7 @@ async function ensureCliSessionStarted(
     console.log(`[WS] Starting CLI for ${sessionId} due to ${reason}`)
     await conversationService.startSession(sessionId, workDir, sdkUrl, startupSettings)
     runtimeExitStoppedSessions.delete(sessionId)
-  })()
+  })
 
   sessionStartupPromises.set(sessionId, startup)
   try {
@@ -2735,7 +3598,6 @@ async function ensureCliSessionStarted(
   } finally {
     if (sessionStartupPromises.get(sessionId) === startup) {
       sessionStartupPromises.delete(sessionId)
-      sessionStartupRuntimeVersions.delete(sessionId)
     }
   }
 }
@@ -2897,9 +3759,14 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
 
       const replayText = extractReplayUserText(cliMsg)
       if (replayText) {
+        const replayUuid =
+          typeof cliMsg.uuid === 'string' && cliMsg.uuid.trim()
+            ? cliMsg.uuid
+            : undefined
         messages.push({
           type: 'user_message_replay',
           content: replayText,
+          ...(replayUuid ? { messageUuid: replayUuid } : {}),
         })
       }
 
@@ -3369,10 +4236,150 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
 
 
 function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage) {
-  const outgoing = ws.data.clientKind === 'pet'
-    ? toPetServerMessage(message)
-    : message
-  if (outgoing) ws.send(JSON.stringify(outgoing))
+  const outgoing = toOutgoingServerMessage(ws, message)
+  if (!outgoing) return
+  const barrier = connectionSnapshotBarriers.get(ws)
+  if (barrier) {
+    barrier.queuedMessages.push(outgoing)
+    if (barrier.queuedMessages.length >= MAX_CONNECTION_SNAPSHOT_QUEUED_MESSAGES) {
+      finalizeConnectionSnapshot(ws, ws.data.sessionId, barrier.token, [], false)
+    }
+    return
+  }
+  sendOutgoingMessageImmediately(ws, outgoing)
+}
+
+function sendMessageImmediately(
+  ws: ServerWebSocket<WebSocketData>,
+  message: ServerMessage,
+): void {
+  const outgoing = toOutgoingServerMessage(ws, message)
+  if (outgoing) sendOutgoingMessageImmediately(ws, outgoing)
+}
+
+function toOutgoingServerMessage(
+  ws: ServerWebSocket<WebSocketData>,
+  message: ServerMessage,
+): ServerMessage | null {
+  return ws.data.clientKind === 'pet' ? toPetServerMessage(message) : message
+}
+
+function sendOutgoingMessageImmediately(
+  ws: ServerWebSocket<WebSocketData>,
+  outgoing: ServerMessage,
+): void {
+  ws.send(JSON.stringify(outgoing))
+}
+
+function installConnectionSnapshotBarrier(
+  ws: ServerWebSocket<WebSocketData>,
+): void {
+  const barrier: ConnectionSnapshotBarrier = {
+    token: Symbol('connection-snapshot'),
+    queuedMessages: [],
+  }
+  connectionSnapshotBarriers.set(ws, barrier)
+}
+
+async function hydrateConnectionSnapshot(
+  ws: ServerWebSocket<WebSocketData>,
+  sessionId: string,
+): Promise<void> {
+  const token = connectionSnapshotBarriers.get(ws)?.token
+  if (!token) return
+  let messages: Awaited<ReturnType<typeof sessionService.getSessionMessagesWithEvidence>>['messages'] = []
+  let transcriptEvidenceComplete = false
+  try {
+    const transcript = await withTimeout(
+      sessionService.getSessionMessagesWithEvidence(sessionId),
+      USER_DECISION_SNAPSHOT_TIMEOUT_MS,
+      `Timed out hydrating user decisions for ${sessionId}`,
+    )
+    messages = transcript.messages
+    transcriptEvidenceComplete = transcript.transcriptEvidenceComplete
+  } catch (error) {
+    console.warn(
+      `[WS] Could not hydrate user decisions for ${sessionId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
+  }
+
+  finalizeConnectionSnapshot(
+    ws,
+    sessionId,
+    token,
+    messages,
+    transcriptEvidenceComplete,
+  )
+}
+
+function finalizeConnectionSnapshot(
+  ws: ServerWebSocket<WebSocketData>,
+  sessionId: string,
+  token: symbol,
+  messages: Awaited<ReturnType<typeof sessionService.getSessionMessagesWithEvidence>>['messages'],
+  transcriptEvidenceComplete: boolean,
+): void {
+  const barrier = connectionSnapshotBarriers.get(ws)
+  if (
+    barrier?.token !== token ||
+    !activeSessions.get(sessionId)?.has(ws)
+  ) {
+    return
+  }
+
+  const snapshot = sampleFreshPermissionRequestsSnapshot(
+    sessionId,
+    messages,
+    transcriptEvidenceComplete,
+  )
+
+  replayPendingPermissionRequests(ws, snapshot.pendingRequests, true)
+  replayPendingComputerUsePermissionRequests(ws, snapshot.computerUseRequests, true)
+  sendMessageImmediately(ws, buildPermissionRequestsSnapshotMessage(snapshot))
+
+  connectionSnapshotBarriers.delete(ws)
+  // Preserve the established reconnect order: startup stop failures belong to
+  // the sampled initial state and therefore precede events buffered while the
+  // transcript was loading.
+  replayAgentStopFailures(ws, sessionId)
+  for (const outgoing of barrier.queuedMessages) {
+    if (!activeSessions.get(sessionId)?.has(ws)) break
+    sendOutgoingMessageImmediately(ws, outgoing)
+  }
+}
+
+function toUserDecisionSnapshot(input: SessionUserDecisionSnapshot): UserDecisionSnapshot {
+  return {
+    transcriptEvidenceComplete: input.transcriptEvidenceComplete,
+    userDecisionResponseProtocol: USER_DECISION_RESPONSE_PROTOCOL,
+    decisions: input.decisions.map((entry) => {
+      const { decision } = entry
+      return {
+        decisionId: decision.decisionId,
+        semanticState: decision.semanticState,
+        runtimeBinding: decision.runtimeBinding,
+        responseCapability: toUserDecisionResponseCapability(
+          selectUserDecisionDeliveryCapability(input, decision.decisionId),
+        ),
+        response: decision.response,
+        input: entry.input,
+        inputSource: entry.inputSource,
+        conflicted: entry.conflicted,
+        ...(entry.description ? { description: entry.description } : {}),
+      }
+    }),
+  }
+}
+
+function toUserDecisionResponseCapability(
+  capability: ReturnType<typeof selectUserDecisionDeliveryCapability>,
+): NonNullable<UserDecisionSnapshot['decisions'][number]['responseCapability']> {
+  if (capability.status === 'unavailable') {
+    return { status: 'unavailable', code: capability.code }
+  }
+  return { status: capability.status }
 }
 
 function sendError(ws: ServerWebSocket<WebSocketData>, message: string, code: string) {
@@ -3553,33 +4560,37 @@ function cancelSessionDisconnectWatcher(sessionId: string): void {
 
 function replayPendingPermissionRequests(
   ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
+  requests: ReturnType<typeof conversationService.getPendingPermissionRequests>,
+  bypassBarrier = false,
 ): string[] {
-  const requests = conversationService.getPendingPermissionRequests(sessionId)
   for (const request of requests) {
-    sendMessage(ws, {
+    const message: ServerMessage = {
       type: 'permission_request',
       requestId: request.requestId,
       toolName: request.toolName,
       ...(request.toolUseId ? { toolUseId: request.toolUseId } : {}),
       input: request.input,
       ...(request.description ? { description: request.description } : {}),
-    })
+    }
+    if (bypassBarrier) sendMessageImmediately(ws, message)
+    else sendMessage(ws, message)
   }
   return requests.map((request) => request.requestId)
 }
 
 function replayPendingComputerUsePermissionRequests(
   ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
+  requests: ReturnType<typeof computerUseApprovalService.getPendingRequests>,
+  bypassBarrier = false,
 ): string[] {
-  const requests = computerUseApprovalService.getPendingRequests(sessionId)
   for (const request of requests) {
-    sendMessage(ws, {
+    const message: ServerMessage = {
       type: 'computer_use_permission_request',
       requestId: request.requestId,
       request,
-    })
+    }
+    if (bypassBarrier) sendMessageImmediately(ws, message)
+    else sendMessage(ws, message)
   }
   return requests.map((request) => request.requestId)
 }
@@ -3801,6 +4812,7 @@ function forwardCliMessageToClient(
 ): void {
   handleCliPermissionModeBroadcast(sessionId, cliMsg)
   const serverMsgs = translateCliMessage(cliMsg, sessionId)
+  reconcileUserDecisionToolResults(sessionId, serverMsgs)
   for (const msg of serverMsgs) sendMessage(ws, msg)
 }
 
@@ -3809,8 +4821,25 @@ function forwardCliMessageToSessionClients(sessionId: string, cliMsg: any): void
   if (!clients || clients.size === 0) return
   handleCliPermissionModeBroadcast(sessionId, cliMsg)
   const serverMsgs = translateCliMessage(cliMsg, sessionId)
+  reconcileUserDecisionToolResults(sessionId, serverMsgs)
   for (const ws of clients) {
     for (const msg of serverMsgs) sendMessage(ws, msg)
+  }
+}
+
+function reconcileUserDecisionToolResults(
+  sessionId: string,
+  messages: readonly ServerMessage[],
+): void {
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue
+    userDecisionDeliveryCoordinator.reconcileTerminal(
+      sessionId,
+      message.toolUseId,
+      message.isError
+        ? { status: 'cancelled', reason: 'tool_result_observed' }
+        : { status: 'answered' },
+    )
   }
 }
 
@@ -4294,61 +5323,39 @@ async function buildSessionStartupDiagnosticMessage(
   return lines.join('\n')
 }
 
-function enqueueRuntimeTransition(
+function enqueueRuntimeTransition<T>(
   sessionId: string,
-  transition: () => Promise<void>,
-): Promise<void> {
-  const previous = runtimeTransitionPromises.get(sessionId) ?? Promise.resolve()
-  const next = previous
-    .catch(() => {})
-    .then(transition)
-    .finally(() => {
-      if (runtimeTransitionPromises.get(sessionId) === next) {
-        runtimeTransitionPromises.delete(sessionId)
-      }
-    })
-  runtimeTransitionPromises.set(sessionId, next)
-  return next
+  transition: () => Promise<T>,
+): Promise<T> {
+  return sessionMutationCoordinator.enqueue(sessionId, transition)
 }
 
 async function waitForRuntimeTransitionBeforeUserTurn(
   ws: ServerWebSocket<WebSocketData>,
   sessionId: string,
 ): Promise<{ ok: boolean; waited: boolean }> {
-  let waited = false
-  let pendingRuntimeTransition = runtimeTransitionPromises.get(sessionId)
-  while (pendingRuntimeTransition) {
-    waited = true
-    try {
-      await pendingRuntimeTransition
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      void diagnosticsService.recordEvent({
-        type: 'runtime_transition_failed',
-        severity: 'error',
-        sessionId,
-        summary: errMsg,
-        details: err,
-      })
-      console.error(`[WS] Runtime transition failed before handling user message for ${sessionId}: ${errMsg}`)
-      sendMessage(ws, {
-        type: 'error',
-        message: `Failed to switch provider/model: ${errMsg}`,
-        code: 'CLI_RESTART_FAILED',
-      })
-      sendMessage(ws, { type: 'status', state: 'idle' })
-      failSessionChatActivity(sessionId)
-      return { ok: false, waited }
-    }
-
-    const nextTransition = runtimeTransitionPromises.get(sessionId)
-    pendingRuntimeTransition =
-      nextTransition && nextTransition !== pendingRuntimeTransition
-        ? nextTransition
-        : undefined
+  try {
+    const { waited } = await sessionMutationCoordinator.drain(sessionId)
+    return { ok: true, waited }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    void diagnosticsService.recordEvent({
+      type: 'runtime_transition_failed',
+      severity: 'error',
+      sessionId,
+      summary: errMsg,
+      details: err,
+    })
+    console.error(`[WS] Runtime transition failed before handling user message for ${sessionId}: ${errMsg}`)
+    sendMessage(ws, {
+      type: 'error',
+      message: `Failed to switch provider/model: ${errMsg}`,
+      code: 'CLI_RESTART_FAILED',
+    })
+    sendMessage(ws, { type: 'status', state: 'idle' })
+    failSessionChatActivity(sessionId)
+    return { ok: false, waited: true }
   }
-
-  return { ok: true, waited }
 }
 
 /**
@@ -4421,6 +5428,9 @@ export function closeSessionConnection(sessionId: string, reason = 'session clos
   computerUseApprovalService.cancelSession(sessionId)
   conversationService.clearOutputCallbacks(sessionId)
   cleanupSessionRuntimeState(sessionId)
+  if (conversationService.isSessionDeleted(sessionId)) {
+    userDecisionDeliveryCoordinator.clearPermanentlyDeletedSession(sessionId)
+  }
 
   const clients = activeSessions.get(sessionId)
   if (!clients || clients.size === 0) return false
@@ -4428,6 +5438,7 @@ export function closeSessionConnection(sessionId: string, reason = 'session clos
   activeSessions.delete(sessionId)
   for (const ws of clients) {
     if (activePetClient === ws) activePetClient = null
+    connectionSnapshotBarriers.delete(ws)
     clientOutputCallbacks.delete(ws)
     ws.close(1000, reason)
   }
@@ -4469,8 +5480,15 @@ export function __resetWebSocketHandlerStateForTests(): void {
   terminalSessionChatStates.clear()
   legacyQueuedSessionChats.clear()
   interruptedSessionChats.clear()
-  runtimeTransitionPromises.clear()
+  sessionMutationCoordinator.resetForTests()
+  userDecisionDeliveryCoordinator = createUserDecisionDeliveryCoordinator()
   sessionStartupPromises.clear()
+}
+
+export function __getUserDecisionFailureActionsForTests(): Readonly<
+  Record<UserDecisionHandlerFailureCode, UserDecisionFailureNextAction>
+> {
+  return USER_DECISION_FAILURE_ACTIONS
 }
 
 export function __markPrewarmPendingForTests(sessionId: string): void {
@@ -4509,9 +5527,17 @@ export function __registerPendingSessionStartupForTests(
 /** Test hook: put a deterministic barrier ahead of user/clear admission. */
 export function __enqueueRuntimeTransitionForTests(
   sessionId: string,
-  transition: Promise<void>,
+  transition: Promise<void> | (() => Promise<void>),
 ): Promise<void> {
-  return enqueueRuntimeTransition(sessionId, () => transition)
+  return enqueueRuntimeTransition(
+    sessionId,
+    typeof transition === 'function' ? transition : () => transition,
+  )
+}
+
+/** Test hook: model a resumed CLI that reported running without a renderer turn. */
+export function __markActiveCliRunForTests(sessionId: string): void {
+  activeCliRuns.add(sessionId)
 }
 
 export function __resolveRuntimeRestartWorkDirForTests(sessionId: string): Promise<string> {

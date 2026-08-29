@@ -50,6 +50,37 @@ async function rmWithRetry(targetPath: string): Promise<void> {
   }
 }
 
+function installPermissionSession(
+  svc: ConversationService,
+  sessionId: string,
+  sdkSocket: { send(data: string): void } | null,
+  trackedRequest = true,
+  toolName = 'Bash',
+) {
+  const pendingPermissionRequests = new Map<
+    string,
+    {
+      toolName: string
+      input: Record<string, unknown>
+      permissionSuggestions: unknown[]
+    }
+  >()
+  if (trackedRequest) {
+    pendingPermissionRequests.set('req-1', {
+      toolName,
+      input: { command: 'echo ok' },
+      permissionSuggestions: [],
+    })
+  }
+  const session = {
+    sdkSocket,
+    pendingOutbound: [] as string[],
+    pendingPermissionRequests,
+  }
+  ;(svc as any).sessions.set(sessionId, session)
+  return session
+}
+
 // ============================================================================
 // ConversationService unit tests
 // ============================================================================
@@ -91,6 +122,154 @@ describe('ConversationService', () => {
     const svc = new ConversationService()
     const result = svc.respondToPermission('no-such-session', 'req-1', true)
     expect(result).toBe(false)
+  })
+
+  it('rejects a tracked permission response when the session is unavailable', () => {
+    const svc = new ConversationService()
+
+    expect(
+      svc.respondToTrackedPermission('no-such-session', 'req-1', true),
+    ).toEqual({ status: 'rejected', reason: 'session_unavailable' })
+  })
+
+  it('rejects an unknown tracked permission request without sending', () => {
+    const svc = new ConversationService()
+    const sent: string[] = []
+    installPermissionSession(
+      svc,
+      'session-1',
+      { send(data) { sent.push(data) } },
+      false,
+    )
+
+    expect(
+      svc.respondToTrackedPermission('session-1', 'req-1', true),
+    ).toEqual({ status: 'rejected', reason: 'unknown_request' })
+    expect(sent).toEqual([])
+  })
+
+  it('removes a tracked permission only after its socket send succeeds', () => {
+    const svc = new ConversationService()
+    let session: ReturnType<typeof installPermissionSession>
+    const sent: unknown[] = []
+    session = installPermissionSession(svc, 'session-1', {
+      send(data) {
+        expect(session.pendingPermissionRequests.has('req-1')).toBe(true)
+        sent.push(JSON.parse(data))
+      },
+    })
+
+    expect(
+      svc.respondToTrackedPermission('session-1', 'req-1', true),
+    ).toEqual({ status: 'accepted', transport: 'sent' })
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(false)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('retains a tracked permission when its socket send throws', () => {
+    const svc = new ConversationService()
+    const session = installPermissionSession(svc, 'session-1', {
+      send() {
+        throw new Error('socket closed')
+      },
+    })
+
+    expect(
+      svc.respondToTrackedPermission('session-1', 'req-1', false),
+    ).toEqual({
+      status: 'delivery_failed',
+      error: 'socket closed',
+    })
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(true)
+  })
+
+  it('keeps queueing a non-Ask tracked permission while the socket is connecting', () => {
+    const svc = new ConversationService()
+    const session = installPermissionSession(svc, 'session-1', null)
+
+    expect(
+      svc.respondToTrackedPermission('session-1', 'req-1', true),
+    ).toEqual({ status: 'accepted', transport: 'queued' })
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(false)
+    expect(session.pendingOutbound).toHaveLength(1)
+    expect(JSON.parse(session.pendingOutbound[0])).toMatchObject({
+      type: 'control_response',
+      response: {
+        request_id: 'req-1',
+        response: { behavior: 'allow' },
+      },
+    })
+  })
+
+  it('rejects a tracked Ask before queueing when the current SDK socket is absent', () => {
+    const svc = new ConversationService()
+    const session = installPermissionSession(
+      svc,
+      'session-1',
+      null,
+      true,
+      'AskUserQuestion',
+    )
+
+    expect(
+      svc.respondToTrackedPermission(
+        'session-1',
+        'req-1',
+        true,
+        undefined,
+        { answers: { choice: 'yes' } },
+      ),
+    ).toEqual({ status: 'rejected', reason: 'session_unavailable' })
+    expect(session.pendingOutbound).toEqual([])
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(true)
+  })
+
+  it('reports a tracked Ask socket send failure without queueing or consuming it', () => {
+    const svc = new ConversationService()
+    const session = installPermissionSession(
+      svc,
+      'session-1',
+      { send() { throw new Error('socket closed') } },
+      true,
+      'AskUserQuestion',
+    )
+
+    expect(
+      svc.respondToTrackedPermission(
+        'session-1',
+        'req-1',
+        true,
+        undefined,
+        { answers: { choice: 'yes' } },
+      ),
+    ).toEqual({ status: 'delivery_failed', error: 'socket closed' })
+    expect(session.pendingOutbound).toEqual([])
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(true)
+  })
+
+  it('sends a tracked Ask only through the current SDK socket', () => {
+    const svc = new ConversationService()
+    const sent: unknown[] = []
+    const session = installPermissionSession(
+      svc,
+      'session-1',
+      { send(data) { sent.push(JSON.parse(data)) } },
+      true,
+      'AskUserQuestion',
+    )
+
+    expect(
+      svc.respondToTrackedPermission(
+        'session-1',
+        'req-1',
+        true,
+        undefined,
+        { answers: { choice: 'yes' } },
+      ),
+    ).toEqual({ status: 'accepted', transport: 'sent' })
+    expect(sent).toHaveLength(1)
+    expect(session.pendingOutbound).toEqual([])
+    expect(session.pendingPermissionRequests.has('req-1')).toBe(false)
   })
 
   it('should not queue control requests before the SDK socket connects', async () => {
@@ -1246,6 +1425,129 @@ describe('ConversationService', () => {
       await fs.rm(tmpConfigDir, { recursive: true, force: true })
       await fs.rm(workDir, { recursive: true, force: true })
     }
+  })
+
+  const transcriptMessage = (
+    role: 'user' | 'assistant',
+    content: unknown,
+    model?: string,
+    usage?: Record<string, unknown>,
+  ) => ({
+    type: role,
+    message: { role, content, ...(model ? { model } : {}), ...(usage ? { usage } : {}) },
+  })
+
+  async function withTranscriptContextFixture(run: (fixture: {
+    svc: SessionService
+    sessionId: string
+    appendEntries: (...entries: Record<string, unknown>[]) => Promise<void>
+  }) => Promise<void>): Promise<void> {
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousNodeEnv = process.env.NODE_ENV
+    const tmpConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-transcript-context-'))
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-workdir-context-'))
+    process.env.CLAUDE_CONFIG_DIR = tmpConfigDir
+    process.env.NODE_ENV = 'development'
+
+    try {
+      const svc = new SessionService()
+      const { sessionId } = await svc.createSession(workDir)
+      const found = await svc.findSessionFile(sessionId)
+      expect(found).not.toBeNull()
+      const appendEntries = async (...entries: Record<string, unknown>[]) => {
+        await fs.appendFile(
+          found!.filePath,
+          entries.map(entry => JSON.stringify(entry)).join('\n') + '\n',
+        )
+      }
+      await run({ svc, sessionId, appendEntries })
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = previousNodeEnv
+      await fs.rm(tmpConfigDir, { recursive: true, force: true })
+      await fs.rm(workDir, { recursive: true, force: true })
+    }
+  }
+
+  it('should reset context estimates at compact boundaries and ignore encrypted reasoning bytes', async () => {
+    await withTranscriptContextFixture(async ({ svc, sessionId, appendEntries }) => {
+      const encryptedReasoning =
+        `cc-haha:openai-reasoning:v1:${JSON.stringify({
+          summary: [{ type: 'summary_text', text: 's'.repeat(400) }],
+          encrypted_content: 'x'.repeat(400_000),
+        })}`
+      await appendEntries(
+        transcriptMessage('assistant', [{ type: 'redacted_thinking', data: encryptedReasoning }], 'gpt-5.6-terra', {
+          input_tokens: 8_000,
+          output_tokens: 1_000,
+          cache_read_input_tokens: 331_000,
+          cache_creation_input_tokens: 0,
+        }),
+        {
+          type: 'system',
+          subtype: 'compact_boundary',
+        },
+        transcriptMessage('user', [{ type: 'text', text: 'summary'.repeat(100) }]),
+        transcriptMessage('assistant', [{ type: 'text', text: 'continued' }], 'gpt-5.6-terra', {
+          input_tokens: 8_000,
+          output_tokens: 100,
+          cache_read_input_tokens: 2_000,
+          cache_creation_input_tokens: 0,
+        }),
+        transcriptMessage('assistant', [{ type: 'redacted_thinking', data: encryptedReasoning }], 'gpt-5.6-terra', {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        }),
+      )
+
+      const contextEstimate = await svc.getTranscriptContextEstimate(sessionId)
+      const inspectionSnapshot = await svc.getInspectionTranscriptSnapshot(sessionId)
+
+      expect(contextEstimate?.model).toBe('gpt-5.6-terra')
+      expect(contextEstimate?.totalTokens).toBe(10_200)
+      expect(contextEstimate?.percentage).toBe(3)
+      expect(contextEstimate?.categories.reduce(
+        (sum, category) => sum + category.tokens,
+        0,
+      )).toBe(contextEstimate?.rawMaxTokens)
+      expect(inspectionSnapshot?.contextEstimate).toEqual(contextEstimate)
+    })
+  })
+
+  it('should add user, tool, and assistant messages after the latest provider usage and clamp the estimate', async () => {
+    await withTranscriptContextFixture(async ({ svc, sessionId, appendEntries }) => {
+      await appendEntries(
+        transcriptMessage('assistant', [{ type: 'text', text: 'anchor' }], 'claude-sonnet-4-6', {
+          input_tokens: 100,
+          output_tokens: 20,
+        }),
+        transcriptMessage('user', [{ type: 'text', text: 'u'.repeat(400) }]),
+        transcriptMessage('user', [{
+          type: 'tool_result',
+          tool_use_id: 'tool-1',
+          content: 't'.repeat(400),
+        }]),
+        transcriptMessage('assistant', [{ type: 'text', text: 'a'.repeat(400) }], 'claude-sonnet-4-6'),
+      )
+
+      const contextEstimate = await svc.getTranscriptContextEstimate(sessionId)
+      const inspectionSnapshot = await svc.getInspectionTranscriptSnapshot(sessionId)
+
+      expect(contextEstimate?.totalTokens).toBe(420)
+      expect(inspectionSnapshot?.contextEstimate).toEqual(contextEstimate)
+
+      await appendEntries(transcriptMessage('user', [
+        { type: 'text', text: 'z'.repeat(1_000_000) },
+      ]))
+
+      const clampedEstimate = await svc.getTranscriptContextEstimate(sessionId)
+      expect(clampedEstimate?.totalTokens).toBe(clampedEstimate?.rawMaxTokens)
+      expect(clampedEstimate?.percentage).toBe(100)
+    })
   })
 
   it('should use active provider model context windows for transcript estimates', async () => {

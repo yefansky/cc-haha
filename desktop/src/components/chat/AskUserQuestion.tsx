@@ -1,5 +1,9 @@
-import { useMemo, useRef, useState } from 'react'
-import { listPendingPermissions, useChatStore } from '../../stores/chatStore'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  selectAskUserDecisionInteraction,
+  selectAskUserDecisionProjection,
+  useChatStore,
+} from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
 import { Button } from '@/components/ui/Button'
@@ -29,6 +33,7 @@ type Props = {
   toolUseId: string
   input: unknown
   result?: unknown
+  hasResult?: boolean
 }
 
 /**
@@ -64,34 +69,81 @@ function getSelectedAnswer(question: Question, selected: string[] | undefined) {
   return question.multiSelect ? selected.join(', ') : selected[0] ?? ''
 }
 
-export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) {
-  const { respondToPermission } = useChatStore()
+export function AskUserQuestion({ sessionId, toolUseId, input, result, hasResult = false }: Props) {
+  const {
+    respondToPermission,
+    respondToUserDecision,
+    resyncUserDecision,
+  } = useChatStore()
   const activeTabId = useTabStore((s) => s.activeTabId)
   const targetSessionId = sessionId ?? activeTabId
-  const pendingRequest = useChatStore((s) => targetSessionId
-    ? listPendingPermissions(s.sessions[targetSessionId])
-      .find((permission) => permission.toolUseId === toolUseId) ?? null
-    : null)
+  const sessionState = useChatStore((s) => targetSessionId
+    ? s.sessions[targetSessionId]
+    : undefined)
+  const decisionProjection = useMemo(
+    () => selectAskUserDecisionProjection(sessionState),
+    [sessionState],
+  )
+  const decisionView = decisionProjection.views.find((view) => view.toolUseId === toolUseId)
+  const decision = decisionView?.source === 'server' ? decisionView.decision : null
+  const effectiveInput = decision?.input ?? input
+  const connectionSnapshotReady = sessionState?.connectionSnapshotReady === true
   const t = useTranslation()
-  const questions = parseInput(input)
-  const inputObject = (input && typeof input === 'object') ? input as Record<string, unknown> : {}
+  const questions = parseInput(effectiveInput)
+  const inputObject = (effectiveInput && typeof effectiveInput === 'object')
+    ? effectiveInput as Record<string, unknown>
+    : {}
   const [activeTab, setActiveTab] = useState(0)
   const [selections, setSelections] = useState<QuestionSelections>({})
   const [freeTexts, setFreeTexts] = useState<QuestionFreeTexts>({})
-  const [hasSubmitted, setHasSubmitted] = useState(false)
   const [hasRequestedChat, setHasRequestedChat] = useState(false)
   const composingRef = useRef(false)
+  const usesSemanticDecisionState = sessionState?.userDecisionSnapshot !== undefined
+  const terminalDecision = decision?.semanticState.status !== undefined &&
+    decision.semanticState.status !== 'open'
+  const decisionResponse = terminalDecision ? decision.response : null
+  const acceptRawResult = !usesSemanticDecisionState
 
   const resultAnswers = useMemo(() => {
-    if (!result || typeof result !== 'object') return {}
+    if (decisionResponse?.kind === 'answer') return decisionResponse.answers
+    if (!acceptRawResult || !result || typeof result !== 'object') return {}
     const answers = (result as { answers?: unknown }).answers
     return answers && typeof answers === 'object'
       ? answers as Record<string, string>
       : {}
-  }, [result])
-  const resultText = typeof result === 'string' && result.trim().length > 0 ? result.trim() : ''
+  }, [acceptRawResult, decisionResponse, result])
+  const resultText = decisionResponse?.kind === 'clarify'
+    ? decisionResponse.message
+    : acceptRawResult && typeof result === 'string' && result.trim().length > 0
+      ? result.trim()
+      : ''
   const hasStructuredAnswers = Object.keys(resultAnswers).length > 0
-  const hasTerminalResult = hasStructuredAnswers || resultText.length > 0
+  const hasTerminalResult = hasResult || hasStructuredAnswers || resultText.length > 0
+  const pendingRequest = terminalDecision || hasResult || decision?.conflicted
+    ? null
+    : decisionView?.pendingRequest ?? null
+  const localAttempt = sessionState?.userDecisionResponseAttempts?.[toolUseId]
+  const deliveryState = decisionView?.deliveryState ?? localAttempt?.state
+  const responseError = decisionView?.error ?? localAttempt?.error?.message
+  const retryResponse = localAttempt?.response
+  const projectedInteraction = selectAskUserDecisionInteraction(sessionState, toolUseId)
+  const frozenResponseSummary = useMemo(() => {
+    if (!retryResponse) return ''
+    if (retryResponse.kind === 'clarify') return retryResponse.message.trim()
+    return Object.values(retryResponse.answers)
+      .map((answer) => answer.trim())
+      .filter(Boolean)
+      .join('; ')
+  }, [retryResponse])
+
+  useEffect(() => {
+    if (hasRequestedChat && (
+      projectedInteraction.mode === 'editing' ||
+      projectedInteraction.mode === 'retryable'
+    )) {
+      setHasRequestedChat(false)
+    }
+  }, [hasRequestedChat, projectedInteraction.mode])
 
   const answeredText = useMemo(() => {
     if (hasStructuredAnswers) {
@@ -117,11 +169,34 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   const safeActiveTab = Math.min(activeTab, questions.length - 1)
   const activeQuestion = questions[safeActiveTab]
 
-  const submitted = hasTerminalResult || hasSubmitted || hasRequestedChat
-  const terminalWithoutAnswers = submitted && !hasStructuredAnswers && resultText.length > 0
+  const submitted = hasTerminalResult && !pendingRequest
+  const semanticallySubmitted = usesSemanticDecisionState
+    ? projectedInteraction.mode === 'settled'
+    : submitted
+  const terminalWithoutAnswers = semanticallySubmitted &&
+    !hasStructuredAnswers &&
+    (resultText.length > 0 || hasResult || (terminalDecision && decisionResponse === null))
+  const interaction = semanticallySubmitted
+    ? { mode: 'settled' as const }
+    : projectedInteraction
+  const editing = interaction.mode === 'editing'
+  const retryable = interaction.mode === 'retryable'
+  const verifiable = interaction.mode === 'verifiable'
+  const needsResync = interaction.mode === 'resync'
+  const canResync = needsResync || (
+    interaction.mode === 'blocked' && interaction.recoverable
+  )
+  const frozen = retryable || verifiable || needsResync || (
+    interaction.mode === 'syncing' && interaction.frozen
+  )
+  const authoritativeHistory = decisionProjection.source === 'legacy' &&
+    interaction.mode === 'blocked' &&
+    connectionSnapshotReady
+  const settled = semanticallySubmitted || interaction.mode === 'settled'
+  const requestedChat = hasRequestedChat || decisionResponse?.kind === 'clarify'
 
   const handleSelect = (qIndex: number, label: string) => {
-    if (submitted) return
+    if (!editing) return
     setSelections((prev) => {
       const question = questions[qIndex]
       const selected = prev[qIndex] ?? []
@@ -153,7 +228,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   }
 
   const handleFreeTextChange = (qIndex: number, value: string) => {
-    if (submitted) return
+    if (!editing) return
     setFreeTexts((prev) => {
       const next = { ...prev }
       if (value) {
@@ -174,7 +249,20 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
   }
 
   const handleSubmit = () => {
-    if (submitted) return
+    if (semanticallySubmitted || !targetSessionId) return
+    if (retryable && retryResponse) {
+      respondToUserDecision(targetSessionId, toolUseId, retryResponse)
+      return
+    }
+    if (verifiable && retryResponse) {
+      respondToUserDecision(targetSessionId, toolUseId, retryResponse)
+      return
+    }
+    if (canResync) {
+      resyncUserDecision(targetSessionId, toolUseId)
+      return
+    }
+    if (!editing) return
 
     const parts: string[] = []
     for (let i = 0; i < questions.length; i++) {
@@ -183,8 +271,6 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
     }
     const response = parts.join('; ')
     if (!response) return
-
-    if (!targetSessionId || !pendingRequest) return
 
     const answers = questions.reduce<Record<string, string>>((acc, question, index) => {
       const freeText = freeTexts[index]?.trim()
@@ -197,13 +283,15 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
       return acc
     }, {})
 
-    setHasSubmitted(true)
-    respondToPermission(targetSessionId, pendingRequest.requestId, true, {
-      updatedInput: {
-        ...inputObject,
-        answers,
-      },
-    })
+    const dispatchResult = interaction.channel === 'modern'
+      ? respondToUserDecision(targetSessionId, toolUseId, { kind: 'answer', answers })
+      : respondToPermission(targetSessionId, interaction.requestId, true, {
+          updatedInput: {
+            ...inputObject,
+            answers,
+          },
+        })
+    if (dispatchResult === 'dispatched') setHasRequestedChat(false)
   }
 
   /**
@@ -217,8 +305,7 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
    * question in any of the options is exactly when nothing is filled in.
    */
   const handleChatAboutThis = () => {
-    if (submitted) return
-    if (!targetSessionId || !pendingRequest) return
+    if (semanticallySubmitted || !targetSessionId || !editing) return
 
     // Carry whatever was already picked, so switching to a conversation isn't
     // punished by losing the partial answers.
@@ -231,10 +318,15 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
       })
       .join('\n')
 
-    setHasRequestedChat(true)
-    respondToPermission(targetSessionId, pendingRequest.requestId, false, {
-      denyMessage: questionsWithAnswers,
-    })
+    const dispatchResult = interaction.channel === 'modern'
+      ? respondToUserDecision(targetSessionId, toolUseId, {
+          kind: 'clarify',
+          message: questionsWithAnswers,
+        })
+      : respondToPermission(targetSessionId, interaction.requestId, false, {
+          denyMessage: questionsWithAnswers,
+        })
+    if (dispatchResult === 'dispatched') setHasRequestedChat(true)
   }
 
   // All questions must be answered (via selection or free text) to enable submit
@@ -246,13 +338,13 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
 
   return (
     <div className={`mb-4 rounded-[var(--radius-lg)] border overflow-hidden ${
-      submitted
+      settled
         ? 'border-[var(--color-border)] bg-[var(--color-surface-container-low)] opacity-70'
         : 'border-[var(--color-secondary)] bg-[var(--color-surface-container-lowest)]'
     }`}>
       {/* Header */}
       <div className={`flex items-center gap-3 px-4 py-3 ${
-        submitted
+        settled
           ? 'bg-[var(--color-surface-container-low)]'
           : 'bg-[var(--color-surface-container)]'
       }`}>
@@ -265,13 +357,15 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
           <span className="text-sm font-semibold text-[var(--color-text-primary)]">
             {t('question.needsInput')}
           </span>
-          {submitted && (
+          {(semanticallySubmitted || authoritativeHistory) && (
             <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[var(--color-surface-container-high)] text-[var(--color-text-tertiary)]">
               {/* handing the question back is not an answer — saying "answered"
                   there misreports what the user did */}
-              {t(hasRequestedChat
+              {t(requestedChat
                 ? 'question.chatBadge'
-                : terminalWithoutAnswers ? 'question.completed' : 'question.answered')}
+                : terminalWithoutAnswers || authoritativeHistory
+                  ? 'question.completed'
+                  : 'question.answered')}
             </span>
           )}
         </div>
@@ -322,13 +416,14 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
               return (
                 <button
                   key={optIndex}
+                  aria-pressed={isSelected}
                   onClick={() => handleSelect(safeActiveTab, opt.label)}
-                  disabled={submitted}
+                  disabled={!editing}
                   className={`w-full text-left px-4 py-3 rounded-[var(--radius-md)] border transition-all duration-150 cursor-pointer ${
                     isSelected
                       ? 'border-[var(--color-secondary)] bg-[var(--color-secondary-container)]'
                       : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-outline)] hover:bg-[var(--color-surface-container-low)]'
-                  } ${submitted ? 'cursor-default' : ''}`}
+                  } ${!editing ? 'cursor-default' : ''}`}
                 >
                   <div className="flex items-start gap-3">
                     {/* Selection indicator */}
@@ -365,19 +460,20 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
         )}
 
         {/* Free text input */}
-        {!submitted && (
+        {!settled && interaction.mode !== 'blocked' && interaction.mode !== 'syncing' && (
           <div>
             <label className="text-xs text-[var(--color-text-tertiary)] mb-1.5 block">
               {t('question.customResponse')}
             </label>
             <textarea
               value={freeTexts[safeActiveTab] ?? ''}
+              disabled={!editing}
               onChange={(e) => handleFreeTextChange(safeActiveTab, e.target.value)}
               onCompositionStart={() => { composingRef.current = true }}
               onCompositionEnd={() => { composingRef.current = false }}
               onKeyDown={(e) => {
                 if (composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229) return
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && allAnswered) {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && allAnswered && editing) {
                   e.preventDefault()
                   handleSubmit()
                 }
@@ -392,48 +488,70 @@ export function AskUserQuestion({ sessionId, toolUseId, input, result }: Props) 
 
         {/* Submitted answer display — the chat handoff wins over any terminal
             result, whose text is the deny payload and not worth showing. */}
-        {submitted && (hasRequestedChat ? (
+        {semanticallySubmitted && (requestedChat ? (
           <div className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
             <span className="material-symbols-outlined text-[14px] text-[var(--color-secondary)]">forum</span>
             <span>{t('question.chatRequested')}</span>
           </div>
-        ) : (
+        ) : answeredText ? (
           <div className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
             <span className="material-symbols-outlined text-[14px] text-[var(--color-success)]">check_circle</span>
             <span>
               {t(terminalWithoutAnswers ? 'question.resultPrefix' : 'question.answeredPrefix')}<strong>{answeredText}</strong>
             </span>
           </div>
-        ))}
+        ) : null)}
+        {!semanticallySubmitted && responseError && (
+          <p role="alert" className="mt-3 text-xs text-[var(--color-error)]">
+            {responseError}
+          </p>
+        )}
+        {!semanticallySubmitted && deliveryState && (
+          <p role="status" className="mt-3 text-xs text-[var(--color-text-secondary)]">
+            {interaction.mode === 'syncing' && frozen && (
+              <span>{t('common.loading')} </span>
+            )}
+            {frozenResponseSummary && <strong>{frozenResponseSummary}</strong>}
+          </p>
+        )}
       </div>
 
       {/* Action bar. Wraps rather than overflows: two buttons plus a translated
           label (kr/jp run long) can outgrow a narrow side-by-side pane. */}
-      {!submitted && (
+      {!settled && interaction.mode !== 'syncing' && (
+        interaction.mode !== 'blocked' || interaction.recoverable
+      ) && (
         <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-t border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
           <Button
             variant="primary"
             size="sm"
-            disabled={!allAnswered || !pendingRequest}
+            disabled={editing && !allAnswered}
             onClick={handleSubmit}
             icon={
               <span className="material-symbols-outlined text-[14px]">send</span>
             }
           >
-            {t('question.submit')}
+            {t(retryable
+              ? 'common.retry'
+              : verifiable
+                ? 'question.verifyDelivery'
+                : canResync
+                  ? 'question.resync'
+                  : 'question.submit')}
           </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={!pendingRequest}
-            onClick={handleChatAboutThis}
-            title={t('question.chatAboutThisHint')}
-            icon={
-              <span className="material-symbols-outlined text-[14px]">forum</span>
-            }
-          >
-            {t('question.chatAboutThis')}
-          </Button>
+          {editing && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleChatAboutThis}
+              title={t('question.chatAboutThisHint')}
+              icon={
+                <span className="material-symbols-outlined text-[14px]">forum</span>
+              }
+            >
+              {t('question.chatAboutThis')}
+            </Button>
+          )}
         </div>
       )}
     </div>

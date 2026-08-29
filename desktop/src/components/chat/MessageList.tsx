@@ -3,7 +3,12 @@ import { createPortal } from 'react-dom'
 import { ArrowDown, BookMarked, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleStop, FileStack, LoaderCircle, MessageCircle, Settings, Target, XCircle } from 'lucide-react'
 import { ApiError } from '../../api/client'
 import { sessionsApi, type SessionRewindMode, type SessionTurnCheckpoint } from '../../api/sessions'
-import { listPendingPermissions, useChatStore } from '../../stores/chatStore'
+import {
+  listPendingPermissions,
+  selectAskUserDecisionProjection,
+  useChatStore,
+  type AskUserDecisionProjection,
+} from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { useWorkspacePanelStore, type WorkspacePanelOrigin } from '../../stores/workspacePanelStore'
@@ -66,8 +71,17 @@ type RenderModel = {
 }
 
 type RewindTurnTarget = {
-  messageId: string
+  uiMessageId: string
+  targetUserMessageId: string | null
   userMessageIndex: number
+  content: string
+  expectedContent: string
+  attachments?: Extract<UIMessage, { type: 'user_text' }>['attachments']
+}
+
+type EditableTurnTarget = {
+  uiMessageId: string
+  targetUserMessageId: string
   content: string
   expectedContent: string
   attachments?: Extract<UIMessage, { type: 'user_text' }>['attachments']
@@ -623,7 +637,11 @@ function appendChildToolCall(
   }
 }
 
-export function buildRenderModel(messages: UIMessage[], activeAskUserQuestionToolUseId?: string | null): RenderModel {
+export function buildRenderModel(
+  messages: UIMessage[],
+  activeAskUserQuestionToolUseId?: string | null,
+  preserveAllUnresolvedAskUserQuestions = false,
+): RenderModel {
   const items: RenderItem[] = []
   const toolResultMap = new Map<string, ToolResult>()
   const childToolCallsByParent = new Map<string, ToolCall[]>()
@@ -699,6 +717,7 @@ export function buildRenderModel(messages: UIMessage[], activeAskUserQuestionToo
           continue
         }
         if (
+          !preserveAllUnresolvedAskUserQuestions &&
           !isResolved &&
           activeAskUserQuestionToolUseId &&
           msg.toolUseId !== activeAskUserQuestionToolUseId
@@ -706,6 +725,7 @@ export function buildRenderModel(messages: UIMessage[], activeAskUserQuestionToo
           continue
         }
         if (
+          !preserveAllUnresolvedAskUserQuestions &&
           !isResolved &&
           !activeAskUserQuestionToolUseId &&
           lastUnresolvedAskUserQuestionIndex !== null &&
@@ -728,6 +748,40 @@ export function buildRenderModel(messages: UIMessage[], activeAskUserQuestionToo
   return { renderItems: items, toolResultMap, childToolCallsByParent }
 }
 
+function includeProjectedAsks(
+  messages: UIMessage[],
+  projection: AskUserDecisionProjection,
+): UIMessage[] {
+  if (projection.source !== 'server') return messages
+
+  const existingToolUseIds = new Set(messages.flatMap((message) =>
+    message.type === 'tool_use' && message.toolName === 'AskUserQuestion'
+      ? [message.toolUseId]
+      : []))
+  const projectedToolUseIds = new Set<string>()
+  const additions: UIMessage[] = []
+  for (const view of projection.views) {
+    if (
+      view.source !== 'server' ||
+      existingToolUseIds.has(view.toolUseId) ||
+      projectedToolUseIds.has(view.toolUseId)
+    ) {
+      continue
+    }
+    projectedToolUseIds.add(view.toolUseId)
+    additions.push({
+      id: `user-decision-${view.toolUseId}`,
+      type: 'tool_use',
+      toolName: 'AskUserQuestion',
+      toolUseId: view.toolUseId,
+      input: view.input,
+      timestamp: messages[messages.length - 1]?.timestamp ?? 0,
+      isPending: false,
+    })
+  }
+  return additions.length > 0 ? [...messages, ...additions] : messages
+}
+
 const TOOL_FILE_PATH_FIELDS = new Set([
   'file_path',
   'filePath',
@@ -735,6 +789,14 @@ const TOOL_FILE_PATH_FIELDS = new Set([
   'notebookPath',
   'path',
 ])
+
+// An assistant can introduce a full Windows/POSIX path in one reply and use a
+// concise path such as `看板/report.html` in a later reply. Keep those explicit
+// absolute references available to the later reply instead of silently falling
+// back to the session workdir. The final /local-file request remains subject to
+// the server's filesystem allow-list; this only selects a previously mentioned
+// candidate and never grants new file access.
+const ABSOLUTE_FILE_PATH_PATTERN = /(?:[A-Za-z]:[\\/]|\/)(?:[^\\/:*?"<>|\r\n]+[\\/])*[^\\/:*?"<>|\r\n]+\.[A-Za-z0-9]{1,16}/g
 
 function collectToolFilePaths(value: unknown, output: string[]) {
   if (!value || typeof value !== 'object') return
@@ -752,32 +814,48 @@ function collectToolFilePaths(value: unknown, output: string[]) {
   }
 }
 
-export function buildTurnReferencedFilesByMessageId(messages: UIMessage[]): Map<string, string[]> {
-  const result = new Map<string, string[]>()
-  const referencedFiles: string[] = []
+function collectAbsoluteFilePathsFromText(value: string, output: string[]) {
+  for (const match of value.matchAll(ABSOLUTE_FILE_PATH_PATTERN)) {
+    const path = match[0]?.trim()
+    if (path) output.push(path)
+  }
+}
+
+function collectSessionKnownFiles(messages: UIMessage[]): string[] {
+  const files: string[] = []
   const seen = new Set<string>()
+  const add = (candidate: string) => {
+    const key = candidate.replace(/\\/g, '/').toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    files.push(candidate)
+  }
 
   for (const message of messages) {
-    if (message.type === 'user_text') {
-      referencedFiles.length = 0
-      seen.clear()
-      continue
-    }
-
     if (message.type === 'tool_use') {
       const candidates: string[] = []
       collectToolFilePaths(message.input, candidates)
-      for (const candidate of candidates) {
-        const key = candidate.replace(/\\/g, '/').toLowerCase()
-        if (seen.has(key)) continue
-        seen.add(key)
-        referencedFiles.push(candidate)
-      }
+      for (const candidate of candidates) add(candidate)
       continue
     }
 
-    if (message.type === 'assistant_text' && referencedFiles.length > 0) {
-      result.set(message.id, [...referencedFiles])
+    if (message.type === 'assistant_text') {
+      const candidates: string[] = []
+      collectAbsoluteFilePathsFromText(message.content, candidates)
+      for (const candidate of candidates) add(candidate)
+    }
+  }
+
+  return files
+}
+
+export function buildTurnReferencedFilesByMessageId(messages: UIMessage[]): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+  const sessionKnownFiles = collectSessionKnownFiles(messages)
+
+  for (const message of messages) {
+    if (message.type === 'assistant_text' && sessionKnownFiles.length > 0) {
+      result.set(message.id, sessionKnownFiles)
     }
   }
 
@@ -850,7 +928,8 @@ export function getCompletedTurnTargets(messages: UIMessage[]): RewindTurnTarget
       }
       userMessageIndex += 1
       currentTarget = {
-        messageId: message.id,
+        uiMessageId: message.id,
+        targetUserMessageId: message.transcriptMessageId ?? null,
         userMessageIndex,
         content: message.content,
         expectedContent: message.modelContent ?? message.content,
@@ -872,16 +951,14 @@ export function getCompletedTurnTargets(messages: UIMessage[]): RewindTurnTarget
   return completedTurns
 }
 
-export function getEditableTurnTargets(messages: UIMessage[]): RewindTurnTarget[] {
-  let userMessageIndex = -1
-  const targets: RewindTurnTarget[] = []
+export function getEditableTurnTargets(messages: UIMessage[]): EditableTurnTarget[] {
+  const targets: EditableTurnTarget[] = []
 
   for (const message of messages) {
-    if (message.type !== 'user_text' || message.pending) continue
-    userMessageIndex += 1
+    if (message.type !== 'user_text' || message.pending || !message.transcriptMessageId) continue
     targets.push({
-      messageId: message.id,
-      userMessageIndex,
+      uiMessageId: message.id,
+      targetUserMessageId: message.transcriptMessageId,
       content: message.content,
       expectedContent: message.modelContent ?? message.content,
       attachments: message.attachments,
@@ -920,8 +997,8 @@ function buildTurnCardInsertionMap(
   turnChangeCards.forEach((card) => {
     if (card.checkpoint.code.filesChanged.length === 0) return
     const renderIndex =
-      lastResponseIndexByTurnId.get(card.target.messageId) ??
-      userIndexByTurnId.get(card.target.messageId)
+      lastResponseIndexByTurnId.get(card.target.uiMessageId) ??
+      userIndexByTurnId.get(card.target.uiMessageId)
     if (renderIndex === undefined) return
     const existing = cardsByRenderIndex.get(renderIndex)
     if (existing) {
@@ -946,7 +1023,7 @@ function buildChangedFilesByRenderIndex(
 ): Map<number, string[]> {
   const filesByTurnId = new Map<string, string[]>()
   for (const card of turnChangeCards) {
-    filesByTurnId.set(card.target.messageId, card.checkpoint.code.filesChanged)
+    filesByTurnId.set(card.target.uiMessageId, card.checkpoint.code.filesChanged)
   }
   if (filesByTurnId.size === 0) return new Map()
 
@@ -1725,9 +1802,15 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [backgroundAgentTasks])
   const hasRunningBackgroundTasks = hasAnyRunningBackgroundTasks(backgroundAgentTasks)
   const pendingPermissions = listPendingPermissions(sessionState)
-  const activeAskUserQuestionToolUseId =
-    pendingPermissions
-      .find((permission) => permission.toolName === 'AskUserQuestion')?.toolUseId ?? null
+  const askUserDecisionProjection = useMemo(
+    () => selectAskUserDecisionProjection(sessionState),
+    [sessionState],
+  )
+  const activeAskUserQuestionToolUseId = askUserDecisionProjection.active?.toolUseId ?? null
+  const projectedMessages = useMemo(
+    () => includeProjectedAsks(messages, askUserDecisionProjection),
+    [askUserDecisionProjection, messages],
+  )
   const hasPendingPermissionCard = pendingPermissions.some(
     (permission) => permission.toolName !== 'AskUserQuestion',
   )
@@ -1782,7 +1865,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   const [isLoadingTurnChangeCards, setIsLoadingTurnChangeCards] = useState(false)
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null)
   const [rewindingTurnId, setRewindingTurnId] = useState<string | null>(null)
-  const [editingTurn, setEditingTurn] = useState<{ target: RewindTurnTarget; content: string } | null>(null)
+  const [editingTurn, setEditingTurn] = useState<{ target: EditableTurnTarget; content: string } | null>(null)
   const [turnUndoConfirmTargetId, setTurnUndoConfirmTargetId] = useState<string | null>(null)
   const [isAwayFromLatest, setIsAwayFromLatest] = useState(false)
   const [virtualViewport, setVirtualViewport] = useState<VirtualViewport>({
@@ -2232,8 +2315,12 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [requestLiveFollow])
 
   const { toolResultMap, childToolCallsByParent, renderItems } = useMemo(
-    () => buildRenderModel(messages, activeAskUserQuestionToolUseId),
-    [activeAskUserQuestionToolUseId, messages],
+    () => buildRenderModel(
+      projectedMessages,
+      activeAskUserQuestionToolUseId,
+      askUserDecisionProjection.source === 'server',
+    ),
+    [activeAskUserQuestionToolUseId, askUserDecisionProjection.source, projectedMessages],
   )
   const turnReferencedFilesByMessageId = useMemo(
     () => buildTurnReferencedFilesByMessageId(messages),
@@ -2260,13 +2347,13 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   )
   const editableTurnTargets = useMemo(
     () => isMemberSession
-      ? new Map<string, RewindTurnTarget>()
-      : new Map(getEditableTurnTargets(deferredMessages).map((target) => [target.messageId, target])),
+      ? new Map<string, EditableTurnTarget>()
+      : new Map(getEditableTurnTargets(deferredMessages).map((target) => [target.uiMessageId, target])),
     [deferredMessages, isMemberSession],
   )
   const latestCompletedTurnId =
     completedTurnTargets.length > 0
-      ? completedTurnTargets[completedTurnTargets.length - 1]?.messageId ?? null
+      ? completedTurnTargets[completedTurnTargets.length - 1]?.uiMessageId ?? null
       : null
   const visibleTurnChangeCards = hasRunningBackgroundTasks ? EMPTY_TURN_CHANGE_CARDS : turnChangeCards
   const turnCardsByRenderIndex = useMemo(
@@ -2361,7 +2448,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
           ? 'px-7 py-4'
           : 'px-4 py-4'
   const confirmTurnCard = useMemo(
-    () => visibleTurnChangeCards.find((card) => card.target.messageId === turnUndoConfirmTargetId) ?? null,
+    () => visibleTurnChangeCards.find((card) => card.target.uiMessageId === turnUndoConfirmTargetId) ?? null,
     [turnUndoConfirmTargetId, visibleTurnChangeCards],
   )
   // Undo is not reversible, so the dialog — not just the card — has to say which
@@ -2434,9 +2521,12 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     ])
       .then(([checkpointResponse, workspaceStatus]) => {
         if (cancelled) return
-        const targetByMessageId = new Map(
-          completedTurnTargets.map((target) => [target.messageId, target] as const),
-        )
+        const targetByTranscriptMessageId = new Map<string, RewindTurnTarget>()
+        for (const target of completedTurnTargets) {
+          if (target.targetUserMessageId) {
+            targetByTranscriptMessageId.set(target.targetUserMessageId, target)
+          }
+        }
         const targetByUserMessageIndex = new Map(
           completedTurnTargets.map((target) => [target.userMessageIndex, target] as const),
         )
@@ -2444,7 +2534,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
         setTurnChangeCards(
           normalizeTurnCheckpoints(checkpointResponse).flatMap((checkpoint) => {
             const target =
-              targetByMessageId.get(checkpoint.target.targetUserMessageId) ??
+              targetByTranscriptMessageId.get(checkpoint.target.targetUserMessageId) ??
               targetByUserMessageIndex.get(checkpoint.target.userMessageIndex)
             if (!target || !checkpoint.code.available) {
               return []
@@ -2453,7 +2543,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
               target,
               checkpoint,
               workDir: checkpoint.workDir ?? workspaceStatus?.workDir ?? null,
-              isLatest: target.messageId === latestCompletedTurnId,
+              isLatest: target.uiMessageId === latestCompletedTurnId,
             }]
           }),
         )
@@ -2478,11 +2568,11 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     if (!resolvedSessionId || !confirmTurnCard || rewindingTurnId || hasRunningBackgroundTasks) return
 
     const target = confirmTurnCard.target
-    setRewindingTurnId(target.messageId)
+    setRewindingTurnId(target.uiMessageId)
     setTurnActionErrors((current) => {
-      if (!(target.messageId in current)) return current
+      if (!(target.uiMessageId in current)) return current
       const next = { ...current }
-      delete next[target.messageId]
+      delete next[target.uiMessageId]
       return next
     })
 
@@ -2528,7 +2618,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     } catch (error) {
       setTurnActionErrors((current) => ({
         ...current,
-        [target.messageId]: getApiErrorMessage(error),
+        [target.uiMessageId]: getApiErrorMessage(error),
       }))
       setTurnUndoConfirmTargetId(null)
     } finally {
@@ -2597,7 +2687,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     }
   }, [addToast, branchSession, branchingMessageId, resolvedSessionId, t])
 
-  const beginEditMessage = useCallback((target: RewindTurnTarget) => {
+  const beginEditMessage = useCallback((target: EditableTurnTarget) => {
     if (rewindingTurnId || isMemberSession) return
     setEditingTurn({ target, content: target.content })
   }, [isMemberSession, rewindingTurnId])
@@ -2614,20 +2704,19 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     if (!content) return
     const target = editingTurn.target
 
-    setRewindingTurnId(target.messageId)
+    setRewindingTurnId(target.uiMessageId)
     try {
       if (editRequiresActiveTurnStop) {
         stopGeneration(resolvedSessionId)
       }
-      const result = await sessionsApi.rewind(resolvedSessionId, {
-        userMessageIndex: target.userMessageIndex,
+      const result = await sessionsApi.replaceMessage(resolvedSessionId, {
+        targetUserMessageId: target.targetUserMessageId,
         expectedContent: target.expectedContent,
-        mode: 'conversation',
       })
       sendMessage(resolvedSessionId, content, target.attachments, {
         displayContent: content,
         displayAttachments: target.attachments,
-        replaceFromMessageId: target.messageId,
+        replaceFromMessageId: target.uiMessageId,
       })
       setEditingTurn(null)
       addToast({
@@ -2669,7 +2758,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     const result = new Map<string, { label: string; loading: boolean; onEdit: () => void }>()
     const label = t('chat.editMessage')
     for (const [messageId, target] of editableTurnTargets) {
-      if (editingTurn && editingTurn.target.messageId !== messageId) continue
+      if (editingTurn && editingTurn.target.uiMessageId !== messageId) continue
       result.set(messageId, {
         label,
         loading: rewindingTurnId === messageId,
@@ -2957,7 +3046,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
             }
             branchAction={branchActionByMessageId.get(item.message.id)}
             editAction={editActionByMessageId.get(item.message.id)}
-            editComposer={editingTurn?.target.messageId === item.message.id ? {
+            editComposer={editingTurn?.target.uiMessageId === item.message.id ? {
               value: editingTurn.content,
               submitLabel: t('common.send'),
               cancelLabel: t('chat.undoEdit'),
@@ -2978,15 +3067,15 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
 
         {resolvedSessionId && cardsForItem.map((card) => (
           <CurrentTurnChangeCard
-            key={`turn-change-${card.target.messageId}`}
+            key={`turn-change-${card.target.uiMessageId}`}
             sessionId={resolvedSessionId}
             checkpoint={card.checkpoint}
             workDir={card.workDir}
-            error={turnActionErrors[card.target.messageId] ?? null}
-            isUndoing={rewindingTurnId === card.target.messageId}
+            error={turnActionErrors[card.target.uiMessageId] ?? null}
+            isUndoing={rewindingTurnId === card.target.uiMessageId}
             isLatest={card.isLatest}
             onUndo={() => {
-              setTurnUndoConfirmTargetId(card.target.messageId)
+              setTurnUndoConfirmTargetId(card.target.uiMessageId)
             }}
           />
         ))}
@@ -3209,6 +3298,7 @@ export const MessageBlock = memo(function MessageBlock({
             toolUseId={message.toolUseId}
             input={message.input}
             result={toolResult?.content}
+            hasResult={toolResult != null}
           />
         )
       }

@@ -14,6 +14,7 @@ import {
   prepareSessionWorkspace,
 } from '../services/repositoryLaunchService.js'
 import { conversationService } from '../services/conversationService.js'
+import { sessionMutationCoordinator } from '../services/sessionMutationCoordinator.js'
 import { clearCommandsCache } from '../../commands.js'
 import { parseJSONL } from '../../utils/json.js'
 import { createSessionBranch } from '../../utils/sessionBranching.js'
@@ -3394,6 +3395,26 @@ describe('Sessions API', () => {
   let baseUrl: string
   let server: ReturnType<typeof Bun.serve> | null = null
 
+  async function holdSessionMutation(sessionId: string): Promise<{
+    release: () => void
+    operation: Promise<void>
+  }> {
+    let signalStarted!: () => void
+    let release!: () => void
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve
+    })
+    const released = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const operation = sessionMutationCoordinator.enqueue(sessionId, async () => {
+      signalStarted()
+      await released
+    })
+    await started
+    return { release, operation }
+  }
+
   beforeEach(async () => {
     await setupTmpConfigDir()
     service = new SessionService()
@@ -3429,6 +3450,7 @@ describe('Sessions API', () => {
       server.stop(true)
       server = null
     }
+    sessionMutationCoordinator.resetForTests()
     clearInstalledPluginsCache()
     clearPluginCache('sessions-api-test-teardown')
     resetSettingsCache()
@@ -5239,6 +5261,153 @@ describe('Sessions API', () => {
     expect(missingSessionRes.status).toBe(404)
   })
 
+  it('POST /api/sessions/:id/replace-message should wait for the same-session mutation slot', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-100000000001'
+    const userId = crypto.randomUUID()
+    await writeSessionFile('-tmp-api-replace-message-barrier', sessionId, [
+      makeUserEntry('replace after the barrier', userId),
+      makeAssistantEntry('persisted reply', userId),
+    ])
+
+    const originalStopSessionAndWait = conversationService.stopSessionAndWait
+    let stopStarted = false
+    conversationService.stopSessionAndWait = async (targetSessionId: string) => {
+      if (targetSessionId === sessionId) stopStarted = true
+    }
+    const holder = await holdSessionMutation(sessionId)
+    let request: Promise<Response> | undefined
+
+    try {
+      request = fetch(`${baseUrl}/api/sessions/${sessionId}/replace-message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetUserMessageId: userId }),
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 75))
+      expect(stopStarted).toBe(false)
+      expect((await service.getSessionMessages(sessionId)).map((message) => message.id))
+        .toContain(userId)
+
+      holder.release()
+      const response = await request
+      expect(response.status).toBe(200)
+      expect(stopStarted).toBe(true)
+      expect(await service.getSessionMessages(sessionId)).toHaveLength(0)
+    } finally {
+      holder.release()
+      await holder.operation
+      if (request) await request.catch(() => undefined)
+      conversationService.stopSessionAndWait = originalStopSessionAndWait
+    }
+  })
+
+  it('POST /api/sessions/:id/replace-message should not wait for another session mutation slot', async () => {
+    const heldSessionId = 'aaaaaaaa-bbbb-cccc-dddd-100000000002'
+    const targetSessionId = 'aaaaaaaa-bbbb-cccc-dddd-100000000003'
+    const userId = crypto.randomUUID()
+    await writeSessionFile('-tmp-api-replace-message-other-session', targetSessionId, [
+      makeUserEntry('replace independently', userId),
+      makeAssistantEntry('persisted reply', userId),
+    ])
+
+    const holder = await holdSessionMutation(heldSessionId)
+    const request = fetch(`${baseUrl}/api/sessions/${targetSessionId}/replace-message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetUserMessageId: userId }),
+    })
+
+    try {
+      const response = await Promise.race([
+        request,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
+      ])
+      expect(response).not.toBeNull()
+      expect(response?.status).toBe(200)
+    } finally {
+      holder.release()
+      await holder.operation
+      await request.catch(() => undefined)
+    }
+  })
+
+  it('POST /api/sessions/:id/rewind should wait for the same-session mutation slot when executing', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-100000000004'
+    const userId = crypto.randomUUID()
+    await writeSessionFile('-tmp-api-rewind-barrier', sessionId, [
+      makeUserEntry('rewind after the barrier', userId),
+      makeAssistantEntry('persisted reply', userId),
+    ])
+
+    const originalStopSessionAndWait = conversationService.stopSessionAndWait
+    let stopStarted = false
+    conversationService.stopSessionAndWait = async (targetSessionId: string) => {
+      if (targetSessionId === sessionId) stopStarted = true
+    }
+    const holder = await holdSessionMutation(sessionId)
+    let request: Promise<Response> | undefined
+
+    try {
+      request = fetch(`${baseUrl}/api/sessions/${sessionId}/rewind`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetUserMessageId: userId, mode: 'conversation' }),
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 75))
+      expect(stopStarted).toBe(false)
+      expect((await service.getSessionMessages(sessionId)).map((message) => message.id))
+        .toContain(userId)
+
+      holder.release()
+      const response = await request
+      expect(response.status).toBe(200)
+      expect(stopStarted).toBe(true)
+      expect(await service.getSessionMessages(sessionId)).toHaveLength(0)
+    } finally {
+      holder.release()
+      await holder.operation
+      if (request) await request.catch(() => undefined)
+      conversationService.stopSessionAndWait = originalStopSessionAndWait
+    }
+  })
+
+  it('POST /api/sessions/:id/rewind dry-run should not wait for the session mutation slot', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-100000000005'
+    const userId = crypto.randomUUID()
+    await writeSessionFile('-tmp-api-rewind-preview-barrier', sessionId, [
+      makeUserEntry('preview while mutation is held', userId),
+      makeAssistantEntry('persisted reply', userId),
+    ])
+
+    const holder = await holdSessionMutation(sessionId)
+    const request = fetch(`${baseUrl}/api/sessions/${sessionId}/rewind`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetUserMessageId: userId,
+        mode: 'conversation',
+        dryRun: true,
+      }),
+    })
+
+    try {
+      const response = await Promise.race([
+        request,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
+      ])
+      expect(response).not.toBeNull()
+      expect(response?.status).toBe(200)
+      expect((await service.getSessionMessages(sessionId)).map((message) => message.id))
+        .toContain(userId)
+    } finally {
+      holder.release()
+      await holder.operation
+      await request.catch(() => undefined)
+    }
+  })
+
   it('POST /api/sessions/:id/rewind should preview and trim the active conversation chain', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     const firstUserId = crypto.randomUUID()
@@ -5718,6 +5887,94 @@ describe('Sessions API', () => {
     expect(await executeRes.json()).toMatchObject({ mode: 'conversation', restoreAvailable: true })
     expect(await fs.readFile(targetFile, 'utf-8')).toBe("export const VALUE = 'keep-this-change'\n")
     expect(await service.getSessionMessages(sessionId)).toHaveLength(0)
+  })
+
+  it('POST /api/sessions/:id/replace-message rejects an index-only target without mutating the transcript', async () => {
+    const sessionId = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeef2'
+    const workDir = path.join(tmpDir, 'replace-message-index-only-fixture')
+    const userId = crypto.randomUUID()
+    await writeSessionFile('-tmp-api-replace-message-index-only', sessionId, [
+      makeSessionMetaEntry(workDir),
+      { ...makeUserEntry('persisted prompt', userId), cwd: workDir, sessionId },
+      makeAssistantEntry('persisted reply', userId),
+    ])
+
+    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/replace-message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userMessageIndex: 0,
+        expectedContent: 'persisted prompt',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({
+      error: 'BAD_REQUEST',
+      message: expect.stringContaining('targetUserMessageId'),
+    })
+    expect((await service.getSessionMessages(sessionId)).map((message) => message.id)).toEqual([
+      userId,
+      expect.any(String),
+    ])
+  })
+
+  it('POST /api/sessions/:id/replace-message uses stable id despite position drift and skips file history', async () => {
+    const sessionId = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeef1'
+    const workDir = path.join(tmpDir, 'replace-message-lightweight-fixture')
+    const earlierUserId = crypto.randomUUID()
+    const userId = crypto.randomUUID()
+    const transcriptPath = await writeSessionFile('-tmp-api-replace-message', sessionId, [
+      makeSessionMetaEntry(workDir),
+      { ...makeUserEntry('repeated prompt', earlierUserId), cwd: workDir, sessionId },
+      makeAssistantEntry('earlier reply', earlierUserId),
+      { ...makeUserEntry('repeated prompt', userId), cwd: workDir, sessionId },
+      makeAssistantEntry('target reply', userId),
+    ])
+
+    const originalStopSessionAndWait = conversationService.stopSessionAndWait
+    const originalGetFileHistory = sessionService.getSessionFileHistorySnapshots
+    const stopTimeouts: Array<number | undefined> = []
+    let fileHistoryRead = false
+    conversationService.stopSessionAndWait = async (targetSessionId: string, timeoutMs?: number) => {
+      if (targetSessionId !== sessionId) return
+      stopTimeouts.push(timeoutMs)
+      await fs.appendFile(transcriptPath, `${JSON.stringify(makeAssistantEntry('late reply', userId))}\n`, 'utf-8')
+    }
+    sessionService.getSessionFileHistorySnapshots = async (...args) => {
+      fileHistoryRead = true
+      return originalGetFileHistory.apply(sessionService, args)
+    }
+
+    try {
+      const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/replace-message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetUserMessageId: userId,
+          // Simulate a stale UI position. Replacement must ignore it and use
+          // the authoritative transcript UUID, even for repeated text.
+          userMessageIndex: 0,
+          expectedContent: 'repeated prompt',
+        }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({
+        target: { targetUserMessageId: userId, userMessageIndex: 1, userMessageCount: 2 },
+        conversation: { messagesRemoved: 3 },
+        mode: 'edit',
+      })
+      expect(stopTimeouts).toEqual([250])
+      expect(fileHistoryRead).toBe(false)
+      expect((await service.getSessionMessages(sessionId)).map((message) => message.id)).toEqual([
+        earlierUserId,
+        expect.any(String),
+      ])
+    } finally {
+      conversationService.stopSessionAndWait = originalStopSessionAndWait
+      sessionService.getSessionFileHistorySnapshots = originalGetFileHistory
+    }
   })
 
   it('POST /api/sessions/:id/rewind should resolve checkpoint paths from the target prompt cwd', async () => {

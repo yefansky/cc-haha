@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import {
   MessageList,
+  buildTurnReferencedFilesByMessageId,
   buildRenderModel,
   buildVirtualItemOffsets,
   getActiveConversationNavigationItemId,
   getConversationNavigationTargetScrollTop,
+  getEditableTurnTargets,
   isRenderItemFullyVisibleInChatScroller,
   resetSessionScrollSnapshotsForTests,
   shouldVirtualizeRenderItems,
@@ -14,6 +16,7 @@ import type { ConversationNavigationItem } from './ConversationNavigator'
 import type { VirtualRenderItemMetric } from './virtualHeightCache'
 import { relativizeWorkspacePath } from './CurrentTurnChangeCard'
 import { sessionsApi } from '../../api/sessions'
+import { wsManager } from '../../api/websocket'
 import { useChatStore } from '../../stores/chatStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
@@ -73,6 +76,56 @@ function makeConversationNavigationMessages(): UIMessage[] {
     { id: 'assistant-4', type: 'assistant_text', content: 'Fourth answer', timestamp: 8 },
   ]
 }
+
+describe('getEditableTurnTargets', () => {
+  it('only exposes persisted transcript users and keeps UI identity separate', () => {
+    const messages: UIMessage[] = [
+      { id: 'goal-ui', type: 'user_text', content: '/goal inspect the bug', timestamp: 1 },
+      {
+        id: 'first-ui',
+        type: 'user_text',
+        transcriptMessageId: 'first-transcript',
+        content: 'same prompt',
+        timestamp: 2,
+      },
+      { id: 'optimistic-ui', type: 'user_text', content: 'not persisted yet', timestamp: 3 },
+      {
+        id: 'second-ui',
+        type: 'user_text',
+        transcriptMessageId: 'second-transcript',
+        content: 'same prompt',
+        timestamp: 4,
+      },
+    ]
+
+    expect(getEditableTurnTargets(messages)).toEqual([
+      expect.objectContaining({
+        uiMessageId: 'first-ui',
+        targetUserMessageId: 'first-transcript',
+        content: 'same prompt',
+      }),
+      expect.objectContaining({
+        uiMessageId: 'second-ui',
+        targetUserMessageId: 'second-transcript',
+        content: 'same prompt',
+      }),
+    ])
+  })
+})
+
+describe('buildTurnReferencedFilesByMessageId', () => {
+  it('keeps an explicit absolute HTML path available after a later user turn', () => {
+    const report = 'G:\\Jx3_Classic\\sword3-products\\trunk\\tools\\AITools\\项目大脑\\看板\\2026-08-26-项目大脑使用态势综合分析.html'
+    const messages: UIMessage[] = [
+      { id: 'user-1', type: 'user_text', content: '生成报告', timestamp: 1 },
+      { id: 'assistant-1', type: 'assistant_text', content: `已生成：${report}`, timestamp: 2 },
+      { id: 'user-2', type: 'user_text', content: '提交一下', timestamp: 3 },
+      { id: 'assistant-2', type: 'assistant_text', content: '未提交：看板/2026-08-26-项目大脑使用态势综合分析.html', timestamp: 4 },
+    ]
+
+    expect(buildTurnReferencedFilesByMessageId(messages).get('assistant-2')).toContain(report)
+  })
+})
 
 function findTextNodeContaining(container: Element, text: string) {
   const walker = document.createTreeWalker(container, 4)
@@ -1013,6 +1066,186 @@ describe('MessageList nested tool calls', () => {
     })
   })
 
+  it('shows an actionable AskUserQuestion as soon as its permission request arrives', () => {
+    const questionInput = {
+      questions: [
+        {
+          question: 'How should this change proceed?',
+          options: [
+            { label: 'Create a task' },
+            { label: 'Discuss only' },
+          ],
+        },
+      ],
+    }
+    const store = useChatStore.getState()
+    vi.spyOn(wsManager, 'sendIfOpen').mockReturnValue(true)
+
+    // The SDK can ask for permission before the trailing tool_use_complete event.
+    // Drive that real ordering instead of constructing an already-consistent card.
+    store.handleServerMessage(ACTIVE_TAB, {
+      type: 'content_start',
+      blockType: 'tool_use',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'ask-race-tool',
+    })
+    store.handleServerMessage(ACTIVE_TAB, {
+      type: 'permission_request',
+      requestId: 'ask-race-permission',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'ask-race-tool',
+      input: questionInput,
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByText('How should this change proceed?')).toBeTruthy()
+    const option = screen.getByRole('button', { name: /Create a task/ }) as HTMLButtonElement
+    expect(option.disabled).toBe(false)
+    fireEvent.click(option)
+    const submit = screen.getByRole('button', { name: /Submit/ }) as HTMLButtonElement
+    expect(submit.disabled).toBe(false)
+    fireEvent.click(submit)
+    expect(useChatStore.getState().sessions[ACTIVE_TAB]
+      ?.pendingPermissions?.['ask-race-permission']?.responseState).toBe('submitting')
+    expect(useChatStore.getState().sessions[ACTIVE_TAB]?.messages).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_use',
+        toolUseId: 'ask-race-tool',
+        input: questionInput,
+        isPending: false,
+      }),
+    )
+  })
+
+  it('treats a real successful empty tool result as terminal despite a stale pending request', () => {
+    const questionInput = {
+      questions: [{
+        question: 'Did the empty result finish this question?',
+        options: [{ label: 'Retry' }, { label: 'Wait' }],
+      }],
+    }
+    act(() => {
+      const store = useChatStore.getState()
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_request',
+        requestId: 'empty-result-request',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'empty-result-tool',
+        input: questionInput,
+      })
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'tool_result',
+        toolUseId: 'empty-result-tool',
+        content: '',
+        isError: false,
+      })
+    })
+
+    // Preserve the race that caused the bug: terminal transcript evidence has
+    // arrived, but transport cleanup has not removed the permission request yet.
+    expect(useChatStore.getState().sessions[ACTIVE_TAB]
+      ?.pendingPermissions?.['empty-result-request']).toBeDefined()
+
+    render(<MessageList />)
+
+    expect(screen.getByText('Did the empty result finish this question?')).toBeTruthy()
+    expect(screen.getByText('Completed')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Retry$/ })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('button', { name: /Submit$/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Chat about this/ })).toBeNull()
+  })
+
+  it('keeps an unresolved AskUserQuestion read-only after its pending request is gone', () => {
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [{
+            id: 'historical-ask',
+            type: 'tool_use',
+            toolName: 'AskUserQuestion',
+            toolUseId: 'historical-ask-tool',
+            input: {
+              questions: [{
+                question: 'Which historical option?',
+                options: [{ label: 'First' }, { label: 'Second' }],
+              }],
+            },
+            timestamp: 1,
+          }],
+          pendingPermission: null,
+          connectionSnapshotReady: true,
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByText('Which historical option?')).toBeTruthy()
+    expect(screen.getByText('Completed')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^First$/ })).toHaveProperty('disabled', true)
+    expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Submit$/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Chat about this/ })).toBeNull()
+  })
+
+  it('keeps an AskUserQuestion read-only while syncing, then activates it when permission arrives', () => {
+    const questionInput = {
+      questions: [{
+        question: 'Wait for the live request?',
+        options: [{ label: 'Wait' }, { label: 'Cancel' }],
+      }],
+    }
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [{
+            id: 'syncing-ask',
+            type: 'tool_use',
+            toolName: 'AskUserQuestion',
+            toolUseId: 'syncing-ask-tool',
+            input: questionInput,
+            timestamp: 1,
+          }],
+          pendingPermission: null,
+          connectionSnapshotReady: false,
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByRole('button', { name: /^Wait$/ })).toHaveProperty('disabled', true)
+    expect(screen.queryByText('Completed')).toBeNull()
+    expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Submit$/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Chat about this/ })).toBeNull()
+
+    act(() => {
+      useChatStore.setState((state) => ({
+        sessions: {
+          ...state.sessions,
+          [ACTIVE_TAB]: {
+            ...state.sessions[ACTIVE_TAB]!,
+            pendingPermission: {
+              requestId: 'syncing-ask-permission',
+              toolName: 'AskUserQuestion',
+              toolUseId: 'syncing-ask-tool',
+              input: questionInput,
+            },
+          },
+        },
+      }))
+    })
+
+    const liveOption = screen.getByRole('button', { name: /^Wait$/ }) as HTMLButtonElement
+    expect(liveOption.disabled).toBe(false)
+    expect(screen.getByPlaceholderText('Type your answer...')).toBeTruthy()
+    fireEvent.click(liveOption)
+    expect(screen.getByRole('button', { name: /Submit$/ })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: /Chat about this/ })).toHaveProperty('disabled', false)
+  })
+
   it('keeps resolved AskUserQuestion history visible when filtering active duplicates', () => {
     const messages: UIMessage[] = [
       {
@@ -1109,6 +1342,71 @@ describe('MessageList nested tool calls', () => {
         toolUseId: 'second-tool',
       },
     })
+  })
+
+  it('keeps every projected AskUserQuestion visible instead of selecting only one decision', () => {
+    const firstInput = {
+      questions: [{
+        question: 'First projected decision?',
+        options: [{ label: 'First choice' }],
+      }],
+    }
+    const secondInput = {
+      questions: [{
+        question: 'Second projected decision?',
+        options: [{ label: 'Second choice' }],
+      }],
+    }
+
+    act(() => {
+      const store = useChatStore.getState()
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'tool_use_complete',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'projected-decision-a',
+        input: firstInput,
+      })
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_request',
+        requestId: 'projected-request-a',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'projected-decision-a',
+        input: firstInput,
+      })
+      store.handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: ['projected-request-a'],
+        computerUseRequestIds: [],
+        turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          decisions: [{
+            decisionId: 'projected-decision-a',
+            semanticState: { status: 'open' },
+            runtimeBinding: { status: 'attached', requestId: 'projected-request-a' },
+            response: null,
+            input: firstInput,
+            inputSource: 'live',
+            conflicted: false,
+          }, {
+            decisionId: 'projected-decision-b',
+            semanticState: { status: 'open' },
+            runtimeBinding: { status: 'detached' },
+            response: null,
+            input: secondInput,
+            inputSource: 'transcript',
+            conflicted: false,
+          }],
+        },
+      })
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByText('First projected decision?')).toBeTruthy()
+    expect(screen.getByText('Second projected decision?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^First choice$/ })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: /^Second choice$/ })).toHaveProperty('disabled', true)
   })
 
   it('renders goal events as visible status cards', () => {
@@ -6041,13 +6339,11 @@ describe('MessageList nested tool calls', () => {
     expect(reloadHistory).toHaveBeenCalledWith(ACTIVE_TAB)
   })
 
-  it('edits a completed prompt in place and rewinds only after sending', async () => {
-    vi.spyOn(sessionsApi, 'rewind').mockResolvedValue({
+  it('edits a completed prompt in place through the lightweight replacement path', async () => {
+    vi.spyOn(sessionsApi, 'replaceMessage').mockResolvedValue({
       target: { targetUserMessageId: 'user-1', userMessageIndex: 0, userMessageCount: 2 },
       conversation: { messagesRemoved: 4, removedMessageIds: ['user-1', 'assistant-1', 'user-2', 'assistant-2'] },
-      code: { available: true, filesChanged: ['src/App.tsx'], insertions: 1, deletions: 0 },
-      restoreAvailable: true,
-      mode: 'conversation',
+      mode: 'edit',
     })
     const reloadHistory = vi.fn(() => new Promise<void>(() => {}))
     const queueComposerPrefill = vi.fn()
@@ -6058,9 +6354,9 @@ describe('MessageList nested tool calls', () => {
       sendMessage,
       sessions: {
         [ACTIVE_TAB]: makeSessionState({ messages: [
-          { id: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
+          { id: 'first-ui', transcriptMessageId: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
           { id: 'assistant-1', type: 'assistant_text', content: 'first reply', timestamp: 2 },
-          { id: 'user-2', type: 'user_text', content: 'second prompt', timestamp: 3 },
+          { id: 'second-ui', transcriptMessageId: 'user-2', type: 'user_text', content: 'second prompt', timestamp: 3 },
           { id: 'assistant-2', type: 'assistant_text', content: 'second reply', timestamp: 4 },
         ] }),
       },
@@ -6076,42 +6372,39 @@ describe('MessageList nested tool calls', () => {
     expect(editShell?.className).toContain('lg:max-w-[640px]')
     expect(editor.parentElement?.className).toMatch(/(^|\s)w-full(\s|$)/)
     expect(screen.getByText('second prompt')).toBeTruthy()
-    expect(sessionsApi.rewind).not.toHaveBeenCalled()
+    expect(sessionsApi.replaceMessage).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
-    expect(sessionsApi.rewind).not.toHaveBeenCalled()
+    expect(sessionsApi.replaceMessage).not.toHaveBeenCalled()
     expect(screen.queryByRole('textbox', { name: 'Edit prompt' })).toBeNull()
 
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit this prompt' }))[0]!)
     fireEvent.keyDown(await screen.findByRole('textbox', { name: 'Edit prompt' }), { key: 'Escape' })
-    expect(sessionsApi.rewind).not.toHaveBeenCalled()
+    expect(sessionsApi.replaceMessage).not.toHaveBeenCalled()
     expect(screen.queryByRole('textbox', { name: 'Edit prompt' })).toBeNull()
 
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit this prompt' }))[0]!)
     fireEvent.change(await screen.findByRole('textbox', { name: 'Edit prompt' }), { target: { value: 'edited first prompt' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    await waitFor(() => expect(sessionsApi.rewind).toHaveBeenCalledWith(ACTIVE_TAB, {
-      userMessageIndex: 0,
+    await waitFor(() => expect(sessionsApi.replaceMessage).toHaveBeenCalledWith(ACTIVE_TAB, {
+      targetUserMessageId: 'user-1',
       expectedContent: 'first prompt',
-      mode: 'conversation',
     }))
     expect(reloadHistory).not.toHaveBeenCalled()
     expect(queueComposerPrefill).not.toHaveBeenCalled()
     expect(sendMessage).toHaveBeenCalledWith(ACTIVE_TAB, 'edited first prompt', undefined, {
       displayContent: 'edited first prompt',
       displayAttachments: undefined,
-      replaceFromMessageId: 'user-1',
+      replaceFromMessageId: 'first-ui',
     })
   })
 
   it('keeps every persisted prompt editable while the latest reply is streaming', async () => {
-    vi.spyOn(sessionsApi, 'rewind').mockResolvedValue({
+    vi.spyOn(sessionsApi, 'replaceMessage').mockResolvedValue({
       target: { targetUserMessageId: 'user-2', userMessageIndex: 1, userMessageCount: 2 },
       conversation: { messagesRemoved: 1, removedMessageIds: ['user-2'] },
-      code: { available: false, filesChanged: [], insertions: 0, deletions: 0 },
-      restoreAvailable: true,
-      mode: 'conversation',
+      mode: 'edit',
     })
     const realStopGeneration = useChatStore.getState().stopGeneration
     const stopGeneration = vi.fn(realStopGeneration)
@@ -6121,9 +6414,9 @@ describe('MessageList nested tool calls', () => {
       sendMessage,
       sessions: {
         [ACTIVE_TAB]: makeSessionState({ messages: [
-          { id: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
+          { id: 'first-ui', transcriptMessageId: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
           { id: 'assistant-1', type: 'assistant_text', content: 'first reply', timestamp: 2 },
-          { id: 'user-2', type: 'user_text', content: 'latest prompt', timestamp: 3 },
+          { id: 'latest-ui', transcriptMessageId: 'user-2', type: 'user_text', content: 'latest prompt', timestamp: 3 },
         ] }),
       },
     })
@@ -6143,16 +6436,15 @@ describe('MessageList nested tool calls', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    await waitFor(() => expect(sessionsApi.rewind).toHaveBeenCalledWith(ACTIVE_TAB, {
-      userMessageIndex: 1,
+    await waitFor(() => expect(sessionsApi.replaceMessage).toHaveBeenCalledWith(ACTIVE_TAB, {
+      targetUserMessageId: 'user-2',
       expectedContent: 'latest prompt',
-      mode: 'conversation',
     }))
     expect(stopGeneration).toHaveBeenCalledWith(ACTIVE_TAB)
     expect(sendMessage).toHaveBeenCalledWith(ACTIVE_TAB, 'edited latest prompt', undefined, {
       displayContent: 'edited latest prompt',
       displayAttachments: undefined,
-      replaceFromMessageId: 'user-2',
+      replaceFromMessageId: 'latest-ui',
     })
   })
 

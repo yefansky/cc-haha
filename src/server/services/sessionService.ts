@@ -12,6 +12,7 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import { createInterface } from 'node:readline'
 import { ApiError } from '../middleware/errorHandler.js'
+import { decodeOpenAIReasoningEnvelope } from '../proxy/transform/openaiReasoning.js'
 import { sanitizePath as sanitizePortablePath } from '../../utils/sessionStoragePortable.js'
 import type { FileHistorySnapshot } from '../../utils/fileHistory.js'
 import { findCanonicalGitRoot } from '../../utils/git.js'
@@ -69,6 +70,22 @@ import type {
 import type { LocalIndexStatus } from './localIndex/types.js'
 import { diagnosticsService } from './diagnosticsService.js'
 import { isForkInheritedUsageRecord } from '../../utils/usageAccounting.js'
+import {
+  prepareReplaceUserTurnTranscript as prepareReplaceUserTurnTranscriptMutation,
+  type PrepareReplaceUserTurnTranscriptInput,
+  type PreparedReplaceUserTurnTranscript,
+} from './sessionReplaceUserTurnTranscript.js'
+
+export {
+  ReplaceUserTurnTranscriptError,
+  type PrepareReplaceUserTurnTranscriptInput,
+  type PreparedReplaceUserTurnTranscript,
+  type ReplaceUserTurnTranscriptCommitResult,
+  type ReplaceUserTurnTranscriptErrorCode,
+  type ReplaceUserTurnTranscriptRollbackResult,
+  type ReplaceUserTurnTranscriptState,
+  type ReplaceUserTurnTranscriptTrimResult,
+} from './sessionReplaceUserTurnTranscript.js'
 
 // ============================================================================
 // Types
@@ -333,6 +350,128 @@ type RawEntry = {
 }
 
 type RawMessageUsage = NonNullable<RawEntry['message']>['usage']
+
+type TranscriptContextAccumulator = {
+  latestModel: string | null
+  latestUsage: {
+    model: string
+    inputTokens: number
+    outputTokens: number
+    cacheReadInputTokens: number
+    cacheCreationInputTokens: number
+  } | null
+  estimatedTokensFromMessages: number
+  estimatedTokensAfterUsage: number
+  transcriptHasMediaInput: boolean
+}
+
+function estimateTranscriptEntryTokens(entry: RawEntry): number {
+  const content = entry.message?.content
+  if (!Array.isArray(content)) {
+    return roughTokenCountEstimationForMessage(entry)
+  }
+
+  let changed = false
+  const sanitizedContent = content.map(block => {
+    if (!block || typeof block !== 'object') return block
+    const record = block as Record<string, unknown>
+    if (record.type !== 'redacted_thinking' || typeof record.data !== 'string') {
+      return block
+    }
+
+    const reasoning = decodeOpenAIReasoningEnvelope(record.data)
+    if (!reasoning) return block
+    changed = true
+    return {
+      ...record,
+      data: reasoning.summary.map(item => item.text).join('\n'),
+    }
+  })
+
+  if (!changed) return roughTokenCountEstimationForMessage(entry)
+  return roughTokenCountEstimationForMessage({
+    ...entry,
+    message: {
+      ...entry.message,
+      content: sanitizedContent,
+    },
+  })
+}
+
+function createTranscriptContextAccumulator(): TranscriptContextAccumulator {
+  return {
+    latestModel: null,
+    latestUsage: null,
+    estimatedTokensFromMessages: 0,
+    estimatedTokensAfterUsage: 0,
+    transcriptHasMediaInput: false,
+  }
+}
+
+function accumulateTranscriptContext(
+  state: TranscriptContextAccumulator,
+  entry: RawEntry,
+): void {
+  if (entry.type === 'system' && entry.subtype === 'compact_boundary') {
+    state.latestUsage = null
+    state.estimatedTokensFromMessages = 0
+    state.estimatedTokensAfterUsage = 0
+    state.transcriptHasMediaInput = false
+  }
+
+  if (typeof entry.message?.model === 'string') {
+    state.latestModel = entry.message.model
+  }
+
+  if (
+    entry.type === 'user' ||
+    entry.type === 'assistant' ||
+    entry.type === 'attachment'
+  ) {
+    const tokens = estimateTranscriptEntryTokens(entry)
+    state.estimatedTokensFromMessages += tokens
+    state.estimatedTokensAfterUsage += tokens
+    if (!state.transcriptHasMediaInput && hasMediaInput([entry])) {
+      state.transcriptHasMediaInput = true
+    }
+  }
+
+  const usage = normalizeMessageUsage(entry.message?.usage)
+  const model = entry.message?.model
+  if (!usage || typeof model !== 'string') return
+
+  const latestUsage = {
+    model,
+    inputTokens: usage.input_tokens ?? 0,
+    outputTokens: usage.output_tokens ?? 0,
+    cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
+    cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+  }
+  if (
+    latestUsage.inputTokens +
+      latestUsage.outputTokens +
+      latestUsage.cacheReadInputTokens +
+      latestUsage.cacheCreationInputTokens ===
+    0
+  ) return
+
+  state.latestUsage = latestUsage
+  state.estimatedTokensAfterUsage = 0
+}
+
+function resolveTranscriptContextUsage(
+  state: TranscriptContextAccumulator,
+): NonNullable<TranscriptContextAccumulator['latestUsage']> | null {
+  if (state.latestUsage) return state.latestUsage
+  if (!state.latestModel) return null
+  return {
+    model: state.latestModel,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  }
+}
 
 function normalizeMessageUsage(usage: RawMessageUsage): MessageUsage | undefined {
   if (!usage) return undefined
@@ -2569,11 +2708,14 @@ export class SessionService {
       cacheCreationInputTokens: number
     },
     estimatedTokensFromMessages: number,
+    estimatedTokensAfterUsage: number,
     transcriptHasMediaInput: boolean,
     launchInfo?: ProviderContextWindowHint | null,
   ): Promise<TranscriptContextEstimate> {
     const rawMaxTokens = await this.getTranscriptContextWindow(sessionId, latest.model, launchInfo)
     const promptTokens = latest.inputTokens + latest.cacheReadInputTokens + latest.cacheCreationInputTokens
+    const providerTokens = promptTokens + latest.outputTokens
+    const hasProviderUsage = providerTokens > 0
     const estimatedTokens = estimatedTokensFromMessages || promptTokens
     const contextBudget = calculateContextBudget({
       estimatedTokens,
@@ -2589,7 +2731,16 @@ export class SessionService {
       }),
       hasMediaInput: transcriptHasMediaInput,
     })
-    const totalTokens = contextBudget.usedTokens
+    const totalTokens =
+      hasProviderUsage && !contextBudget.ignoredUsageReason
+        ? Math.min(
+            Math.max(
+              contextBudget.usedTokens,
+              providerTokens + estimatedTokensAfterUsage,
+            ),
+            rawMaxTokens,
+          )
+        : contextBudget.usedTokens
     const percentage = rawMaxTokens > 0 ? Math.round((totalTokens / rawMaxTokens) * 100) : 0
     const usageCategories: TranscriptContextEstimate['categories'] = [
       { name: 'Input tokens', tokens: latest.inputTokens, color: '#8f3217' },
@@ -2598,9 +2749,9 @@ export class SessionService {
       { name: 'Output tokens', tokens: latest.outputTokens, color: '#2f7d32' },
     ]
     const contextCategories: TranscriptContextEstimate['categories'] =
-      contextBudget.ignoredUsageReason === 'low_trust_media_usage'
-        ? [{ name: 'Estimated context', tokens: totalTokens, color: '#8f3217' }]
-        : usageCategories
+      totalTokens === providerTokens
+        ? usageCategories
+        : [{ name: 'Estimated context', tokens: totalTokens, color: '#8f3217' }]
     const categories: TranscriptContextEstimate['categories'] = [
       ...contextCategories,
       { name: 'Free space', tokens: Math.max(0, rawMaxTokens - totalTokens), color: '#a1a1aa', isDeferred: true },
@@ -2647,53 +2798,21 @@ export class SessionService {
     if (!found) return null
 
     const entries = await this.readJsonlFile(found.filePath)
-    let latest: {
-      model: string
-      inputTokens: number
-      outputTokens: number
-      cacheReadInputTokens: number
-      cacheCreationInputTokens: number
-    } | null = null
-    let estimatedTokensFromMessages = 0
-    let transcriptHasMediaInput = false
+    const contextState = createTranscriptContextAccumulator()
 
     for (const entry of entries) {
-      if (
-        entry.type === 'user' ||
-        entry.type === 'assistant' ||
-        entry.type === 'attachment'
-      ) {
-        estimatedTokensFromMessages += roughTokenCountEstimationForMessage(entry)
-        if (!transcriptHasMediaInput && hasMediaInput([entry])) {
-          transcriptHasMediaInput = true
-        }
-      }
-
-      const usage = entry.message?.usage
-      const model = entry.message?.model
-      if (!usage || typeof model !== 'string') continue
-
-      const inputTokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0
-      const outputTokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0
-      const cacheReadInputTokens = typeof usage.cache_read_input_tokens === 'number' ? usage.cache_read_input_tokens : 0
-      const cacheCreationInputTokens = typeof usage.cache_creation_input_tokens === 'number' ? usage.cache_creation_input_tokens : 0
-
-      latest = {
-        model,
-        inputTokens,
-        outputTokens,
-        cacheReadInputTokens,
-        cacheCreationInputTokens,
-      }
+      accumulateTranscriptContext(contextState, entry)
     }
 
+    const latest = resolveTranscriptContextUsage(contextState)
     if (!latest) return null
 
     return await this.buildTranscriptContextEstimate(
       sessionId,
       latest,
-      estimatedTokensFromMessages,
-      transcriptHasMediaInput,
+      contextState.estimatedTokensFromMessages,
+      contextState.estimatedTokensAfterUsage,
+      contextState.transcriptHasMediaInput,
       this.resolveRuntimeContextMetadataFromEntries(entries),
     )
   }
@@ -2847,15 +2966,7 @@ export class SessionService {
     let firstUsageAt: number | null = null
     let lastUsageAt: number | null = null
 
-    let latestContextUsage: {
-      model: string
-      inputTokens: number
-      outputTokens: number
-      cacheReadInputTokens: number
-      cacheCreationInputTokens: number
-    } | null = null
-    let estimatedTokensFromMessages = 0
-    let transcriptHasMediaInput = false
+    const contextState = createTranscriptContextAccumulator()
 
     await this.streamJsonlFile(found.filePath, (entry) => {
       if (typeof entry.message?.model === 'string') {
@@ -2924,16 +3035,7 @@ export class SessionService {
         transcriptMessageCount += 1
       }
 
-      if (
-        entry.type === 'user' ||
-        entry.type === 'assistant' ||
-        entry.type === 'attachment'
-      ) {
-        estimatedTokensFromMessages += roughTokenCountEstimationForMessage(entry)
-        if (!transcriptHasMediaInput && hasMediaInput([entry])) {
-          transcriptHasMediaInput = true
-        }
-      }
+      accumulateTranscriptContext(contextState, entry)
 
       const usage = entry.message?.usage
       const model = entry.message?.model
@@ -2946,14 +3048,6 @@ export class SessionService {
       const webSearchRequests = typeof usage.server_tool_use?.web_search_requests === 'number'
         ? usage.server_tool_use.web_search_requests
         : 0
-
-      latestContextUsage = {
-        model,
-        inputTokens,
-        outputTokens,
-        cacheReadInputTokens,
-        cacheCreationInputTokens,
-      }
 
       // Inherited fork history still describes the current context, but its API usage belongs to
       // the source session and must not be included in this fork's cumulative usage or cost.
@@ -3070,12 +3164,14 @@ export class SessionService {
           totalWebSearchRequests,
           models: Array.from(models.values()),
         }
+    const latestContextUsage = resolveTranscriptContextUsage(contextState)
     const contextEstimate = latestContextUsage
       ? await this.buildTranscriptContextEstimate(
           sessionId,
           latestContextUsage,
-          estimatedTokensFromMessages,
-          transcriptHasMediaInput,
+          contextState.estimatedTokensFromMessages,
+          contextState.estimatedTokensAfterUsage,
+          contextState.transcriptHasMediaInput,
           launchInfo,
         )
       : null
@@ -4086,6 +4182,27 @@ export class SessionService {
     }
     if (removed > 0) this.invalidateSessionListCache()
     return removed
+  }
+
+  /**
+   * Prepare a recoverable replace-user-turn transcript mutation.
+   *
+   * Filesystems do not provide an atomic content-CAS-plus-rename primitive.
+   * The caller must therefore hold the per-session mutation coordinator slot
+   * and stop/drain the runtime for the entire prepare + trim interval. The
+   * writerQuiescence token makes that external precondition explicit; this
+   * method's digest checks detect accidents but cannot lock another process.
+   */
+  async prepareReplaceUserTurnTranscript(
+    input: PrepareReplaceUserTurnTranscriptInput,
+  ): Promise<PreparedReplaceUserTurnTranscript> {
+    return prepareReplaceUserTurnTranscriptMutation(input, {
+      findSessionFile: sessionId => this.findSessionFile(sessionId),
+      getProjectsDir: () => this.getProjectsDir(),
+      projectMessages: entries => this.entriesToMessages(entries as RawEntry[]),
+      now: this.now,
+      invalidateTranscriptCaches: () => this.invalidateSessionListCache(),
+    })
   }
 
   async trimSessionMessagesFrom(
