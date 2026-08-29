@@ -1189,7 +1189,7 @@ describe('MessageList nested tool calls', () => {
     expect(screen.queryByRole('button', { name: /Chat about this/ })).toBeNull()
   })
 
-  it('keeps an AskUserQuestion read-only while syncing, then activates it when permission arrives', () => {
+  it('keeps a legacy Ask read-only until a fresh snapshot confirms its live permission', () => {
     const questionInput = {
       questions: [{
         question: 'Wait for the live request?',
@@ -1236,6 +1236,16 @@ describe('MessageList nested tool calls', () => {
           },
         },
       }))
+    })
+
+    expect(screen.getByRole('button', { name: /^Wait$/ })).toHaveProperty('disabled', true)
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_requests_snapshot',
+        toolRequestIds: ['syncing-ask-permission'],
+        computerUseRequestIds: [],
+        turnActive: true,
+      })
     })
 
     const liveOption = screen.getByRole('button', { name: /^Wait$/ }) as HTMLButtonElement
