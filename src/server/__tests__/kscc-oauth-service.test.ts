@@ -29,6 +29,19 @@ afterEach(async () => {
 })
 
 describe('KsccOAuthService', () => {
+  function hangUntilAborted(init?: RequestInit): Promise<Response> {
+    return new Promise((_, reject) => {
+      const signal = init?.signal
+      if (!signal) {
+        reject(new Error('Expected an abort signal'))
+        return
+      }
+      const rejectWithReason = () => reject(signal.reason)
+      if (signal.aborted) rejectWithReason()
+      else signal.addEventListener('abort', rejectWithReason, { once: true })
+    })
+  }
+
   it('imports an existing local KSCC login without exposing its token', async () => {
     await fs.writeFile(path.join(tmpDir, 'settings.json'), JSON.stringify({
       env: { KSCC_AUTH_TOKEN: 'local-token', BASE_API: 'http://kscc.test' },
@@ -119,5 +132,54 @@ describe('KsccOAuthService', () => {
       authorizeUrl: 'http://kscc.test/l/replacement-login',
       reusedLocalLogin: false,
     })
+  })
+
+  it('times out a hanging local-token model lookup instead of blocking login forever', async () => {
+    await fs.writeFile(path.join(tmpDir, 'settings.json'), JSON.stringify({
+      env: { KSCC_AUTH_TOKEN: 'local-token', BASE_API: 'http://kscc.test' },
+    }))
+    globalThis.fetch = vi.fn((_input: string | URL, init?: RequestInit) =>
+      hangUntilAborted(init)) as typeof fetch
+
+    await expect(new KsccOAuthService({ requestTimeoutMs: 10 }).start())
+      .rejects.toThrow('KSCC model lookup timed out after 1s')
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('times out a hanging login URL request instead of blocking the button forever', async () => {
+    globalThis.fetch = vi.fn((_input: string | URL, init?: RequestInit) =>
+      hangUntilAborted(init)) as typeof fetch
+
+    await expect(new KsccOAuthService({ requestTimeoutMs: 10 }).start())
+      .rejects.toThrow('KSCC login request timed out after 1s')
+  })
+
+  it('keeps the timeout active while reading the login response body', async () => {
+    globalThis.fetch = vi.fn((_input: string | URL, init?: RequestInit) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => hangUntilAborted(init),
+      } as Response)) as typeof fetch
+
+    await expect(new KsccOAuthService({ requestTimeoutMs: 10 }).start())
+      .rejects.toThrow('KSCC login request timed out after 1s')
+  })
+
+  it('times out a hanging login status poll instead of leaving a permanent pending request', async () => {
+    globalThis.fetch = vi.fn((input: string | URL, init?: RequestInit) => {
+      if (String(input) === 'http://kscc.test/cli/login/url') {
+        return Promise.resolve(Response.json({
+          code: 200,
+          data: { loginUUID: 'timeout-login', loginUrl: 'available' },
+        }))
+      }
+      return hangUntilAborted(init)
+    }) as typeof fetch
+    const service = new KsccOAuthService({ requestTimeoutMs: 10 })
+    await service.start()
+
+    await expect(service.status())
+      .rejects.toThrow('KSCC login status check timed out after 1s')
   })
 })

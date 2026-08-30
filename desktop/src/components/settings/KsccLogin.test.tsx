@@ -80,6 +80,20 @@ describe('KsccLogin', () => {
     expect(useKsccOAuthStore.getState().isLoading).toBe(false)
   })
 
+  it('restores the login button and shows an error when KSCC times out', async () => {
+    statusMock.mockResolvedValue({ loggedIn: false, pending: false, active: false })
+    startMock.mockRejectedValue(new Error('KSCC login request timed out after 15s'))
+    render(<KsccLogin />)
+
+    const button = await screen.findByRole('button', { name: '\u767B\u5F55\u5E76\u542F\u7528 KSCC' })
+    fireEvent.click(button)
+
+    expect(await screen.findByText(/KSCC login request timed out after 15s/)).toBeInTheDocument()
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(useKsccOAuthStore.getState().isLoading).toBe(false)
+    expect(openMock).not.toHaveBeenCalled()
+  })
+
   it('shows the logged-in state and a switch button when KSCC is not active', async () => {
     statusMock.mockResolvedValue({ loggedIn: true, pending: false, active: false })
     const activateProvider = vi.fn().mockResolvedValue(undefined)

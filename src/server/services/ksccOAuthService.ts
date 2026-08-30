@@ -6,6 +6,7 @@ import type { ProviderModelCatalogEntry } from '../types/provider.js'
 
 const DEFAULT_KSCC_BASE_URL = 'http://120.92.138.34'
 const LOGIN_TTL_MS = 5 * 60 * 1000
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
 
 type LoginSession = {
   baseUrl: string
@@ -33,9 +34,54 @@ export type KsccLoginStatus = {
   active: boolean
 }
 
+export type KsccOAuthServiceOptions = {
+  requestTimeoutMs?: number
+}
+
+class KsccRequestTimeoutError extends Error {
+  constructor(operation: string, timeoutMs: number) {
+    super(`KSCC ${operation} timed out after ${Math.max(1, Math.ceil(timeoutMs / 1000))}s`)
+    this.name = 'KsccRequestTimeoutError'
+  }
+}
+
 export class KsccOAuthService {
   private session: LoginSession | null = null
   private providerService = new ProviderService()
+  private readonly requestTimeoutMs: number
+
+  constructor(options: KsccOAuthServiceOptions = {}) {
+    this.requestTimeoutMs = Math.max(1, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
+  }
+
+  private async requestJson<T>(
+    url: string | URL,
+    operation: string,
+    failedMessage: string,
+    init?: RequestInit,
+  ): Promise<T> {
+    const controller = new AbortController()
+    let timedOut = false
+    const timeoutId = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, this.requestTimeoutMs)
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      })
+      if (!response.ok) throw new Error(`${failedMessage} (${response.status})`)
+      return await response.json() as T
+    } catch (error) {
+      if (timedOut) {
+        throw new KsccRequestTimeoutError(operation, this.requestTimeoutMs)
+      }
+      throw error
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
 
   private baseUrl(): string {
     const value = process.env.KSCC_BASE_URL || DEFAULT_KSCC_BASE_URL
@@ -103,15 +149,18 @@ export class KsccOAuthService {
   }
 
   private async fetchModels(token: string, baseUrl: string): Promise<ProviderModelCatalogEntry[]> {
-    const response = await fetch(`${baseUrl}/cli/models`, {
+    const payload = await this.requestJson<KsccModelResponse>(
+      `${baseUrl}/cli/models`,
+      'model lookup',
+      'KSCC model lookup failed',
+      {
       headers: {
         Authorization: `Bearer ${encodeURIComponent(token)}`,
         'content-type': 'application/json',
         client: 'kscc-cli',
       },
-    })
-    if (!response.ok) throw new Error(`KSCC model lookup failed (${response.status})`)
-    const payload = await response.json() as KsccModelResponse
+      },
+    )
     if (payload.code === 401) throw new Error('KSCC authorization expired')
     const models = (payload.data ?? []).flatMap((item) => {
       const id = item.model?.trim()
@@ -140,22 +189,21 @@ export class KsccOAuthService {
       try {
         await this.activate(local.token, local.baseUrl)
         return { reusedLocalLogin: true }
-      } catch {
+      } catch (error) {
+        if (error instanceof KsccRequestTimeoutError) throw error
         // A stale local token should fall through to the browser authorization
         // flow, so users always retain a self-service recovery path.
       }
     }
 
     const baseUrl = this.baseUrl()
-    const response = await fetch(`${baseUrl}/cli/login/url`, {
-      headers: { 'content-type': 'application/json' },
-    })
-    if (!response.ok) throw new Error(`KSCC login request failed (${response.status})`)
-    const payload = await response.json() as {
+    const payload = await this.requestJson<{
       code?: number
       data?: { loginUUID?: string; loginUrl?: string }
       msg?: string
-    }
+    }>(`${baseUrl}/cli/login/url`, 'login request', 'KSCC login request failed', {
+      headers: { 'content-type': 'application/json' },
+    })
     const loginUUID = payload.data?.loginUUID
     if (payload.code !== 200 || !loginUUID || !payload.data?.loginUrl) {
       throw new Error(payload.msg || 'KSCC did not return a login URL')
@@ -181,11 +229,11 @@ export class KsccOAuthService {
     }
     const url = new URL(`${session.baseUrl}/cli/login/result`)
     url.searchParams.set('loginUUID', session.loginUUID)
-    const response = await fetch(url, { headers: { 'content-type': 'application/json' } })
-    if (!response.ok) throw new Error(`KSCC login status check failed (${response.status})`)
-    const payload = await response.json() as {
+    const payload = await this.requestJson<{
       data?: { status?: string; statusDesc?: string; sk?: string }
-    }
+    }>(url, 'login status check', 'KSCC login status check failed', {
+      headers: { 'content-type': 'application/json' },
+    })
     if (payload.data?.status === 'success' && payload.data.sk) {
       await this.activate(payload.data.sk, session.baseUrl)
       return { loggedIn: true, pending: false, active: true }
