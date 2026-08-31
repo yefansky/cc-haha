@@ -27,6 +27,10 @@ import type { ProviderAuthStrategy } from '../types/provider.js'
 const TITLE_MAX_LEN = 50
 const TITLE_MAX_OUTPUT_TOKENS = 100
 const TITLE_INPUT_MAX_LEN = 2000
+const PROJECT_BRAIN_STARTUP_WITH_USER =
+  /^启动\s*项目大脑\s*[，,]\s*[A-Za-z][A-Za-z0-9_.-]{0,31}\s*(?:[，,]\s*)?/u
+const BRAIN_STARTUP_PREFIX =
+  /^启动\s*(?:项目|私人)大脑\s*(?:[，,]\s*)?/u
 
 export type TitleLanguagePreference = {
   language: string
@@ -77,6 +81,19 @@ export function resolveTitleLanguagePreference(
     language: fallbackLanguage,
     source: 'response-language',
   }
+}
+
+/**
+ * Remove a conventional brain-startup command before choosing or generating a
+ * session title. The startup command is shared by many unrelated sessions and
+ * therefore carries no topic identity of its own.
+ */
+export function extractSessionTitleIntent(raw: string): string {
+  const clean = cleanSessionTitleSource(raw)
+  return clean
+    .replace(PROJECT_BRAIN_STARTUP_WITH_USER, '')
+    .replace(BRAIN_STARTUP_PREFIX, '')
+    .trim()
 }
 
 function buildTitleUserPrompt(
@@ -144,7 +161,7 @@ function buildAnthropicTitleRequestHeaders(
  * Returns first sentence, collapsed to single line, max 50 chars.
  */
 export function deriveTitle(raw: string): string | undefined {
-  const clean = cleanSessionTitleSource(raw)
+  const clean = extractSessionTitleIntent(raw)
   const firstSentence = /^(.*?[.!?。！？])\s/.exec(clean)?.[1] ?? clean
   const flat = firstSentence.replace(/\s+/g, ' ').trim()
   if (!flat) return undefined
@@ -162,7 +179,7 @@ export async function generateTitle(
   providerId?: string | null,
   languagePreference?: TitleLanguagePreference | null,
 ): Promise<string | null> {
-  const trimmed = cleanSessionTitleSource(conversationText)
+  const trimmed = extractSessionTitleIntent(conversationText)
   if (!trimmed) return null
 
   try {

@@ -2584,6 +2584,117 @@ describe('WebSocket Chat Integration', () => {
     expect(titleIndex).toBeLessThan(completionIndex)
   })
 
+  it('skips a startup-only turn and titles the first real request before it completes', async () => {
+    const providerConfigPath = path.join(tmpDir, 'cc-haha', 'providers.json')
+    const originalProviderConfig = await fs.readFile(providerConfigPath, 'utf-8').catch(() => null)
+    const titleModelServer = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch() {
+        return Response.json({
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ title: '整理竞技场寻路系统会议纪要' }),
+          }],
+        })
+      },
+    })
+
+    try {
+      await fs.mkdir(path.dirname(providerConfigPath), { recursive: true })
+      await fs.writeFile(
+        providerConfigPath,
+        JSON.stringify({
+          activeId: 'title-before-completion-provider',
+          providers: [
+            {
+              id: 'title-before-completion-provider',
+              presetId: 'minimax',
+              name: 'Title Before Completion Provider',
+              apiKey: 'test-key',
+              baseUrl: `http://127.0.0.1:${titleModelServer.port}/anthropic`,
+              apiFormat: 'anthropic',
+              models: {
+                main: 'minimax-main',
+                haiku: 'minimax-haiku',
+                sonnet: 'minimax-main',
+                opus: 'minimax-main',
+              },
+            },
+          ],
+        }, null, 2),
+        'utf-8',
+      )
+
+      await withMockStreamDelay(250, async () => {
+        const sessionId = `title-before-completion-${crypto.randomUUID()}`
+        const messages: any[] = []
+        const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
+        let requestSent = false
+
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            ws.close()
+            reject(new Error('Timed out waiting for semantic title before completion'))
+          }, 5000)
+
+          ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data as string)
+            messages.push(msg)
+            if (msg.type === 'connected') {
+              ws.send(JSON.stringify({
+                type: 'user_message',
+                content: '启动项目大脑，yefan1',
+              }))
+              return
+            }
+            if (msg.type === 'message_complete') {
+              if (!requestSent) {
+                expect(messages.some((item) => item.type === 'session_title_updated')).toBe(false)
+                requestSent = true
+                ws.send(JSON.stringify({
+                  type: 'user_message',
+                  content: [
+                    '帮我导入以下会议记录并生成会议纪要',
+                    '主题：竞技场寻路系统讨论',
+                  ].join('\n'),
+                }))
+                return
+              }
+              clearTimeout(timeout)
+              ws.close()
+              reject(new Error('Main response completed before semantic title was generated'))
+              return
+            }
+            if (
+              msg.type === 'session_title_updated' &&
+              msg.title === '整理竞技场寻路系统会议纪要'
+            ) {
+              clearTimeout(timeout)
+              ws.close()
+              resolve()
+            }
+          }
+          ws.onerror = () => {
+            clearTimeout(timeout)
+            reject(new Error(`WebSocket error for early title session ${sessionId}`))
+          }
+        })
+
+        expect(messages.filter((msg) => msg.type === 'message_complete')).toHaveLength(1)
+        expect(messages.filter((msg) => msg.type === 'session_title_updated').at(0)?.title)
+          .not.toContain('启动项目大脑')
+      })
+    } finally {
+      titleModelServer.stop(true)
+      if (originalProviderConfig === null) {
+        await fs.rm(providerConfigPath, { force: true })
+      } else {
+        await fs.writeFile(providerConfigPath, originalProviderConfig, 'utf-8')
+      }
+    }
+  }, 10000)
+
   it('refreshes the first-turn AI title from the completed assistant transcript', async () => {
     const providerConfigPath = path.join(tmpDir, 'cc-haha', 'providers.json')
     const originalProviderConfig = await fs.readFile(providerConfigPath, 'utf-8').catch(() => null)

@@ -65,6 +65,7 @@ import { diagnosticsService } from '../services/diagnosticsService.js'
 import {
   buildConversationTitleInput,
   deriveTitle,
+  extractSessionTitleIntent,
   generateTitle,
   resolveTitleLanguagePreference,
   saveAiTitle,
@@ -969,7 +970,10 @@ async function handleUserMessage(
     }
     sessionTitleState.set(sessionId, titleState)
   }
-  const titleInput = getTitleInputForUserMessage(message.content, desktopSlashCommand)
+  const rawTitleInput = getTitleInputForUserMessage(message.content, desktopSlashCommand)
+  const titleInput = rawTitleInput
+    ? extractSessionTitleIntent(rawTitleInput)
+    : ''
   let titleTurnNumber: number | null = null
   if (titleInput) {
     titleState.userMessageCount++
@@ -3204,6 +3208,9 @@ function triggerTitleGeneration(
     if (state.startedGenerationKeys.has(key)) return
     state.startedGenerationKeys.add(key)
 
+    const runtimeProviderId = runtimeOverrides.get(sessionId)?.providerId
+    const generationSeq = ++state.generationSeq
+
     void (async () => {
       try {
         const text = state.firstUserMessage
@@ -3216,8 +3223,28 @@ function triggerTitleGeneration(
           }
           sendSessionTitleUpdated(ws, sessionId, placeholder)
         }
+
+        const responseLanguage = await getResponseLanguageSetting()
+        const titleLanguagePreference = resolveTitleLanguagePreference(
+          state.firstUserMessage,
+          responseLanguage,
+        )
+        const aiTitle = await generateTitle(
+          text,
+          runtimeProviderId,
+          titleLanguagePreference,
+        )
+        if (generationSeq !== state.generationSeq) return
+        if (aiTitle) {
+          const saved = await saveAiTitle(sessionId, aiTitle)
+          if (!saved) {
+            state.hasCustomTitle = true
+            return
+          }
+          sendSessionTitleUpdated(ws, sessionId, aiTitle)
+        }
       } catch (err) {
-        console.error(`[Title] Failed to derive title for ${sessionId}:`, err)
+        console.error(`[Title] Failed to initialize title for ${sessionId}:`, err)
       }
     })()
     return

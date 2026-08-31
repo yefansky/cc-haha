@@ -191,9 +191,23 @@ describe('titleService', () => {
     expect(deriveTitle(raw)).toBe('/frontend-design @website 重新设计首页')
   })
 
+  test('drops repeated brain-startup boilerplate from the immediate title', () => {
+    const raw = [
+      '启动项目大脑，yefan1，帮我导入以下会议记录，这是叶帆和徐寅讨论现有的 jx3robot 机器人实现思路',
+      '主题：竞技场寻路系统讨论',
+    ].join('\n')
+
+    const title = deriveTitle(raw)
+
+    expect(title).toStartWith('帮我导入以下会议记录')
+    expect(title).not.toContain('启动项目大脑')
+    expect(deriveTitle('启动项目大脑，yefan1')).toBeUndefined()
+  })
+
   test('sends cleaned slash-command text to the title model', async () => {
     let requestBody: {
       messages?: Array<{ content?: string }>
+      system?: string
     } | null = null
     const server = Bun.serve({
       hostname: '127.0.0.1',
@@ -201,6 +215,7 @@ describe('titleService', () => {
       async fetch(req) {
         requestBody = await req.json() as {
           messages?: Array<{ content?: string }>
+          system?: string
         }
         return Response.json({
           content: [{ type: 'text', text: '{"title":"Redesign website"}' }],
@@ -244,6 +259,8 @@ describe('titleService', () => {
       expect(titlePrompt).toContain('/frontend-design @website 重新设计首页')
       expect(titlePrompt).toContain('<conversation>')
       expect(titlePrompt).not.toContain('<command-message>')
+      expect(requestBody?.system).toContain('Ignore recurring preamble')
+      expect(requestBody?.system).toContain('Prefer an explicit goal or topic')
     } finally {
       server.stop(true)
     }

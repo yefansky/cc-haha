@@ -55,7 +55,9 @@ export function extractConversationText(messages: Message[]): string {
     : text
 }
 
-export const SESSION_TITLE_PROMPT = `Generate a concise, sentence-case title (3-7 words) that captures the main topic or goal of this coding session. The title should be clear enough that the user recognizes the session in a list. Use sentence case: capitalize only the first word and proper nouns.
+export const SESSION_TITLE_PROMPT = `Generate a concise, sentence-case title (3-7 words) that captures the specific task, artifact, system, or decision that distinguishes this coding session. The title should be clear enough that the user recognizes the session in a list. Use sentence case: capitalize only the first word and proper nouns.
+
+Ignore recurring preamble such as startup commands, user names, role descriptions, agent orchestration instructions, attachment wrappers, and generic requests for help. Prefer an explicit goal or topic that appears later in the request over its opening words. Do not copy the beginning of the request unless those words are themselves the specific topic.
 
 Return JSON with a single "title" field.
 
@@ -66,6 +68,7 @@ Good examples:
 {"title": "Refactor API client error handling"}
 
 Bad (too vague): {"title": "Code changes"}
+Bad (copied preamble): {"title": "Start project brain yefan1"}
 Bad (too long): {"title": "Investigate and fix the issue where the login button does not respond on mobile devices"}
 Bad (wrong case): {"title": "Fix Login Button On Mobile"}`
 

@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { generateSessionTitle, normalizeGeneratedSessionTitle } from '../sessionTitle.js'
+import {
+  generateSessionTitle,
+  normalizeGeneratedSessionTitle,
+  SESSION_TITLE_PROMPT,
+} from '../sessionTitle.js'
 
 describe('sessionTitle', () => {
   test('normalizes command XML emitted by title generation', () => {
@@ -15,6 +19,12 @@ describe('sessionTitle', () => {
   test('rejects empty or oversized generated titles', () => {
     expect(normalizeGeneratedSessionTitle('<ide_opened_file>src/app.ts</ide_opened_file>')).toBeNull()
     expect(normalizeGeneratedSessionTitle('x'.repeat(81))).toBeNull()
+  })
+
+  test('instructs title generation to prefer specific intent over repeated preamble', () => {
+    expect(SESSION_TITLE_PROMPT).toContain('Ignore recurring preamble')
+    expect(SESSION_TITLE_PROMPT).toContain('Prefer an explicit goal or topic')
+    expect(SESSION_TITLE_PROMPT).toContain('Bad (copied preamble)')
   })
 
   test('skips title generation when internal XML metadata leaves no title source', async () => {
