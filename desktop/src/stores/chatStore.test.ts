@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessageEntry } from '../types/session'
-import type { UserDecisionResponse, UserDecisionSnapshotEntry } from '../types/chat'
+import type { UIMessage, UserDecisionResponse, UserDecisionSnapshotEntry } from '../types/chat'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
 
 const {
@@ -2018,7 +2018,7 @@ describe('chatStore history mapping', () => {
     ])
   })
 
-  it('filters task-notification turns and resumes at the next real user message', () => {
+  it('hides task-notification envelopes without dropping the following meaningful assistant reply', () => {
     const messages: MessageEntry[] = [
       {
         id: 'user-real-1',
@@ -2065,13 +2065,62 @@ describe('chatStore history mapping', () => {
         content: '项目创建好了',
       },
       {
+        type: 'assistant_text',
+        content: '旧后台任务通知，无需处理',
+        transcriptMessageId: 'assistant-task-response',
+      },
+      {
         id: 'user-real-2',
         type: 'user_text',
         content: '继续真实问题',
       },
     ])
     expect(JSON.stringify(mapped)).not.toContain('<task-notification>')
-    expect(JSON.stringify(mapped)).not.toContain('旧后台任务通知')
+  })
+
+  it('still hides the internal no-response sentinel after a task notification', () => {
+    const mapped = mapHistoryMessagesToUiMessages([
+      {
+        id: 'task-notification',
+        type: 'user',
+        timestamp: '2026-04-06T00:00:00.000Z',
+        content: '<task-notification>\n<task-id>bg-1</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n<summary>Background command completed</summary>\n</task-notification>',
+      },
+      {
+        id: 'assistant-no-response',
+        type: 'assistant',
+        timestamp: '2026-04-06T00:00:01.000Z',
+        content: [{ type: 'text', text: 'No response requested.' }],
+      },
+      {
+        id: 'user-real',
+        type: 'user',
+        timestamp: '2026-04-06T00:00:02.000Z',
+        content: '继续真实问题',
+      },
+    ])
+
+    expect(mapped).toMatchObject([
+      {
+        id: 'user-real',
+        type: 'user_text',
+        content: '继续真实问题',
+      },
+    ])
+  })
+
+  it('keeps the same text when it is an ordinary assistant reply', () => {
+    const mapped = mapHistoryMessagesToUiMessages([{
+      id: 'assistant-ordinary-no-response',
+      type: 'assistant',
+      timestamp: '2026-04-06T00:00:01.000Z',
+      content: [{ type: 'text', text: 'No response requested.' }],
+    }])
+
+    expect(mapped).toMatchObject([{
+      type: 'assistant_text',
+      content: 'No response requested.',
+    }])
   })
 
   it('reconstructs task notifications from transcript XML before filtering it from UI', () => {
@@ -9351,6 +9400,170 @@ describe('chatStore history mapping', () => {
       streamingResponseChars: 80,
       streamingFallback: null,
     })
+  })
+
+  it('keeps a completed reply when the next user turn receives a running session snapshot', async () => {
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: makeSession({
+          messages: [],
+          chatState: 'idle',
+        }),
+      },
+    })
+
+    const store = useChatStore.getState()
+    store.sendMessage(TEST_SESSION_ID, '导入会议记录', undefined, {
+      messageUuid: 'first-user-message',
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'user_message_replay',
+      content: '导入会议记录',
+      messageUuid: 'first-user-message',
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'status',
+      state: 'thinking',
+      attemptStart: true,
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'content_start',
+      blockType: 'tool_use',
+      toolUseId: 'edit-meeting-file',
+      toolName: 'Edit',
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'tool_use_complete',
+      toolUseId: 'edit-meeting-file',
+      toolName: 'Edit',
+      input: { file_path: '项目大脑/docs/meeting/2026-08-31_竞技场寻路系统讨论.md' },
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'tool_result',
+      toolUseId: 'edit-meeting-file',
+      content: 'ok',
+      isError: false,
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'content_start',
+      blockType: 'text',
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'content_delta',
+      text: '任务完成。',
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'message_complete',
+      usage: { input_tokens: 10, output_tokens: 4 },
+    })
+
+    await vi.waitFor(() => {
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.historyStatus).toBe('ready')
+    })
+
+    const completedFirstTurn = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages ?? []
+    const completedToolUse = completedFirstTurn.find(
+      (message) => message.type === 'tool_use' && message.toolUseId === 'edit-meeting-file',
+    )
+    const completedToolResult = completedFirstTurn.find(
+      (message) => message.type === 'tool_result' && message.toolUseId === 'edit-meeting-file',
+    )
+    const completedReply = completedFirstTurn.find(
+      (message) => message.type === 'assistant_text' && message.content === '任务完成。',
+    )
+    expect(completedToolUse).toBeDefined()
+    expect(completedToolResult).toBeDefined()
+    expect(completedReply).toBeDefined()
+
+    const completedToolUseId = completedToolUse!.id
+    const completedToolResultId = completedToolResult!.id
+    const completedReplyId = completedReply!.id
+
+    const expectCompletedFirstTurnPreserved = (candidateMessages: UIMessage[]) => {
+      const preservedIds = [completedToolUseId, completedToolResultId, completedReplyId]
+      for (const preservedId of preservedIds) {
+        expect(candidateMessages.filter((message) => message.id === preservedId)).toHaveLength(1)
+      }
+
+      const toolUseIndex = candidateMessages.findIndex((message) => message.id === completedToolUseId)
+      const toolResultIndex = candidateMessages.findIndex((message) => message.id === completedToolResultId)
+      const replyIndex = candidateMessages.findIndex((message) => message.id === completedReplyId)
+      expect(toolUseIndex).toBeLessThan(toolResultIndex)
+      expect(toolResultIndex).toBeLessThan(replyIndex)
+    }
+
+    store.sendMessage(TEST_SESSION_ID, '修正错别字', undefined, {
+      messageUuid: 'second-user-message',
+    })
+    vi.mocked(sessionsApi.getMessages).mockResolvedValueOnce({
+      messages: [],
+      taskNotifications: [
+        {
+          taskId: 'restored-task-1',
+          toolUseId: 'restored-tool-1',
+          status: 'completed',
+          summary: 'First restored background task',
+          timestamp: '2020-01-01T00:00:00.000Z',
+        },
+        {
+          taskId: 'restored-task-2',
+          toolUseId: 'restored-tool-2',
+          status: 'completed',
+          summary: 'Second restored background task',
+          timestamp: '2020-01-01T00:00:01.000Z',
+        },
+      ],
+    })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'session_state',
+      turnState: 'running',
+    })
+
+    const messages = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages ?? []
+    expectCompletedFirstTurnPreserved(messages)
+    const secondUserMessage = messages.find(
+      (message) => message.type === 'user_text' && message.content === '修正错别字',
+    )
+    expect(secondUserMessage).toBeDefined()
+    expect(messages.findIndex((message) => message.id === completedReplyId))
+      .toBeLessThan(messages.findIndex((message) => message.id === secondUserMessage!.id))
+
+    await vi.waitFor(() => {
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.historyStatus).toBe('ready')
+      expect(
+        useChatStore.getState().sessions[TEST_SESSION_ID]?.messages
+          .filter((message) => message.type === 'background_task'),
+      ).toHaveLength(2)
+    })
+
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'thinking',
+      text: '第二轮尚未提交的思考',
+    })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'thinking', content: '第二轮尚未提交的思考' }),
+      ]),
+    )
+
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'session_state',
+      turnState: 'running',
+    })
+
+    const messagesAfterSecondRunningSnapshot =
+      useChatStore.getState().sessions[TEST_SESSION_ID]?.messages ?? []
+    expectCompletedFirstTurnPreserved(messagesAfterSecondRunningSnapshot)
+    expect(messagesAfterSecondRunningSnapshot.filter(
+      (message) => message.id === secondUserMessage!.id,
+    )).toHaveLength(1)
+    expect(messagesAfterSecondRunningSnapshot.findIndex((message) => message.id === completedReplyId))
+      .toBeLessThan(messagesAfterSecondRunningSnapshot.findIndex(
+        (message) => message.id === secondUserMessage!.id,
+      ))
+    expect(messagesAfterSecondRunningSnapshot).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'thinking', content: '第二轮尚未提交的思考' }),
+    ]))
   })
 
   it('keeps the fallback notice when idle and clears it on turn completion', () => {

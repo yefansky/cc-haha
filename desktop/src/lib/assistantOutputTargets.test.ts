@@ -280,6 +280,71 @@ describe('extractAssistantOutputTargets', () => {
 })
 
 describe('extractAssistantOutputTargets with changedFiles reconciliation', () => {
+  it('re-anchors a mistaken root-relative href to the unique verified workspace file', () => {
+    expect(resolveAssistantOutputFileHref('/docs/meeting/原始会议记录/20260831-竞技场寻路系统讨论会议.md', {
+      workDir: 'G:/Jx3_Classic/Sword3_Classic',
+      referencedFiles: [
+        'G:/Jx3_Classic/Sword3_Classic/项目大脑/docs/meeting/原始会议记录/20260831-竞技场寻路系统讨论会议.md',
+      ],
+    })).toBe('项目大脑/docs/meeting/原始会议记录/20260831-竞技场寻路系统讨论会议.md')
+  })
+
+  it('re-anchors the percent-encoded href emitted by the Markdown renderer', () => {
+    expect(resolveAssistantOutputFileHref(
+      '/docs/meeting/%E5%8E%9F%E5%A7%8B%E4%BC%9A%E8%AE%AE%E8%AE%B0%E5%BD%95/%E4%BC%9A%E8%AE%AE.md',
+      {
+        workDir: 'G:/project',
+        referencedFiles: ['G:/project/项目大脑/docs/meeting/原始会议记录/会议.md'],
+      },
+    )).toBe('项目大脑/docs/meeting/原始会议记录/会议.md')
+  })
+
+  it('keeps a mistaken root-relative href unchanged when verified evidence is ambiguous', () => {
+    expect(resolveAssistantOutputFileHref('/docs/report.md', {
+      workDir: 'G:/project',
+      referencedFiles: [
+        'G:/project/first/docs/report.md',
+        'G:/project/second/docs/report.md',
+      ],
+    })).toBe('/docs/report.md')
+  })
+
+  it('preserves the requested line and column after root-relative recovery', () => {
+    expect(resolveAssistantOutputFileHref('/docs/report.md:42:8', {
+      workDir: 'G:/project',
+      changedFiles: ['G:/project/项目大脑/docs/report.md'],
+    })).toBe('项目大脑/docs/report.md:42:8')
+  })
+
+  it('does not use basename-only guessing for a mistaken root-relative href', () => {
+    expect(resolveAssistantOutputFileHref('/docs/report.md', {
+      workDir: 'G:/project',
+      referencedFiles: ['G:/project/other/report.md'],
+    })).toBe('/docs/report.md')
+  })
+
+  it.each([
+    '/../docs/report.md',
+    '//server/share/report.md',
+    '\\docs\\report.md',
+    '\\\\server\\share\\report.md',
+    '%5C%5Cserver%5Cshare%5Creport.md',
+    '/%2E%2E/docs/report.md',
+    '/docs%2Freport.md',
+    'file:///docs/report.md',
+  ])('does not reinterpret unsafe or non-workspace-root reference %s', (href) => {
+    expect(resolveAssistantOutputFileHref(href, {
+      workDir: 'G:/project',
+      referencedFiles: ['G:/project/项目大脑/docs/report.md'],
+    })).toBe(href)
+  })
+
+  it('does not reinterpret a root-relative href without verified tool evidence', () => {
+    expect(resolveAssistantOutputFileHref('/docs/report.md', {
+      workDir: 'G:/project',
+    })).toBe('/docs/report.md')
+  })
+
   it('resolves a short prose link to the unique file read earlier in the turn', () => {
     expect(resolveAssistantOutputFileHref('custom-value-rules.md', {
       workDir: 'G:/Jx3_Classic/Sword3_Classic',
@@ -427,5 +492,58 @@ describe('extractAssistantOutputTargets with changedFiles reconciliation', () =>
 
     // Ambiguous basename match → no unique target, mention dropped rather than guessed.
     expect(targets).toHaveLength(0)
+  })
+})
+
+describe('independent path simulation', () => {
+  const workDir = 'G:/workspace'
+  const exactEvidence = 'G:/workspace/知识库/archives/raw/alpha.md'
+
+  it('recovers a mistaken root-relative href from one exact suffix match', () => {
+    expect(resolveAssistantOutputFileHref('/archives/raw/alpha.md', {
+      workDir,
+      referencedFiles: [exactEvidence],
+    })).toBe('知识库/archives/raw/alpha.md')
+  })
+
+  it.each([
+    {
+      label: 'no evidence',
+      href: '/archives/raw/alpha.md',
+      referencedFiles: [],
+    },
+    {
+      label: 'two suffix matches',
+      href: '/archives/raw/alpha.md',
+      referencedFiles: [
+        exactEvidence,
+        'G:/workspace/镜像/archives/raw/alpha.md',
+      ],
+    },
+    {
+      label: 'basename-only match',
+      href: '/archives/raw/alpha.md',
+      referencedFiles: ['G:/workspace/知识库/other/alpha.md'],
+    },
+    {
+      label: 'UNC path',
+      href: '\\\\server\\share\\alpha.md',
+      referencedFiles: [exactEvidence],
+    },
+    {
+      label: 'encoded Windows separators',
+      href: '%5Carchives%5Craw%5Calpha.md',
+      referencedFiles: [exactEvidence],
+    },
+    {
+      label: 'encoded parent traversal',
+      href: '/%2E%2E/archives/raw/alpha.md',
+      referencedFiles: [exactEvidence],
+    },
+  ])('keeps $label href unchanged', ({ href, referencedFiles }) => {
+    expect(resolveAssistantOutputFileHref(href, {
+      workDir,
+      referencedFiles,
+    })).toBe(href)
   })
 })

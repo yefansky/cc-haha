@@ -125,6 +125,29 @@ describe('AssistantMessage link routing', () => {
     )
   })
 
+  it('routes a mistaken root-relative file link to its unique verified file', () => {
+    render(
+      <AssistantMessage
+        sessionId="s1"
+        content={'见 [项目大脑/docs/meeting/原始会议记录/会议.md](/docs/meeting/原始会议记录/会议.md)'}
+        turnReferencedFiles={[
+          'G:/Jx3_Classic/Sword3_Classic/项目大脑/docs/meeting/原始会议记录/会议.md',
+        ]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('link', {
+      name: '项目大脑/docs/meeting/原始会议记录/会议.md',
+    }))
+    expect(openPreviewFn).toHaveBeenCalledWith(
+      's1',
+      'G:/Jx3_Classic/Sword3_Classic/项目大脑/docs/meeting/原始会议记录/会议.md',
+      'file',
+      undefined,
+      undefined,
+    )
+  })
+
   it('opens a short HTML reference through local-file when session evidence resolves it outside the workdir', () => {
     render(
       <AssistantMessage

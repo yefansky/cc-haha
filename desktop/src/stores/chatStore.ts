@@ -1895,6 +1895,26 @@ function shouldPrewarmSession(sessionId: string): boolean {
 
 const USER_DECISION_WATCHDOG_MS = 10_000
 
+function reanchorStreamAttemptBoundary(
+  session: Pick<PerSessionState, 'messages' | 'streamAttemptStartIndex'>,
+  messages: UIMessage[],
+): number | undefined {
+  if (session.streamAttemptStartIndex === undefined) return undefined
+  const oldBoundary = Math.max(
+    0,
+    Math.min(session.streamAttemptStartIndex, session.messages.length),
+  )
+  if (oldBoundary === 0) return 0
+
+  const anchorId = session.messages[oldBoundary - 1]?.id
+  if (!anchorId) return messages.length
+  const anchorIndex = messages.findIndex((message) => message.id === anchorId)
+  // Losing the anchor must fail toward preserving visible output. The next
+  // running snapshot may retain a stale partial, but must not delete a prior
+  // completed reply based on an index whose meaning changed during hydration.
+  return anchorIndex >= 0 ? anchorIndex + 1 : messages.length
+}
+
 function scheduleLegacyAskPermissionWatchdog(
   set: StoreApi<ChatStore>['setState'],
   sessionId: string,
@@ -2203,6 +2223,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             replaceHistoryOnCompletion: Boolean(options?.replaceFromMessageId),
             streamingText: '',
             streamingResponseChars: 0,
+            // The optimistic user message is the boundary before any output of
+            // this new turn. A reconnect can arrive before status.attemptStart;
+            // it must never reuse the preceding turn's stream boundary.
+            streamAttemptStartIndex: newMessages.length,
+            streamAttemptStartResponseChars: 0,
             statusVerb: isMemberSession ? '' : randomSpinnerVerb(),
             apiRetry: null,
             streamingFallback: null,
@@ -2522,6 +2547,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             pendingComputerUsePermissions: {},
             apiRetry: null,
             streamingFallback: null,
+            streamAttemptStartIndex: undefined,
+            streamAttemptStartResponseChars: undefined,
             suppressNextTaskNotificationResponse: false,
             stoppingBackgroundTaskIds,
             stopAllSubagentsRequested: true,
@@ -2603,6 +2630,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 mergeBackgroundTaskMessages(s.messages, backgroundAgentTasks),
                 uiMessages,
               )
+              const reconciled = reconcilePendingBackgroundTaskStopFailures(
+                s,
+                backgroundAgentTasks,
+                messages,
+              )
               return {
                 historyStatus: 'ready',
                 historyError: null,
@@ -2610,10 +2642,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 agentTaskNotifications: { ...restoredNotifications, ...s.agentTaskNotifications },
                 backgroundAgentTasks,
                 tokenUsage: tokenUsage ?? s.tokenUsage,
-                ...reconcilePendingBackgroundTaskStopFailures(
+                ...reconciled,
+                streamAttemptStartIndex: reanchorStreamAttemptBoundary(
                   s,
-                  backgroundAgentTasks,
-                  messages,
+                  reconciled.messages,
                 ),
               }
             }) }
@@ -3006,6 +3038,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       chatState: 'idle',
       apiRetry: null,
       streamingFallback: null,
+      streamAttemptStartIndex: undefined,
+      streamAttemptStartResponseChars: undefined,
       suppressNextTaskNotificationResponse: false,
       replaceHistoryOnCompletion: false,
       queuedUserMessages: [],
@@ -3077,8 +3111,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               activeToolName: null,
               streamingResponseChars:
                 current.streamAttemptStartResponseChars ?? current.streamingResponseChars,
-              streamAttemptStartIndex: undefined,
-              streamAttemptStartResponseChars: undefined,
+              // Keep the current-turn boundary after cleanup. If the socket
+              // drops again before the attempt settles, a second running
+              // snapshot must discard only newly arrived partials as well.
+              streamAttemptStartIndex: startIndex,
+              streamAttemptStartResponseChars:
+                current.streamAttemptStartResponseChars ?? current.streamingResponseChars,
               apiRetry: null,
               streamingFallback: null,
               statusVerb: '',
@@ -3128,6 +3166,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           streamingFallback: null,
           streamingText: '',
           streamingToolInput: '',
+          streamAttemptStartIndex: undefined,
+          streamAttemptStartResponseChars: undefined,
         }))
         const reconciledSession = get().sessions[sessionId]
         const hasRunningBackgroundAgents = hasRunningBackgroundTasks(
@@ -3184,6 +3224,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 : '',
             ...(msg.state === 'idle' ? { activeThinkingId: null } : {}),
             ...(msg.state === 'idle' ? { apiRetry: null, streamingFallback: null } : {}),
+            ...(msg.state === 'idle' ? {
+              streamAttemptStartIndex: undefined,
+              streamAttemptStartResponseChars: undefined,
+            } : {}),
             ...(msg.attemptStart ? {
               streamAttemptStartIndex: session.messages.length,
               streamAttemptStartResponseChars: session.streamingResponseChars,
@@ -3986,6 +4030,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             streamingToolInput: '',
             suppressNextTaskNotificationResponse: false,
             replaceHistoryOnCompletion: false,
+            streamAttemptStartIndex: undefined,
+            streamAttemptStartResponseChars: undefined,
             historyMutationEpoch: (current.historyMutationEpoch ?? 0) + 1,
           }))
           useTabStore.getState().updateTabStatus(sessionId, hasRunningBackgroundAgents ? 'running' : 'idle')
@@ -4029,6 +4075,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           apiRetry: null,
           streamingFallback: null,
           replaceHistoryOnCompletion: false,
+          streamAttemptStartIndex: undefined,
+          streamAttemptStartResponseChars: undefined,
           historyMutationEpoch: (current.historyMutationEpoch ?? 0) + 1,
         }))
         useTabStore.getState().updateTabStatus(sessionId, hasRunningBackgroundAgents ? 'running' : 'idle')
@@ -4118,6 +4166,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             apiRetry: null,
             streamingFallback: null,
             suppressNextTaskNotificationResponse: false,
+            streamAttemptStartIndex: undefined,
+            streamAttemptStartResponseChars: undefined,
             historyMutationEpoch: (s.historyMutationEpoch ?? 0) + 1,
           }
         })
@@ -4221,6 +4271,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             streamingFallback: null,
             tokenUsage: { input_tokens: 0, output_tokens: 0 },
             streamingResponseChars: 0,
+            streamAttemptStartIndex: undefined,
+            streamAttemptStartResponseChars: undefined,
             slashCommands: [],
             activeGoal: null,
             backgroundAgentTasks: {},
@@ -4708,6 +4760,11 @@ function shouldHideCommandMetadataContent(content: unknown): boolean {
 function isTaskNotificationContent(content: unknown): boolean {
   const textBlocks = extractHistoryTextBlocks(content)
   return textBlocks.length > 0 && textBlocks.every((text) => extractTaskNotificationXml(text) !== null)
+}
+
+function isSyntheticNoResponseAssistantContent(content: unknown): boolean {
+  const textBlocks = extractHistoryTextBlocks(content)
+  return textBlocks.length > 0 && textBlocks.every((text) => text.trim() === 'No response requested.')
 }
 
 function extractTaskNotificationXml(text: string): string | null {
@@ -5782,15 +5839,16 @@ export function mapHistoryMessagesToUiMessages(
 ): UIMessage[] {
   const includeTeammateMessages = options?.includeTeammateMessages === true
   const uiMessages: UIMessage[] = []
-  let suppressTaskNotificationResponse = false
+  let pendingTaskNotificationResponse = false
   let pendingGoalCommand: { name: string; args: string } | null = null
 
   for (const msg of messages) {
     if (msg.type === 'user' && isTaskNotificationContent(msg.content)) {
-      suppressTaskNotificationResponse = true
+      pendingTaskNotificationResponse = true
       continue
     }
     if (msg.type === 'user') {
+      pendingTaskNotificationResponse = false
       const commandDisplayText = getCommandMetadataDisplayText(msg.content)
       if (commandDisplayText) {
         uiMessages.push({
@@ -5800,17 +5858,15 @@ export function mapHistoryMessagesToUiMessages(
           ...(msg.id ? { transcriptMessageId: msg.id } : {}),
           timestamp: new Date(msg.timestamp).getTime(),
         })
-        suppressTaskNotificationResponse = false
         continue
       }
       if (shouldHideCommandMetadataContent(msg.content)) {
         continue
       }
     }
-    if (msg.type === 'user') {
-      suppressTaskNotificationResponse = false
-    } else if (suppressTaskNotificationResponse) {
-      continue
+    if (msg.type === 'assistant' && pendingTaskNotificationResponse) {
+      pendingTaskNotificationResponse = false
+      if (isSyntheticNoResponseAssistantContent(msg.content)) continue
     }
 
     const timestamp = new Date(msg.timestamp).getTime()

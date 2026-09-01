@@ -280,14 +280,26 @@ export function resolveAssistantOutputFileHref(
   }
   if (verifiedFiles.length === 0) return href
 
-  const reference = parseFilePathRef(href)
+  // Markdown renderers percent-encode non-ASCII href characters before click
+  // handlers read them back from the DOM. Decode ordinary path characters at
+  // this reconciliation seam, while keeping encoded separators from acquiring
+  // new path semantics (`decodeURI` preserves `%2F`; Windows `%5C` is rejected).
+  if (/%5c/i.test(href)) return href
+  const decodedHref = safelyDecodePathHref(href)
+  const reference = parseFilePathRef(decodedHref)
   if (!reference) return href
+  // `filePathBoundary` normalizes drive paths but deliberately does not claim
+  // native UNC/rooted-backslash semantics. Never feed those shapes into the
+  // ordinary relative-path/basename reconciliation branch.
+  if (reference.path.startsWith('\\')) return href
 
   const workDir = options.workDir ? resolveFilePath(options.workDir) : null
   const target = toWorkspaceFileTarget(reference.path, workDir)
-  if (!target) return href
-
-  const match = matchChangedFile(target.normalizedPath, verifiedFiles)
+  const match = target
+    ? matchChangedFile(target.normalizedPath, verifiedFiles)
+    : isMistakenWorkspaceRootPath(reference.path)
+      ? matchVerifiedFileByExactSuffix(reference.path.slice(1), verifiedFiles)
+      : null
   if (!match) return href
 
   const resolvedMatch = resolveFilePath(match)
@@ -299,6 +311,52 @@ export function resolveAssistantOutputFileHref(
     : ''
 
   return `${resolvedPath}${position}`
+}
+
+function safelyDecodePathHref(href: string): string {
+  try {
+    return decodeURI(href)
+  } catch {
+    return href
+  }
+}
+
+/**
+ * Models sometimes write a project-root Markdown destination as `/docs/x.md`.
+ * On Windows that is a drive-root absolute path, not a workspace-relative path.
+ * Treat only a single-leading-slash, traversal-free shape as recoverable; UNC,
+ * URL and parent-traversal references must keep their original semantics.
+ */
+function isMistakenWorkspaceRootPath(candidate: string): boolean {
+  const normalized = toPosixPath(candidate)
+  if (!normalized.startsWith('/') || normalized.startsWith('//')) return false
+  const segments = normalized.slice(1).split('/')
+  return segments.length > 0 && segments.every((segment) => (
+    segment.length > 0 && segment !== '.' && segment !== '..'
+  ))
+}
+
+/**
+ * The recovery path is intentionally stricter than ordinary short-name
+ * reconciliation: it may use only one complete path-suffix match from files
+ * already observed in tool evidence. Basename fallback would turn an explicit
+ * but wrong absolute path into a guess.
+ */
+function matchVerifiedFileByExactSuffix(
+  mentioned: string,
+  verifiedFiles: string[],
+): string | null {
+  const normalized = toPosixPath(mentioned).replace(/^\/+/, '').toLowerCase()
+  if (!normalized) return null
+  // A single segment is only a basename, even when the original Markdown href
+  // started with `/`. It carries no directory evidence and must not be used to
+  // relocate the link into an arbitrary nested folder.
+  if (!normalized.includes('/')) return null
+  const matches = verifiedFiles.filter((file) => {
+    const normalizedFile = toPosixPath(file).toLowerCase()
+    return normalizedFile === normalized || normalizedFile.endsWith(`/${normalized}`)
+  })
+  return matches.length === 1 ? matches[0]! : null
 }
 
 /**
