@@ -3310,6 +3310,7 @@ export const MessageBlock = memo(function MessageBlock({
       return (
         <ToolCallBlock
           toolName={message.toolName}
+          originId={message.toolUseId}
           input={message.input}
           result={toolResult}
           isPending={message.isPending}

@@ -4722,10 +4722,185 @@ describe('Sessions API', () => {
       state: string
       path: string
       diff?: string
+      comparison?: {
+        schemaVersion: number
+        left: { content?: string; source: { kind: string; revision: string }; writable: boolean }
+        right: { content?: string; source: { kind: string; revision: string }; writable: boolean }
+      }
     }
     expect(diffBody.state).toBe('ok')
     expect(diffBody.path).toBe('tracked.txt')
     expect(diffBody.diff).toContain('tracked.txt')
+    expect(diffBody.comparison).toMatchObject({
+      schemaVersion: 1,
+      left: {
+        content: 'before\n',
+        source: { kind: 'git_head', revision: expect.stringMatching(/^sha256:/) },
+        writable: false,
+      },
+      right: {
+        content: 'before\nafter\n',
+        source: { kind: 'working_tree', revision: expect.stringMatching(/^sha256:/) },
+        writable: true,
+      },
+    })
+  })
+
+  it('PUT /api/sessions/:id/workspace/file creates a missing file with an explicit null CAS expectation', async () => {
+    const workDir = await createWorkspaceApiGitRepo(tmpDir)
+    const { sessionId } = await service.createSession(workDir)
+    const filePath = '新建/-review.txt'
+    await fs.mkdir(path.join(workDir, '新建'))
+
+    const writeRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: filePath,
+        expectedContent: null,
+        content: 'created through HTTP\n',
+      }),
+    })
+
+    expect(writeRes.status).toBe(200)
+    expect(await writeRes.json()).toMatchObject({
+      state: 'ok',
+      path: filePath,
+      content: 'created through HTTP\n',
+      size: 21,
+    })
+    await expect(fs.readFile(path.join(workDir, '新建', '-review.txt'), 'utf8')).resolves.toBe('created through HTTP\n')
+
+    const diffRes = await fetch(
+      `${baseUrl}/api/sessions/${sessionId}/workspace/diff?path=${encodeURIComponent(filePath)}`,
+    )
+    expect(diffRes.status).toBe(200)
+    expect(await diffRes.json()).toMatchObject({
+      state: 'ok',
+      comparison: {
+        left: { state: 'missing', exists: false },
+        right: { state: 'ok', exists: true, content: 'created through HTTP\n' },
+      },
+    })
+
+    const omittedExpectationPath = path.join(workDir, '新建', 'omitted.txt')
+    const omittedExpectationRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '新建/omitted.txt', content: 'must not exist\n' }),
+    })
+    expect(omittedExpectationRes.status).toBe(400)
+    await expect(fs.stat(omittedExpectationPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('GET diff and PUT file preserve per-side encoding and enforce raw-byte CAS over HTTP', async () => {
+    const workDir = await createWorkspaceApiGitRepo(tmpDir)
+    const { sessionId } = await service.createSession(workDir)
+    const filePath = '-legacy-中文.txt'
+    const absolutePath = path.join(workDir, filePath)
+    await fs.writeFile(absolutePath, Buffer.from('c4e3bac30d0a', 'hex'))
+
+    const diffRes = await fetch(
+      `${baseUrl}/api/sessions/${sessionId}/workspace/diff?path=${encodeURIComponent(filePath)}&leftEncoding=auto&rightEncoding=gbk`,
+    )
+    expect(diffRes.status).toBe(200)
+    const diffBody = await diffRes.json() as {
+      comparison?: {
+        right: {
+          content?: string
+          contentFingerprint?: string
+          requestedEncoding: string
+          actualEncoding?: string
+          lineEnding: string
+        }
+      }
+    }
+    expect(diffBody.comparison?.right).toMatchObject({
+      content: '你好\r\n',
+      requestedEncoding: 'gbk',
+      actualEncoding: 'gbk',
+      lineEnding: 'crlf',
+    })
+    const expectedFingerprint = diffBody.comparison?.right.contentFingerprint
+    expect(expectedFingerprint).toMatch(/^sha256:/)
+
+    const writeRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: filePath,
+        expectedContent: '你好\r\n',
+        expectedFingerprint,
+        content: '修改\n',
+        encoding: 'gbk',
+        bom: 'none',
+        lineEnding: 'crlf',
+      }),
+    })
+    expect(writeRes.status).toBe(200)
+    const writeBody = await writeRes.json() as {
+      state: string
+      contentFingerprint?: string
+    }
+    expect(writeBody.contentFingerprint).toMatch(/^sha256:/)
+    expect(writeBody.state).toBe('ok')
+    expect((writeBody as { actualEncoding?: string }).actualEncoding).toBe('gbk')
+    expect((writeBody as { bom?: string }).bom).toBe('none')
+    expect((writeBody as { lineEnding?: string }).lineEnding).toBe('crlf')
+    expect((writeBody as { content?: string }).content).toBe('修改\r\n')
+    expect((writeBody as { size?: number }).size).toBe(6)
+    expect((await fs.readFile(absolutePath)).toString('hex')).toBe('d0deb8c40d0a')
+
+    const staleRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: filePath,
+        expectedContent: '你好\r\n',
+        expectedFingerprint,
+        content: '覆盖\n',
+        encoding: 'gbk',
+        bom: 'none',
+        lineEnding: 'crlf',
+      }),
+    })
+    expect(staleRes.status).toBe(409)
+    expect(await staleRes.json()).toMatchObject({ state: 'conflict' })
+    expect((await fs.readFile(absolutePath)).toString('hex')).toBe('d0deb8c40d0a')
+
+    const lossyRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: filePath,
+        expectedContent: '修改\r\n',
+        expectedFingerprint: writeBody.contentFingerprint,
+        content: '😀\n',
+        encoding: 'gbk',
+        bom: 'none',
+        lineEnding: 'crlf',
+      }),
+    })
+    expect(lossyRes.status).toBe(200)
+    expect(await lossyRes.json()).toMatchObject({ state: 'error' })
+    expect((await fs.readFile(absolutePath)).toString('hex')).toBe('d0deb8c40d0a')
+
+    const invalidEncodingRes = await fetch(
+      `${baseUrl}/api/sessions/${sessionId}/workspace/diff?path=${encodeURIComponent(filePath)}&rightEncoding=shift_jis`,
+    )
+    expect(invalidEncodingRes.status).toBe(400)
+
+    const missingFingerprintRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: filePath,
+        expectedContent: '修改\r\n',
+        content: '再改\n',
+        encoding: 'gbk',
+      }),
+    })
+    expect(missingFingerprintRes.status).toBe(400)
   })
 
   it('GET /api/sessions/:id/workspace/* should surface transcript changes for a non-git tmp session', async () => {

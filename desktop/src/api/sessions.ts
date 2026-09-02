@@ -336,6 +336,10 @@ export type WorkspaceReadFileResult = {
 }
 
 export type WorkspaceTextEncoding = 'auto' | 'utf8' | 'gbk'
+export type WorkspaceComparisonEncodings = {
+  left: WorkspaceTextEncoding
+  right: WorkspaceTextEncoding
+}
 
 export type WorkspaceTreeEntry = {
   name: string
@@ -362,8 +366,42 @@ export type WorkspaceDiffResult = {
   state: 'ok' | 'missing' | 'not_git_repo' | 'error'
   path: string
   diff?: string
+  comparison?: WorkspaceComparison
   error?: string
   encoding?: WorkspaceTextEncoding
+}
+
+export type WorkspaceComparisonSourceKind =
+  | 'git_head'
+  | 'svn_base'
+  | 'session_baseline'
+  | 'working_tree'
+  | 'empty'
+
+export type WorkspaceComparisonSide = {
+  source: {
+    kind: WorkspaceComparisonSourceKind
+    path: string
+    revision: string
+  }
+  exists: boolean
+  state: 'ok' | 'missing' | 'binary' | 'undecodable' | 'too_large' | 'unavailable'
+  content?: string
+  contentFingerprint?: string
+  size?: number
+  requestedEncoding: WorkspaceTextEncoding
+  actualEncoding?: Exclude<WorkspaceTextEncoding, 'auto'>
+  bom: 'utf8' | 'none' | 'unknown'
+  lineEnding: 'lf' | 'crlf' | 'cr' | 'mixed' | 'none' | 'unknown'
+  writable: boolean
+  readOnlyReason?: string
+  error?: string
+}
+
+export type WorkspaceComparison = {
+  schemaVersion: 1
+  left: WorkspaceComparisonSide
+  right: WorkspaceComparisonSide
 }
 
 export type WorkspaceWriteResult = {
@@ -371,7 +409,21 @@ export type WorkspaceWriteResult = {
   path: string
   content?: string
   size?: number
+  contentFingerprint?: string
+  actualEncoding?: Exclude<WorkspaceTextEncoding, 'auto'>
+  bom?: 'utf8' | 'none'
+  lineEnding?: WorkspaceComparisonSide['lineEnding']
   error?: string
+}
+
+export type WorkspaceWriteRequest = {
+  path: string
+  expectedContent: string | null
+  content: string | null
+  expectedFingerprint?: string | null
+  encoding?: Exclude<WorkspaceTextEncoding, 'auto'>
+  bom?: 'utf8' | 'none'
+  lineEnding?: WorkspaceComparisonSide['lineEnding']
 }
 
 export type SessionTurnCheckpoint = {
@@ -399,12 +451,17 @@ function buildWorkspacePath(
   resource: 'status' | 'tree' | 'file' | 'diff',
   workspacePath?: string,
   encoding?: WorkspaceTextEncoding,
+  comparisonEncodings?: WorkspaceComparisonEncodings,
 ) {
   const query = new URLSearchParams()
   if (typeof workspacePath === 'string' && workspacePath.length > 0) {
     query.set('path', workspacePath)
   }
   if (encoding && encoding !== 'auto') query.set('encoding', encoding)
+  if (comparisonEncodings) {
+    query.set('leftEncoding', comparisonEncodings.left)
+    query.set('rightEncoding', comparisonEncodings.right)
+  }
 
   const qs = query.toString()
   return `/api/sessions/${sessionId}/workspace/${resource}${qs ? `?${qs}` : ''}`
@@ -539,7 +596,7 @@ export const sessionsApi = {
 
   writeWorkspaceFile(
     sessionId: string,
-    body: { path: string; expectedContent: string | null; content: string | null },
+    body: WorkspaceWriteRequest,
   ) {
     return api.put<WorkspaceWriteResult>(`/api/sessions/${sessionId}/workspace/file`, body)
   },
@@ -548,8 +605,19 @@ export const sessionsApi = {
     return api.post<WorkspaceWriteResult>(`/api/sessions/${sessionId}/workspace/file/revert`, body)
   },
 
-  getWorkspaceDiff(sessionId: string, workspacePath: string, encoding: WorkspaceTextEncoding = 'auto') {
-    return api.get<WorkspaceDiffResult>(buildWorkspacePath(sessionId, 'diff', workspacePath, encoding))
+  getWorkspaceDiff(
+    sessionId: string,
+    workspacePath: string,
+    encoding: WorkspaceTextEncoding = 'auto',
+    comparisonEncodings?: WorkspaceComparisonEncodings,
+  ) {
+    return api.get<WorkspaceDiffResult>(buildWorkspacePath(
+      sessionId,
+      'diff',
+      workspacePath,
+      encoding,
+      comparisonEncodings,
+    ))
   },
 
   getTurnCheckpoints(sessionId: string) {

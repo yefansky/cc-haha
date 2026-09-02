@@ -781,6 +781,7 @@ describe('chat blocks', () => {
     const { container } = render(
       <ToolCallBlock
         toolName="Edit"
+        originId="tool-edit-error"
         input={{
           file_path: '/tmp/example.ts',
           old_string: 'const enabled = false',
@@ -804,6 +805,65 @@ describe('chat blocks', () => {
     expect(container.textContent).toContain('example.ts')
     expect(container.textContent).toContain('Error Output')
     expect(container.textContent).toContain('old_string was not found')
+    expect(container.querySelector('[data-comparison-scope="replacement-fragment"]')?.getAttribute('data-origin-id'))
+      .toBe('tool-edit-error')
+  })
+
+  it('shows Write as proposed content without inventing an empty baseline and preserves result output', () => {
+    const { container } = render(
+      <ToolCallBlock
+        toolName="Write"
+        originId="tool-write-result"
+        input={{ file_path: '/tmp/new.ts', content: 'first\nsecond' }}
+        result={{ content: 'Wrote 2 lines', isError: false }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button'))
+
+    expect(container.querySelector('[data-comparison-scope="proposed-content"]')?.getAttribute('data-origin-id'))
+      .toBe('tool-write-result')
+    expect(container.textContent).toContain('current file content is unavailable')
+    expect(container.textContent).toContain('Wrote 2 lines')
+  })
+
+  it('uses toolUseId as the stable origin when a historical tool group is replayed', () => {
+    const toolCall: Extract<UIMessage, { type: 'tool_use' }> = {
+      id: 'edit-use-history',
+      type: 'tool_use',
+      toolName: 'Edit',
+      toolUseId: 'tool-use-history-7',
+      input: {
+        file_path: '/tmp/same-path.ts',
+        old_string: 'before',
+        new_string: 'after',
+      },
+      timestamp: 7,
+      isPending: false,
+    }
+    const { container, rerender } = render(
+      <ToolCallGroup
+        toolCalls={[toolCall]}
+        resultMap={new Map()}
+        childToolCallsByParent={new Map()}
+        agentTaskNotifications={{}}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(container.querySelector('[data-comparison-scope="replacement-fragment"]')?.getAttribute('data-origin-id'))
+      .toBe('tool-use-history-7')
+
+    rerender(
+      <ToolCallGroup
+        toolCalls={[{ ...toolCall }]}
+        resultMap={new Map()}
+        childToolCallsByParent={new Map()}
+        agentTaskNotifications={{}}
+      />,
+    )
+    expect(container.querySelector('[data-comparison-scope="replacement-fragment"]')?.getAttribute('data-origin-id'))
+      .toBe('tool-use-history-7')
   })
 
   it('expands tool errors so full Computer Use gate messages are readable', () => {
@@ -878,9 +938,8 @@ describe('chat blocks', () => {
 
     expect(container.textContent).toContain('/tmp/example.ts')
     expect(container.textContent).toContain('Allow')
-    // react-diff-viewer-continued uses styled-components tables that don't
-    // fully render in jsdom, so we verify the DiffViewer wrapper is mounted
-    expect(container.querySelector('[class*="rounded-[var(--radius-lg)]"]')).toBeTruthy()
+    expect(container.querySelector('[data-comparison-scope="replacement-fragment"]')?.getAttribute('data-origin-id'))
+      .toBe('permission:perm-1')
   })
 
   it('keeps every concurrent permission request actionable', () => {

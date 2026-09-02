@@ -94,16 +94,31 @@ function getPermissionTitle(toolName: string, input: unknown, t: (key: Translati
   }
 }
 
-function renderPermissionPreview(toolName: string, input: unknown) {
+function renderPermissionPreview(toolName: string, input: unknown, originId: string) {
   const obj = (input && typeof input === 'object') ? input as Record<string, unknown> : {}
   const filePath = typeof obj.file_path === 'string' ? obj.file_path : 'file'
 
   if (toolName === 'Edit' && typeof obj.old_string === 'string' && typeof obj.new_string === 'string') {
-    return <DiffViewer filePath={filePath} oldString={obj.old_string} newString={obj.new_string} />
+    return (
+      <DiffViewer
+        filePath={filePath}
+        oldString={obj.old_string}
+        newString={obj.new_string}
+        scope="replacement-fragment"
+        originId={originId}
+      />
+    )
   }
 
   if (toolName === 'Write' && typeof obj.content === 'string') {
-    return <DiffViewer filePath={filePath} oldString="" newString={obj.content} />
+    return (
+      <DiffViewer
+        filePath={filePath}
+        newString={obj.content}
+        scope="proposed-content"
+        originId={originId}
+      />
+    )
   }
 
   if (toolName === 'Bash' && typeof obj.command === 'string') {
@@ -145,7 +160,7 @@ export function PermissionDialog({ sessionId, requestId, toolName, input, descri
   const meta = TOOL_META[toolName] || { icon: 'shield', label: toolName, color: 'var(--color-text-tertiary)' }
   const details = extractToolDetails(toolName, input, t)
   const rawInput = typeof input === 'string' ? input : JSON.stringify(input, null, 2)
-  const preview = renderPermissionPreview(toolName, input)
+  const preview = renderPermissionPreview(toolName, input, `permission:${requestId}`)
   const title = getPermissionTitle(toolName, input, t)
   const allowRawToggle = !preview
   const permissionContext = (details.primary || description || toolName).slice(0, 160)

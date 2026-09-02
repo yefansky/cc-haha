@@ -2,7 +2,7 @@
 
 // @ts-expect-error jsdom is installed in this workspace without local type declarations
 import { JSDOM } from 'jsdom'
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 if (typeof document === 'undefined') {
@@ -34,6 +34,7 @@ type WorkspaceApiMocks = {
   searchWorkspaceMock: ReturnType<typeof vi.fn>
   getWorkspaceFileMock: ReturnType<typeof vi.fn>
   getWorkspaceDiffMock: ReturnType<typeof vi.fn>
+  writeWorkspaceFileMock: ReturnType<typeof vi.fn>
   registerWorkspaceRootMock: ReturnType<typeof vi.fn>
 }
 
@@ -264,6 +265,7 @@ vi.mock('../../api/sessions', () => ({
         searchWorkspaceMock: vi.fn(),
         getWorkspaceFileMock: vi.fn(),
         getWorkspaceDiffMock: vi.fn(),
+        writeWorkspaceFileMock: vi.fn(),
         registerWorkspaceRootMock: vi.fn(),
       }
     }
@@ -274,6 +276,7 @@ vi.mock('../../api/sessions', () => ({
       searchWorkspace: mocks.searchWorkspaceMock,
       getWorkspaceFile: mocks.getWorkspaceFileMock,
       getWorkspaceDiff: mocks.getWorkspaceDiffMock,
+      writeWorkspaceFile: mocks.writeWorkspaceFileMock,
       registerWorkspaceRoot: mocks.registerWorkspaceRootMock,
     }
   })(),
@@ -297,10 +300,52 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import type { WorkspaceComparison, WorkspaceComparisonSide, WorkspaceDiffResult } from '../../api/sessions'
 import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import { useUIStore } from '../../stores/uiStore'
 import { getServerBaseUrl } from '../../lib/desktopRuntime'
 import { WorkspacePanel } from './WorkspacePanel'
+import {
+  createWorkspaceComparisonSession,
+  editWorkspaceComparisonSide,
+} from './workspaceComparisonSession'
+
+function editableComparisonSide(
+  content: string,
+  overrides: Partial<WorkspaceComparisonSide> = {},
+): WorkspaceComparisonSide {
+  return {
+    source: { kind: 'working_tree', path: 'src/edit.ts', revision: `fp:${content}` },
+    exists: true,
+    state: 'ok',
+    content,
+    contentFingerprint: `fp:${content}`,
+    requestedEncoding: 'auto',
+    actualEncoding: 'utf8',
+    bom: 'none',
+    lineEnding: content.includes('\n') ? 'lf' : 'none',
+    writable: true,
+    ...overrides,
+  }
+}
+
+function editableComparison(path = 'src/edit.ts'): WorkspaceComparison {
+  return {
+    schemaVersion: 1,
+    left: editableComparisonSide('old\n', {
+      source: { kind: 'git_head', path, revision: 'baseline' },
+      writable: false,
+      readOnlyReason: 'Git HEAD is read-only.',
+    }),
+    right: editableComparisonSide('new\n', {
+      source: { kind: 'working_tree', path, revision: 'working' },
+    }),
+  }
+}
+
+function dirtyComparisonSession(path = 'src/edit.ts') {
+  return editWorkspaceComparisonSide(createWorkspaceComparisonSession(editableComparison(path))!, 'right', 'edited\n')
+}
 
 describe('WorkspacePanel', () => {
   const workspaceInitialState = useWorkspacePanelStore.getInitialState()
@@ -368,11 +413,7 @@ describe('WorkspacePanel', () => {
         deletions: number
       }>
     }>()
-    const diffRequest = deferred<{
-      state: 'ok'
-      path: string
-      diff: string
-    }>()
+    const diffRequest = deferred<WorkspaceDiffResult & { state: 'ok'; diff: string }>()
     const fileRequest = deferred<{
       state: 'ok'
       path: string
@@ -452,10 +493,41 @@ describe('WorkspacePanel', () => {
     })
 
     await act(async () => {
+      const comparison: WorkspaceComparison = {
+        schemaVersion: 1,
+        left: {
+          source: { kind: 'git_head', path: 'src/app.ts', revision: 'sha256:left' },
+          exists: true,
+          state: 'ok',
+          content: 'console.log("old")\n',
+          contentFingerprint: 'sha256:left',
+          size: 19,
+          requestedEncoding: 'auto',
+          actualEncoding: 'utf8',
+          bom: 'none',
+          lineEnding: 'lf',
+          writable: false,
+          readOnlyReason: 'Git HEAD baselines are read-only.',
+        },
+        right: {
+          source: { kind: 'working_tree', path: 'src/app.ts', revision: 'sha256:right' },
+          exists: true,
+          state: 'ok',
+          content: 'console.log("new")\n',
+          contentFingerprint: 'sha256:right',
+          size: 19,
+          requestedEncoding: 'auto',
+          actualEncoding: 'utf8',
+          bom: 'none',
+          lineEnding: 'lf',
+          writable: true,
+        },
+      }
       diffRequest.resolve({
         state: 'ok',
         path: 'src/app.ts',
         diff: '@@ -1 +1 @@\n-console.log("old")\n+console.log("new")',
+        comparison,
       })
       await diffRequest.promise
     })
@@ -463,6 +535,13 @@ describe('WorkspacePanel', () => {
     await waitFor(() => {
       expect(view.getByTestId('workspace-code').textContent).toContain('console.log("new")')
     })
+    expect(view.getByTestId('workspace-side-by-side-diff-scroll')).toBeTruthy()
+    const replacementRow = view.getByText('console.log("new")').closest('[data-side-by-side-row]')
+    expect(replacementRow?.querySelector('[data-diff-cell][data-side="old"]')?.textContent).toContain('console.log("old")')
+    expect(replacementRow?.querySelector('[data-diff-cell][data-side="new"]')?.textContent).toContain('console.log("new")')
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-changed']?.find((tab) => (
+      tab.id === 'diff:src/app.ts'
+    ))?.comparison?.right.content).toBe('console.log("new")\n')
     expect(view.getByRole('tablist', { name: 'Preview tabs' })).toBeTruthy()
     const previewHeader = view.getByTestId('workspace-preview-header')
     expect(previewHeader.textContent).toContain('src/app.ts')
@@ -1632,7 +1711,7 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel('session-last-preview-tab')
 
-    expect(view.getByTestId('workspace-code').textContent).toContain('+new')
+    expect(view.getByTestId('workspace-code').textContent).toContain('new')
     await clickElement(view.getByLabelText('Close tab app.ts Diff'))
 
     expect(view.queryByTestId('workspace-preview-column')).toBeNull()
@@ -1686,7 +1765,7 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel('session-preview-focused')
 
-    expect(view.getByTestId('workspace-code').textContent).toContain('+new')
+    expect(view.getByTestId('workspace-code').textContent).toContain('new')
     expect(view.getByRole('button', { name: 'Changed files' })).toBeTruthy()
     expect(view.getByPlaceholderText('Filter changed files...')).toBeTruthy()
     expect(view.container.querySelector('[data-workspace-file-path="src/app.ts"]')).toBeTruthy()
@@ -1929,15 +2008,15 @@ describe('WorkspacePanel', () => {
     const view = await renderPanel('session-large-preview')
     const highlightedCode = view.getByTestId('workspace-code').textContent ?? ''
 
-    expect(highlightedCode).toContain('+line 1')
-    expect(highlightedCode).toContain('+line 1999')
-    expect(highlightedCode).toContain('+line 2000')
-    expect(highlightedCode).not.toContain('+line 2001')
+    expect(highlightedCode).toContain('line 1')
+    expect(highlightedCode).toContain('line 1999')
+    expect(highlightedCode).toContain('line 2000')
+    expect(highlightedCode).not.toContain('line 2001')
     await clickElement(view.getByRole('button', { name: 'Show all loaded lines' }))
 
     await waitFor(() => {
-      expect(view.getByTestId('workspace-code').textContent).toContain('+line 2001')
-      expect(view.getByTestId('workspace-code').textContent).toContain('+line 2300')
+      expect(view.getByTestId('workspace-code').textContent).toContain('line 2001')
+      expect(view.getByTestId('workspace-code').textContent).toContain('line 2300')
     })
     expect(view.getByRole('button', { name: 'Collapse preview' })).toBeTruthy()
   })
@@ -1985,15 +2064,14 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel('session-wide-diff')
     const diffSurface = view.getByTestId('workspace-code')
-    const firstRow = diffSurface.querySelector('[data-diff-row-id]')
+    const diffContent = view.getByTestId('workspace-side-by-side-diff-content')
+    const firstCell = diffSurface.querySelector('[data-diff-cell]')
 
-    expect(firstRow?.className).toContain('w-max')
-    expect(firstRow?.className).toContain('min-w-full')
-    expect((firstRow as HTMLElement | null)?.style.gridTemplateColumns).toBe(
-      'var(--workspace-diff-gutter-width) minmax(max-content, 1fr)',
-    )
-    expect(firstRow?.querySelector('[data-diff-number-gutter]')).toBeTruthy()
-    expect(diffSurface.textContent).toContain(longDiffLine)
+    expect(diffContent.className).toContain('w-max')
+    expect(diffContent.className).toContain('min-w-full')
+    expect((firstCell as HTMLElement | null)?.style.gridTemplateColumns).toBe('6ch minmax(max-content, 1fr)')
+    expect(firstCell?.querySelector('[data-diff-line-number]')).toBeTruthy()
+    expect(diffSurface.textContent).toContain(longDiffLine.slice(1))
   })
 
   it('can expand long file previews beyond the default rendered line cap', async () => {
@@ -3521,6 +3599,52 @@ describe('WorkspacePanel', () => {
     expect(view.getByTestId('workspace-preview-content').getAttribute('aria-busy')).toBe('false')
   })
 
+  it('deduplicates manual refresh clicks and restores the refresh control when the shared request path settles', async () => {
+    const refresh = deferred<{ state: 'ok'; path: string; diff: string }>()
+    getMocks().getWorkspaceDiffMock.mockReturnValue(refresh.promise)
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: {
+        ...state.panelBySession,
+        'session-refresh-dedup': { isOpen: true, activeView: 'changed' },
+      },
+      previewTabsBySession: {
+        ...state.previewTabsBySession,
+        'session-refresh-dedup': [{
+          id: 'diff:src/a.ts',
+          path: 'src/a.ts',
+          kind: 'diff',
+          title: 'a.ts',
+          state: 'ok',
+          diff: '@@ -1 +1 @@\n-old\n+cached',
+        }],
+      },
+      activePreviewTabIdBySession: {
+        ...state.activePreviewTabIdBySession,
+        'session-refresh-dedup': 'diff:src/a.ts',
+      },
+    }))
+
+    const view = await renderPanel('session-refresh-dedup')
+    getMocks().getWorkspaceDiffMock.mockClear()
+    const refreshButton = view.getByRole('button', { name: 'Refresh workspace' })
+    await act(async () => {
+      fireEvent.click(refreshButton)
+      fireEvent.click(refreshButton)
+      await Promise.resolve()
+    })
+
+    expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledTimes(1)
+    expect((refreshButton as HTMLButtonElement).disabled).toBe(true)
+    expect(refreshButton.getAttribute('aria-busy')).toBe('true')
+
+    refresh.resolve({ state: 'ok', path: 'src/a.ts', diff: '@@ -1 +1 @@\n-old\n+latest' })
+    await flushReactWork()
+    expect((refreshButton as HTMLButtonElement).disabled).toBe(false)
+    expect(refreshButton.getAttribute('aria-busy')).toBeNull()
+    expect(view.getByText('latest')).toBeTruthy()
+  })
+
   it('refreshes every expanded file tree directory instead of leaving nested entries cached', async () => {
     await setWorkspaceState((state) => ({
       ...state,
@@ -3637,5 +3761,182 @@ describe('WorkspacePanel', () => {
     expect(view.getByText('recovered')).toBeTruthy()
     expect(view.queryByText('cached')).toBeNull()
     expect(view.getByTestId('workspace-preview-content').getAttribute('aria-busy')).toBe('false')
+  })
+
+  it('cancels a refresh when the active comparison buffer is dirty', async () => {
+    const sessionId = 'session-dirty-refresh'
+    const comparison = editableComparison()
+    getMocks().getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: 'src/edit.ts',
+      diff: '@@ -1 +1 @@\n-old\n+new',
+      comparison,
+    })
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: { ...state.panelBySession, [sessionId]: { isOpen: true, activeView: 'changed' } },
+      previewTabsBySession: {
+        ...state.previewTabsBySession,
+        [sessionId]: [{
+          id: 'diff:src/edit.ts',
+          path: 'src/edit.ts',
+          kind: 'diff',
+          title: 'edit.ts',
+          state: 'ok',
+          diff: '@@ -1 +1 @@\n-old\n+new',
+          comparison,
+          comparisonSession: dirtyComparisonSession(),
+        }],
+      },
+      activePreviewTabIdBySession: { ...state.activePreviewTabIdBySession, [sessionId]: 'diff:src/edit.ts' },
+    }))
+
+    const view = await renderPanel(sessionId)
+    getMocks().getWorkspaceDiffMock.mockClear()
+    await clickElement(view.getByRole('button', { name: 'Refresh workspace' }))
+
+    const dialog = view.getByRole('dialog', { name: 'Unsaved comparison changes' })
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: 'Discard' })).toBeTruthy()
+    await clickElement(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    expect(view.queryByRole('dialog', { name: 'Unsaved comparison changes' })).toBeNull()
+    expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalled()
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession?.right.dirty).toBe(true)
+  })
+
+  it('guards per-side encoding reload with Cancel and Discard before requesting fresh bytes', async () => {
+    const sessionId = 'session-dirty-encoding'
+    const comparison = editableComparison()
+    const gbkComparison = {
+      ...comparison,
+      right: {
+        ...comparison.right,
+        content: '新\r\n',
+        requestedEncoding: 'gbk' as const,
+        actualEncoding: 'gbk' as const,
+        contentFingerprint: 'sha256:gbk',
+        lineEnding: 'crlf' as const,
+      },
+    }
+    getMocks().getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: 'src/edit.ts',
+      diff: '@@ -1 +1 @@\n-old\n+新',
+      comparison: gbkComparison,
+    })
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: { ...state.panelBySession, [sessionId]: { isOpen: true, activeView: 'changed' } },
+      previewTabsBySession: {
+        ...state.previewTabsBySession,
+        [sessionId]: [{
+          id: 'diff:src/edit.ts', path: 'src/edit.ts', kind: 'diff', title: 'edit.ts', state: 'ok',
+          diff: '@@ -1 +1 @@\n-old\n+new', comparison, comparisonSession: dirtyComparisonSession(),
+        }],
+      },
+      activePreviewTabIdBySession: { ...state.activePreviewTabIdBySession, [sessionId]: 'diff:src/edit.ts' },
+    }))
+
+    const view = await renderPanel(sessionId)
+    const rightEncoding = view.getByRole('combobox', { name: 'new source encoding' })
+    fireEvent.change(rightEncoding, { target: { value: 'gbk' } })
+    let dialog = view.getByRole('dialog', { name: 'Unsaved comparison changes' })
+    expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalled()
+    await clickElement(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalled()
+    expect((rightEncoding as HTMLSelectElement).value).toBe('auto')
+
+    fireEvent.change(rightEncoding, { target: { value: 'gbk' } })
+    dialog = view.getByRole('dialog', { name: 'Unsaved comparison changes' })
+    await clickElement(within(dialog).getByRole('button', { name: 'Discard' }))
+
+    await waitFor(() => expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith(
+      sessionId,
+      'src/edit.ts',
+      'auto',
+      { left: 'auto', right: 'gbk' },
+    ))
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession).toMatchObject({
+      right: { requestedEncoding: 'gbk', actualEncoding: 'gbk', dirty: false },
+    })
+  })
+
+  it('discards a dirty buffer before switching preview tabs', async () => {
+    const sessionId = 'session-dirty-switch'
+    const comparison = editableComparison()
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: { ...state.panelBySession, [sessionId]: { isOpen: true, activeView: 'changed' } },
+      previewTabsBySession: {
+        ...state.previewTabsBySession,
+        [sessionId]: [
+          {
+            id: 'diff:src/edit.ts', path: 'src/edit.ts', kind: 'diff', title: 'edit.ts', state: 'ok',
+            diff: '@@ -1 +1 @@\n-old\n+new', comparison, comparisonSession: dirtyComparisonSession(),
+          },
+          {
+            id: 'file:src/other.ts', path: 'src/other.ts', kind: 'file', title: 'other.ts', state: 'ok',
+            content: 'other\n', previewType: 'text',
+          },
+        ],
+      },
+      activePreviewTabIdBySession: { ...state.activePreviewTabIdBySession, [sessionId]: 'diff:src/edit.ts' },
+    }))
+
+    const view = await renderPanel(sessionId)
+    await clickElement(view.getByRole('tab', { name: /other\.ts/ }))
+    const dialog = view.getByRole('dialog', { name: 'Unsaved comparison changes' })
+    await clickElement(within(dialog).getByRole('button', { name: 'Discard' }))
+
+    expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession[sessionId]).toBe('file:src/other.ts')
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession).toMatchObject({
+      right: { content: 'new\n', dirty: false },
+      undoStack: [],
+    })
+    expect(getMocks().getWorkspaceFileMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps a dirty closing tab on CAS conflict, then closes it after a successful save', async () => {
+    const sessionId = 'session-dirty-close-save'
+    const comparison = editableComparison()
+    getMocks().writeWorkspaceFileMock
+      .mockResolvedValueOnce({ state: 'conflict', path: 'src/edit.ts', error: 'changed on disk' })
+      .mockResolvedValueOnce({ state: 'ok', path: 'src/edit.ts', content: 'edited\n', size: 7 })
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: { ...state.panelBySession, [sessionId]: { isOpen: true, activeView: 'changed' } },
+      previewTabsBySession: {
+        ...state.previewTabsBySession,
+        [sessionId]: [{
+          id: 'diff:src/edit.ts', path: 'src/edit.ts', kind: 'diff', title: 'edit.ts', state: 'ok',
+          diff: '@@ -1 +1 @@\n-old\n+new', comparison, comparisonSession: dirtyComparisonSession(),
+        }],
+      },
+      activePreviewTabIdBySession: { ...state.activePreviewTabIdBySession, [sessionId]: 'diff:src/edit.ts' },
+    }))
+
+    const view = await renderPanel(sessionId)
+    await clickElement(view.getByRole('button', { name: 'Close tab edit.ts Diff' }))
+    let dialog = view.getByRole('dialog', { name: 'Unsaved comparison changes' })
+    await clickElement(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toContain('changed on disk'))
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]).toHaveLength(1)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession?.right.dirty).toBe(true)
+    expect(getMocks().writeWorkspaceFileMock).toHaveBeenNthCalledWith(1, sessionId, {
+      path: 'src/edit.ts',
+      expectedContent: 'new\n',
+      expectedFingerprint: 'fp:new\n',
+      content: 'edited\n',
+      encoding: 'utf8',
+      bom: 'none',
+      lineEnding: 'lf',
+    })
+
+    dialog = view.getByRole('dialog', { name: 'Unsaved comparison changes' })
+    await clickElement(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId] ?? []).toEqual([]))
+    expect(getMocks().writeWorkspaceFileMock).toHaveBeenCalledTimes(2)
   })
 })

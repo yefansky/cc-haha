@@ -1,8 +1,11 @@
 import * as fs from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
 import { execFile as execFileCallback } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
 import { diffLines } from 'diff'
+import iconv from 'iconv-lite'
 import type { MessageEntry } from './sessionService.js'
 import type { FileHistorySnapshot } from '../../utils/fileHistory.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
@@ -17,6 +20,7 @@ const MAX_PREVIEW_BYTES = 1024 * 1024
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
+const MAX_COMMAND_ERROR_DETAILS_CHARS = 2_048
 const AUTO_ENCODING_SAMPLE_BYTES = 16 * 1024
 // A status walk over a large legacy working copy can take longer than a small
 // Git command. Keep this scoped to status reads so diffs and mutating commands
@@ -222,7 +226,49 @@ export type WorkspaceDiffResult = {
   state: 'ok' | 'missing' | 'not_git_repo' | 'error'
   path: string
   diff?: string
+  comparison?: WorkspaceComparison
   error?: string
+}
+
+export type WorkspaceComparisonSourceKind =
+  | 'git_head'
+  | 'svn_base'
+  | 'session_baseline'
+  | 'working_tree'
+  | 'empty'
+
+export type WorkspaceComparisonSideState =
+  | 'ok'
+  | 'missing'
+  | 'binary'
+  | 'undecodable'
+  | 'too_large'
+  | 'unavailable'
+
+export type WorkspaceComparisonSide = {
+  source: {
+    kind: WorkspaceComparisonSourceKind
+    path: string
+    revision: string
+  }
+  exists: boolean
+  state: WorkspaceComparisonSideState
+  content?: string
+  contentFingerprint?: string
+  size?: number
+  requestedEncoding: WorkspaceTextEncoding
+  actualEncoding?: Exclude<WorkspaceTextEncoding, 'auto'>
+  bom: 'utf8' | 'none' | 'unknown'
+  lineEnding: 'lf' | 'crlf' | 'cr' | 'mixed' | 'none' | 'unknown'
+  writable: boolean
+  readOnlyReason?: string
+  error?: string
+}
+
+export type WorkspaceComparison = {
+  schemaVersion: 1
+  left: WorkspaceComparisonSide
+  right: WorkspaceComparisonSide
 }
 
 export type WorkspaceWriteResult = {
@@ -230,7 +276,18 @@ export type WorkspaceWriteResult = {
   path: string
   content?: string
   size?: number
+  contentFingerprint?: string
+  actualEncoding?: Exclude<WorkspaceTextEncoding, 'auto'>
+  bom?: 'utf8' | 'none'
+  lineEnding?: WorkspaceComparisonSide['lineEnding']
   error?: string
+}
+
+export type WorkspaceWriteOptions = {
+  expectedFingerprint?: string | null
+  encoding?: Exclude<WorkspaceTextEncoding, 'auto'>
+  bom?: 'utf8' | 'none'
+  lineEnding?: WorkspaceComparisonSide['lineEnding']
 }
 
 type StatusEntry = {
@@ -302,6 +359,15 @@ type GitCommandResult = {
   stderr: string
   code: number
   failure?: string
+  outputLimitExceeded?: boolean
+}
+
+type BufferCommandResult = {
+  stdout: Buffer
+  stderr: string
+  code: number
+  failure?: string
+  outputLimitExceeded?: boolean
 }
 
 type DiffStatsResult =
@@ -685,6 +751,7 @@ export class WorkspaceService {
     filePath: string,
     expectedContent: string | null,
     content: string | null,
+    options?: WorkspaceWriteOptions,
   ): Promise<WorkspaceWriteResult> {
     let resolvedPath: WorkspacePathResolution
     try {
@@ -695,6 +762,18 @@ export class WorkspaceService {
         path: this.normalizeRequestedPath(filePath),
         error: error instanceof Error ? error.message : String(error),
       }
+    }
+
+    if (resolvedPath.isExternalRoot) {
+      return {
+        state: 'error',
+        path: resolvedPath.relativePath,
+        error: 'Registered external roots are read-only.',
+      }
+    }
+
+    if (options?.expectedFingerprint !== undefined) {
+      return await this.writeTextFileWithRawCas(resolvedPath, content, options)
     }
 
     const current = await this.readTextFileForWrite(resolvedPath.absolutePath)
@@ -712,19 +791,15 @@ export class WorkspaceService {
       }
     }
 
+    if (current.content === null && content !== null) {
+      return await this.createTextFileExclusively(resolvedPath, content)
+    }
+
     try {
       if (content === null) {
         if (current.content === null) return { state: 'missing', path: resolvedPath.relativePath }
         await fs.unlink(resolvedPath.absolutePath)
         return { state: 'ok', path: resolvedPath.relativePath }
-      }
-
-      if (current.content === null) {
-        return {
-          state: 'missing',
-          path: resolvedPath.relativePath,
-          error: 'The file no longer exists. Refresh the workspace before editing.',
-        }
       }
 
       await fs.writeFile(resolvedPath.absolutePath, content, 'utf8')
@@ -902,7 +977,8 @@ export class WorkspaceService {
   async getDiff(
     sessionId: string,
     filePath: string,
-    requestedEncoding: WorkspaceTextEncoding = 'auto',
+    leftRequestedEncoding: WorkspaceTextEncoding = 'auto',
+    rightRequestedEncoding: WorkspaceTextEncoding = leftRequestedEncoding,
   ): Promise<WorkspaceDiffResult> {
     let resolvedPath: WorkspacePathResolution
     try {
@@ -923,7 +999,13 @@ export class WorkspaceService {
     if (repoInfo.kind === 'not_git_repo') {
       const svnInfo = await this.getSvnWorkspaceInfo(vcsProbePath)
       if (svnInfo.kind === 'ok') {
-        return await this.getSvnDiff(sessionId, resolvedPath, svnInfo.workspaceRoot)
+        return await this.getSvnDiff(
+          sessionId,
+          resolvedPath,
+          svnInfo.workspaceRoot,
+          leftRequestedEncoding,
+          rightRequestedEncoding,
+        )
       }
       if (svnInfo.kind === 'error') {
         return {
@@ -938,7 +1020,12 @@ export class WorkspaceService {
         resolvedPath.relativePath,
       )
       if (storedDiff) {
-        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+        return {
+          state: 'ok',
+          path: resolvedPath.relativePath,
+          diff: storedDiff,
+          ...await this.getFileHistoryComparisonResult(sessionId, resolvedPath, leftRequestedEncoding, rightRequestedEncoding),
+        }
       }
       return { state: 'not_git_repo', path: resolvedPath.relativePath }
     }
@@ -949,7 +1036,12 @@ export class WorkspaceService {
         resolvedPath.relativePath,
       )
       if (storedDiff) {
-        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+        return {
+          state: 'ok',
+          path: resolvedPath.relativePath,
+          diff: storedDiff,
+          ...await this.getFileHistoryComparisonResult(sessionId, resolvedPath, leftRequestedEncoding, rightRequestedEncoding),
+        }
       }
       return {
         state: 'error',
@@ -966,7 +1058,12 @@ export class WorkspaceService {
         resolvedPath.relativePath,
       )
       if (storedDiff) {
-        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+        return {
+          state: 'ok',
+          path: resolvedPath.relativePath,
+          diff: storedDiff,
+          ...await this.getFileHistoryComparisonResult(sessionId, resolvedPath, leftRequestedEncoding, rightRequestedEncoding),
+        }
       }
       return {
         state: 'error',
@@ -997,7 +1094,12 @@ export class WorkspaceService {
         resolvedPath.relativePath,
       )
       if (storedDiff) {
-        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+        return {
+          state: 'ok',
+          path: resolvedPath.relativePath,
+          diff: storedDiff,
+          ...await this.getFileHistoryComparisonResult(sessionId, resolvedPath, leftRequestedEncoding, rightRequestedEncoding),
+        }
       }
       return { state: 'missing', path: resolvedPath.relativePath }
     }
@@ -1006,7 +1108,7 @@ export class WorkspaceService {
       const diff = await this.buildUntrackedDiff(
         resolvedPath.canonicalTargetPath,
         resolvedPath.relativePath,
-        requestedEncoding,
+        rightRequestedEncoding,
       )
       if (diff.kind === 'missing') {
         return { state: 'missing', path: resolvedPath.relativePath }
@@ -1018,23 +1120,837 @@ export class WorkspaceService {
           error: diff.message,
         }
       }
-      return { state: 'ok', path: resolvedPath.relativePath, diff: diff.diff }
+      return {
+        state: 'ok',
+        path: resolvedPath.relativePath,
+        diff: diff.diff,
+        comparison: await this.buildGitComparison(
+          resolvedPath,
+          repoInfo.repoRoot,
+          statusEntry,
+          leftRequestedEncoding,
+          rightRequestedEncoding,
+        ),
+      }
     }
 
     const targetPath = statusEntry.repoPath
-    const diff = await this.runGitDiff(repoInfo.repoRoot, targetPath, requestedEncoding)
+    const diff = await this.runGitDiff(repoInfo.repoRoot, targetPath, rightRequestedEncoding)
     if (diff.kind === 'error') {
       return {
         state: 'error',
         path: resolvedPath.relativePath,
         error: diff.message,
+        comparison: await this.buildGitComparison(
+          resolvedPath,
+          repoInfo.repoRoot,
+          statusEntry,
+          leftRequestedEncoding,
+          rightRequestedEncoding,
+        ),
       }
     }
     if (!diff.diff.trim()) {
       return { state: 'missing', path: resolvedPath.relativePath }
     }
 
-    return { state: 'ok', path: resolvedPath.relativePath, diff: diff.diff }
+    return {
+      state: 'ok',
+      path: resolvedPath.relativePath,
+      diff: diff.diff,
+      comparison: await this.buildGitComparison(
+        resolvedPath,
+        repoInfo.repoRoot,
+        statusEntry,
+        leftRequestedEncoding,
+        rightRequestedEncoding,
+      ),
+    }
+  }
+
+  private async buildGitComparison(
+    resolvedPath: WorkspacePathResolution,
+    repoRoot: string,
+    entry: ScopedStatusEntry,
+    leftRequestedEncoding: WorkspaceTextEncoding,
+    rightRequestedEncoding: WorkspaceTextEncoding,
+  ): Promise<WorkspaceComparison> {
+    const leftPath = entry.repoOldPath ?? entry.repoPath
+    const left = entry.status === 'added' || entry.status === 'untracked'
+      ? this.buildMissingComparisonSide('empty', leftPath, leftRequestedEncoding, false, 'Baseline side does not exist.')
+      : await this.readGitHeadComparisonSide(repoRoot, leftPath, leftRequestedEncoding)
+    const right = await this.readWorkingComparisonSide(resolvedPath, rightRequestedEncoding)
+    return { schemaVersion: 1, left, right }
+  }
+
+  private async buildSvnComparison(
+    resolvedPath: WorkspacePathResolution,
+    svnRoot: string,
+    entry: ScopedStatusEntry,
+    leftRequestedEncoding: WorkspaceTextEncoding,
+    rightRequestedEncoding: WorkspaceTextEncoding,
+  ): Promise<WorkspaceComparison> {
+    const left = entry.status === 'added' || entry.status === 'untracked'
+      ? this.buildMissingComparisonSide('empty', entry.repoPath, leftRequestedEncoding, false, 'Baseline side does not exist.')
+      : await this.readSvnBaseComparisonSide(svnRoot, entry.repoPath, leftRequestedEncoding)
+    const right = await this.readWorkingComparisonSide(resolvedPath, rightRequestedEncoding)
+    return { schemaVersion: 1, left, right }
+  }
+
+  private async getFileHistoryComparisonResult(
+    sessionId: string,
+    resolvedPath: WorkspacePathResolution,
+    leftRequestedEncoding: WorkspaceTextEncoding,
+    rightRequestedEncoding: WorkspaceTextEncoding,
+  ): Promise<{ comparison?: WorkspaceComparison }> {
+    const snapshots = await this.resolveSessionFileHistorySnapshots(sessionId).catch(() => [])
+    const trackingPath = [...this.collectFileHistoryTrackedPaths(snapshots)].find((candidate) => (
+      this.resolveFileHistoryRelativePath(candidate, resolvedPath.workspaceRoot) === resolvedPath.relativePath
+    ))
+    if (!trackingPath) return {}
+
+    const backupFileName = this.getEarliestFileHistoryBackupName(trackingPath, snapshots)
+    if (backupFileName === undefined) return {}
+    let left: WorkspaceComparisonSide
+    if (backupFileName === null) {
+      left = this.buildMissingComparisonSide(
+        'empty',
+        resolvedPath.relativePath,
+        leftRequestedEncoding,
+        false,
+        'Session baseline side does not exist.',
+      )
+    } else {
+      const backupPath = path.join(getClaudeConfigHomeDir(), 'file-history', sessionId, backupFileName)
+      try {
+        const buffer = await fs.readFile(backupPath)
+        left = this.buildComparisonSideFromBuffer(
+          buffer,
+          'session_baseline',
+          resolvedPath.relativePath,
+          leftRequestedEncoding,
+          false,
+          'Session baselines are read-only.',
+        )
+      } catch (error) {
+        left = this.buildUnavailableComparisonSide(
+          'session_baseline',
+          resolvedPath.relativePath,
+          leftRequestedEncoding,
+          this.formatFsError('Failed to read session baseline', backupPath, error),
+        )
+      }
+    }
+
+    return {
+      comparison: {
+        schemaVersion: 1,
+        left,
+        right: await this.readWorkingComparisonSide(resolvedPath, rightRequestedEncoding),
+      },
+    }
+  }
+
+  private async readGitHeadComparisonSide(
+    repoRoot: string,
+    repoPath: string,
+    requestedEncoding: WorkspaceTextEncoding,
+  ): Promise<WorkspaceComparisonSide> {
+    const objectSpec = `HEAD:${repoPath}`
+    const objectSize = await this.runGit(repoRoot, ['cat-file', '-s', objectSpec])
+    const parsedSize = objectSize.code === 0 ? Number.parseInt(objectSize.stdout.trim(), 10) : Number.NaN
+    if (Number.isFinite(parsedSize) && parsedSize > MAX_GIT_BUFFER_BYTES) {
+      const objectRevision = await this.runGit(repoRoot, ['rev-parse', objectSpec])
+      const revision = objectRevision.code === 0 && objectRevision.stdout.trim()
+        ? `git-object:${objectRevision.stdout.trim()}`
+        : `git-object-size:${parsedSize}`
+      return {
+        source: { kind: 'git_head', path: repoPath, revision },
+        exists: true,
+        state: 'too_large',
+        contentFingerprint: revision,
+        size: parsedSize,
+        requestedEncoding,
+        bom: 'unknown',
+        lineEnding: 'unknown',
+        writable: false,
+        readOnlyReason: 'Git HEAD baselines are read-only.',
+        error: `Workspace comparison source exceeds ${MAX_GIT_BUFFER_BYTES} bytes.`,
+      }
+    }
+
+    const result = await this.runGitBuffer(repoRoot, ['show', objectSpec])
+    if (result.code !== 0) {
+      return this.buildUnavailableComparisonSide(
+        'git_head',
+        repoPath,
+        requestedEncoding,
+        this.formatGitError('Failed to read Git baseline', ['show', objectSpec], repoRoot, {
+          stdout: '',
+          stderr: result.stderr,
+          code: result.code,
+        }),
+      )
+    }
+    return this.buildComparisonSideFromBuffer(
+      result.stdout,
+      'git_head',
+      repoPath,
+      requestedEncoding,
+      false,
+      'Git HEAD baselines are read-only.',
+    )
+  }
+
+  private async readSvnBaseComparisonSide(
+    svnRoot: string,
+    repoPath: string,
+    requestedEncoding: WorkspaceTextEncoding,
+  ): Promise<WorkspaceComparisonSide> {
+    const target = await this.resolveSvnBaseTarget(svnRoot, repoPath)
+    if (target.kind === 'error') {
+      return this.buildUnavailableComparisonSide(
+        'svn_base',
+        repoPath,
+        requestedEncoding,
+        target.message,
+      )
+    }
+    const args = ['cat', '-r', target.revision, '--', target.target]
+    const result = await this.runSvnBuffer(svnRoot, args)
+    if (result.code !== 0) {
+      return this.buildUnavailableComparisonSide(
+        'svn_base',
+        repoPath,
+        requestedEncoding,
+        this.formatSvnError('Failed to read SVN baseline', args, svnRoot, {
+          stdout: '',
+          stderr: result.stderr,
+          code: result.code,
+          failure: result.failure,
+        }),
+      )
+    }
+    return this.buildComparisonSideFromBuffer(
+      result.stdout,
+      'svn_base',
+      repoPath,
+      requestedEncoding,
+      false,
+      'SVN BASE baselines are read-only.',
+    )
+  }
+
+  private async resolveSvnBaseTarget(
+    svnRoot: string,
+    repoPath: string,
+  ): Promise<{ kind: 'ok'; target: string; revision: string } | { kind: 'error'; message: string }> {
+    if (process.platform !== 'win32' || /^[\x00-\x7f]+$/.test(repoPath)) {
+      return { kind: 'ok', target: repoPath, revision: 'BASE' }
+    }
+
+    // Some Windows/TortoiseSVN builds pass non-ASCII argv through the active
+    // code page. Resolve both URL and BASE revision from the same target entry
+    // while invoking `svn info` only with the ASCII `.` target. In particular,
+    // a switched subtree must not inherit the working-copy root URL.
+    const infoArgs = ['info', '--xml', '--depth', 'infinity', '.']
+    const infoResult = await this.runSvn(svnRoot, infoArgs, MAX_SVN_STATUS_BUFFER_BYTES)
+    if (infoResult.code !== 0) {
+      return {
+        kind: 'error',
+        message: this.formatSvnError(
+          'Failed to resolve SVN baseline revision',
+          infoArgs,
+          svnRoot,
+          infoResult,
+        ),
+      }
+    }
+    return this.resolveSvnBaseIdentityFromInfo(repoPath, infoResult.stdout)
+  }
+
+  private resolveSvnBaseIdentityFromInfo(
+    repoPath: string,
+    infoXml: string,
+  ): { kind: 'ok'; target: string; revision: string } | { kind: 'error'; message: string } {
+    const normalizedRepoPath = this.normalizeRelativePath(repoPath)
+    const lossyRepoPath = normalizedRepoPath.replace(/[^\x00-\x7f]/g, '?')
+    const matchingEntries: Array<{
+      revision?: string
+      url?: string
+      relativeUrl?: string
+      repositoryRoot?: string
+    }> = []
+    for (const match of infoXml.matchAll(/<entry\s+([^>]+)>([\s\S]*?)<\/entry>/g)) {
+      const attributes = match[1] ?? ''
+      const body = match[2] ?? ''
+      const entryPath = this.decodeXmlAttribute(/\bpath="([^"]+)"/.exec(attributes)?.[1] ?? '')
+      const normalizedEntryPath = this.normalizeRelativePath(entryPath)
+      if (
+        normalizedEntryPath.toLowerCase() === normalizedRepoPath.toLowerCase()
+        || normalizedEntryPath.toLowerCase() === lossyRepoPath.toLowerCase()
+      ) {
+        matchingEntries.push({
+          revision: /\brevision="(\d+)"/.exec(attributes)?.[1],
+          url: this.decodeXmlAttribute(/<url>([\s\S]*?)<\/url>/.exec(body)?.[1] ?? '').trim(),
+          relativeUrl: this.decodeXmlAttribute(/<relative-url>([\s\S]*?)<\/relative-url>/.exec(body)?.[1] ?? '').trim(),
+          repositoryRoot: this.decodeXmlAttribute(/<repository>[\s\S]*?<root>([\s\S]*?)<\/root>/.exec(body)?.[1] ?? '').trim(),
+        })
+      }
+    }
+    if (matchingEntries.length !== 1) {
+      return {
+        kind: 'error',
+        message: `Failed to resolve a unique SVN baseline entry for ${this.limitCommandErrorText(repoPath)}.`,
+      }
+    }
+    const [{ revision, url, relativeUrl, repositoryRoot }] = matchingEntries
+    const target = url ? this.serializeSvnUrlForCommand(url) : null
+    if (!revision || !target) {
+      return {
+        kind: 'error',
+        message: `Failed to resolve a complete SVN baseline identity for ${this.limitCommandErrorText(repoPath)}.`,
+      }
+    }
+    if (relativeUrl || repositoryRoot) {
+      const root = repositoryRoot ? this.serializeSvnUrlForCommand(repositoryRoot) : null
+      const relativePath = relativeUrl?.startsWith('^/') ? relativeUrl.slice(2) : null
+      const expectedTarget = root && relativePath !== null
+        ? this.serializeSvnUrlForCommand(`${root.replace(/\/+$/, '')}/${relativePath}`)
+        : null
+      if (!expectedTarget || expectedTarget !== target) {
+        return {
+          kind: 'error',
+          message: `SVN baseline identity is inconsistent for ${this.limitCommandErrorText(repoPath)}.`,
+        }
+      }
+    }
+    return { kind: 'ok', target, revision }
+  }
+
+  private serializeSvnUrlForCommand(value: string): string | null {
+    if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null
+    try {
+      const serialized = new URL(value).href
+      return /^[\x00-\x7f]+$/.test(serialized) ? serialized : null
+    } catch {
+      return null
+    }
+  }
+
+  private async readWorkingComparisonSide(
+    resolvedPath: WorkspacePathResolution,
+    requestedEncoding: WorkspaceTextEncoding,
+  ): Promise<WorkspaceComparisonSide> {
+    const writable = await this.resolveWorkingSideWritable(resolvedPath)
+    const stat = await this.safeStat(resolvedPath.absolutePath)
+    if (stat.kind === 'error') {
+      return this.buildUnavailableComparisonSide(
+        'working_tree',
+        resolvedPath.relativePath,
+        requestedEncoding,
+        stat.message,
+        writable.writable,
+        writable.readOnlyReason,
+      )
+    }
+    if (stat.kind === 'missing' || !stat.stat.isFile()) {
+      return this.buildMissingComparisonSide(
+        'working_tree',
+        resolvedPath.relativePath,
+        requestedEncoding,
+        writable.writable,
+        writable.readOnlyReason,
+      )
+    }
+    if (stat.stat.size > MAX_GIT_BUFFER_BYTES) {
+      let fingerprint: string
+      try {
+        fingerprint = await this.fingerprintWorkspaceFile(resolvedPath.absolutePath)
+      } catch (error) {
+        return this.buildUnavailableComparisonSide(
+          'working_tree',
+          resolvedPath.relativePath,
+          requestedEncoding,
+          this.formatFsError('Failed to fingerprint workspace comparison source', resolvedPath.absolutePath, error),
+          writable.writable,
+          writable.readOnlyReason,
+        )
+      }
+      return {
+        source: {
+          kind: 'working_tree',
+          path: resolvedPath.relativePath,
+          revision: fingerprint,
+        },
+        exists: true,
+        state: 'too_large',
+        contentFingerprint: fingerprint,
+        size: stat.stat.size,
+        requestedEncoding,
+        bom: 'unknown',
+        lineEnding: 'unknown',
+        writable: writable.writable,
+        ...(writable.readOnlyReason ? { readOnlyReason: writable.readOnlyReason } : {}),
+        error: `Workspace comparison source exceeds ${MAX_GIT_BUFFER_BYTES} bytes.`,
+      }
+    }
+    try {
+      const buffer = await fs.readFile(resolvedPath.absolutePath)
+      return this.buildComparisonSideFromBuffer(
+        buffer,
+        'working_tree',
+        resolvedPath.relativePath,
+        requestedEncoding,
+        writable.writable,
+        writable.readOnlyReason,
+      )
+    } catch (error) {
+      return this.buildUnavailableComparisonSide(
+        'working_tree',
+        resolvedPath.relativePath,
+        requestedEncoding,
+        this.formatFsError('Failed to read workspace comparison source', resolvedPath.absolutePath, error),
+        writable.writable,
+        writable.readOnlyReason,
+      )
+    }
+  }
+
+  private buildComparisonSideFromBuffer(
+    buffer: Buffer,
+    sourceKind: Exclude<WorkspaceComparisonSourceKind, 'empty'>,
+    sourcePath: string,
+    requestedEncoding: WorkspaceTextEncoding,
+    writable: boolean,
+    readOnlyReason?: string,
+  ): WorkspaceComparisonSide {
+    const fingerprint = this.fingerprintWorkspaceBytes(buffer)
+    const base = {
+      source: { kind: sourceKind, path: sourcePath, revision: fingerprint },
+      exists: true,
+      size: buffer.length,
+      contentFingerprint: fingerprint,
+      requestedEncoding,
+      writable,
+      ...(!writable && readOnlyReason ? { readOnlyReason } : {}),
+    }
+
+    if (buffer.length > MAX_GIT_BUFFER_BYTES) {
+      return {
+        ...base,
+        state: 'too_large',
+        bom: this.detectComparisonBom(buffer),
+        lineEnding: 'unknown',
+        error: `Workspace comparison source exceeds ${MAX_GIT_BUFFER_BYTES} bytes.`,
+      }
+    }
+    const bom = this.detectComparisonBom(buffer)
+    if (bom === 'unknown') {
+      return {
+        ...base,
+        state: 'undecodable',
+        bom,
+        lineEnding: 'unknown',
+        error: 'UTF-16 and UTF-32 comparison sources are not supported yet.',
+      }
+    }
+    if (buffer.includes(0)) {
+      return { ...base, state: 'binary', bom, lineEnding: 'unknown' }
+    }
+
+    const actualEncoding = requestedEncoding === 'auto'
+      ? detectWorkspaceTextEncoding(buffer)
+      : requestedEncoding
+    try {
+      const content = new TextDecoder(actualEncoding === 'gbk' ? 'gbk' : 'utf-8', { fatal: true }).decode(buffer)
+      return {
+        ...base,
+        state: 'ok',
+        content,
+        actualEncoding,
+        bom,
+        lineEnding: this.detectComparisonLineEnding(content),
+      }
+    } catch {
+      return {
+        ...base,
+        state: 'undecodable',
+        actualEncoding,
+        bom,
+        lineEnding: 'unknown',
+        error: `Workspace comparison source cannot be decoded as ${actualEncoding}.`,
+      }
+    }
+  }
+
+  private async writeTextFileWithRawCas(
+    resolvedPath: WorkspacePathResolution,
+    content: string | null,
+    options: WorkspaceWriteOptions & { expectedFingerprint?: string | null },
+  ): Promise<WorkspaceWriteResult> {
+    let currentBytes: Buffer | null
+    try {
+      currentBytes = await fs.readFile(resolvedPath.absolutePath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') currentBytes = null
+      else {
+        return {
+          state: 'error',
+          path: resolvedPath.relativePath,
+          error: this.formatFsError('Failed to read workspace file for byte comparison', resolvedPath.absolutePath, error),
+        }
+      }
+    }
+
+    if (currentBytes?.includes(0)) return { state: 'binary', path: resolvedPath.relativePath }
+    const currentFingerprint = currentBytes === null ? null : this.fingerprintWorkspaceBytes(currentBytes)
+    if (currentFingerprint !== options.expectedFingerprint) {
+      return {
+        state: 'conflict',
+        path: resolvedPath.relativePath,
+        error: 'The file bytes changed after this review was opened. Refresh the diff and try again.',
+      }
+    }
+
+    if (content === null) {
+      if (currentBytes === null) return { state: 'missing', path: resolvedPath.relativePath }
+      try {
+        await fs.unlink(resolvedPath.absolutePath)
+        return { state: 'ok', path: resolvedPath.relativePath }
+      } catch (error) {
+        return {
+          state: 'error',
+          path: resolvedPath.relativePath,
+          error: this.formatFsError('Failed to delete workspace file', resolvedPath.absolutePath, error),
+        }
+      }
+    }
+
+    const prepared = this.prepareEncodedWorkspaceText(content, options)
+    if (prepared.kind === 'error') {
+      return { state: 'error', path: resolvedPath.relativePath, error: prepared.message }
+    }
+    const metadata = {
+      contentFingerprint: this.fingerprintWorkspaceBytes(prepared.bytes),
+      actualEncoding: prepared.encoding,
+      bom: prepared.bom,
+      lineEnding: prepared.lineEnding,
+    }
+    if (currentBytes === null) {
+      return await this.createTextFileExclusively(resolvedPath, prepared.content, prepared.bytes, metadata)
+    }
+
+    try {
+      await fs.writeFile(resolvedPath.absolutePath, prepared.bytes)
+      return {
+        state: 'ok',
+        path: resolvedPath.relativePath,
+        content: prepared.content,
+        size: prepared.bytes.length,
+        ...metadata,
+      }
+    } catch (error) {
+      return {
+        state: 'error',
+        path: resolvedPath.relativePath,
+        error: this.formatFsError('Failed to write encoded workspace file', resolvedPath.absolutePath, error),
+      }
+    }
+  }
+
+  private prepareEncodedWorkspaceText(
+    content: string,
+    options: WorkspaceWriteOptions,
+  ):
+    | {
+        kind: 'ok'
+        bytes: Buffer
+        encoding: Exclude<WorkspaceTextEncoding, 'auto'>
+        bom: 'utf8' | 'none'
+        lineEnding: WorkspaceComparisonSide['lineEnding']
+        content: string
+      }
+    | { kind: 'error'; message: string } {
+    const encoding = options.encoding ?? 'utf8'
+    const bom = options.bom ?? 'none'
+    const lineEnding = options.lineEnding ?? this.detectComparisonLineEnding(content)
+    if (bom === 'utf8' && encoding !== 'utf8') {
+      return { kind: 'error', message: `A UTF-8 BOM cannot be written with ${encoding}.` }
+    }
+
+    const normalizedContent = this.applyWorkspaceLineEnding(content, lineEnding)
+    const body = encoding === 'gbk'
+      ? iconv.encode(normalizedContent, 'gbk')
+      : Buffer.from(normalizedContent, 'utf8')
+    const roundTrip = encoding === 'gbk'
+      ? iconv.decode(body, 'gbk')
+      : body.toString('utf8')
+    if (roundTrip !== normalizedContent) {
+      const expectedCharacters = [...normalizedContent]
+      const actualCharacters = [...roundTrip]
+      const mismatchIndex = expectedCharacters.findIndex((character, index) => character !== actualCharacters[index])
+      const character = expectedCharacters[mismatchIndex < 0 ? expectedCharacters.length - 1 : mismatchIndex] ?? ''
+      const codePoint = character.codePointAt(0)
+      const label = codePoint === undefined ? 'unknown character' : `U+${codePoint.toString(16).toUpperCase()}`
+      return {
+        kind: 'error',
+        message: `Content cannot be represented losslessly: ${label} is not round-trippable in ${encoding}.`,
+      }
+    }
+
+    const bytes = bom === 'utf8'
+      ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), body])
+      : body
+    return { kind: 'ok', bytes, encoding, bom, lineEnding, content: normalizedContent }
+  }
+
+  private applyWorkspaceLineEnding(
+    content: string,
+    lineEnding: WorkspaceComparisonSide['lineEnding'],
+  ): string {
+    if (lineEnding === 'mixed' || lineEnding === 'none' || lineEnding === 'unknown') return content
+    const separator = lineEnding === 'crlf' ? '\r\n' : lineEnding === 'cr' ? '\r' : '\n'
+    return content.replace(/\r\n|\r|\n/g, separator)
+  }
+
+  private async createTextFileExclusively(
+    resolvedPath: WorkspacePathResolution,
+    content: string,
+    bytes: Buffer = Buffer.from(content, 'utf8'),
+    metadata: Pick<WorkspaceWriteResult, 'contentFingerprint' | 'actualEncoding' | 'bom' | 'lineEnding'> = {},
+  ): Promise<WorkspaceWriteResult> {
+    const createTarget = await this.resolveExclusiveCreateTarget(resolvedPath)
+    if (createTarget.kind === 'error') {
+      return { state: 'error', path: resolvedPath.relativePath, error: createTarget.message }
+    }
+
+    const temporaryPath = path.join(
+      createTarget.parentPath,
+      `.${path.basename(createTarget.targetPath)}.cc-haha-create-${randomUUID()}.tmp`,
+    )
+    let handle: Awaited<ReturnType<typeof fs.open>> | null = null
+    try {
+      handle = await fs.open(temporaryPath, 'wx', 0o666)
+      await this.writePreparedCreateFile(handle, bytes)
+      await handle.sync()
+      await handle.close()
+      handle = null
+
+      try {
+        await fs.link(temporaryPath, createTarget.targetPath)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          return {
+            state: 'conflict',
+            path: resolvedPath.relativePath,
+            error: 'The file changed after this review was opened. Refresh the diff and try again.',
+          }
+        }
+        throw error
+      }
+
+      return {
+        state: 'ok',
+        path: resolvedPath.relativePath,
+        content,
+        size: bytes.length,
+        ...metadata,
+      }
+    } catch (error) {
+      return {
+        state: 'error',
+        path: resolvedPath.relativePath,
+        error: this.formatFsError('Failed to create workspace file', createTarget.targetPath, error),
+      }
+    } finally {
+      if (handle) await handle.close().catch(() => undefined)
+      await fs.unlink(temporaryPath).catch(() => undefined)
+    }
+  }
+
+  private async resolveExclusiveCreateTarget(
+    resolvedPath: WorkspacePathResolution,
+  ): Promise<
+    | { kind: 'ok'; parentPath: string; targetPath: string }
+    | { kind: 'error'; message: string }
+  > {
+    if (resolvedPath.isExternalRoot) {
+      return { kind: 'error', message: 'Registered external roots are read-only.' }
+    }
+
+    const absoluteParent = path.dirname(resolvedPath.absolutePath)
+    const relativeParent = path.relative(resolvedPath.workspaceRoot, absoluteParent)
+    if (
+      relativeParent === '..'
+      || relativeParent.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relativeParent)
+    ) {
+      return { kind: 'error', message: `Path is outside workspace: ${resolvedPath.requestedPath}` }
+    }
+
+    try {
+      const [parentStat, canonicalParent] = await Promise.all([
+        fs.stat(absoluteParent),
+        fs.realpath(absoluteParent),
+      ])
+      if (!parentStat.isDirectory()) {
+        return { kind: 'error', message: `Workspace file parent is not a directory: ${absoluteParent}` }
+      }
+
+      const expectedCanonicalParent = path.resolve(resolvedPath.canonicalWorkspaceRoot, relativeParent)
+      const resolvedTargetParent = path.dirname(resolvedPath.canonicalTargetPath)
+      if (
+        !this.isSamePath(canonicalParent, expectedCanonicalParent)
+        || !this.isSamePath(canonicalParent, resolvedTargetParent)
+        || !this.isWithinRoot(canonicalParent, resolvedPath.canonicalWorkspaceRoot)
+      ) {
+        return {
+          kind: 'error',
+          message: `Workspace file parent resolves through an unsafe symbolic link: ${resolvedPath.requestedPath}`,
+        }
+      }
+
+      await this.assertDirectoryWritable(canonicalParent)
+      return {
+        kind: 'ok',
+        parentPath: canonicalParent,
+        targetPath: path.join(canonicalParent, path.basename(resolvedPath.absolutePath)),
+      }
+    } catch (error) {
+      return {
+        kind: 'error',
+        message: this.formatFsError('Workspace file parent is not writable', absoluteParent, error),
+      }
+    }
+  }
+
+  private async assertDirectoryWritable(directoryPath: string): Promise<void> {
+    await fs.access(directoryPath, fsConstants.W_OK)
+  }
+
+  private async writePreparedCreateFile(
+    handle: Awaited<ReturnType<typeof fs.open>>,
+    content: string | Uint8Array,
+  ): Promise<void> {
+    if (typeof content === 'string') await handle.writeFile(content, 'utf8')
+    else await handle.writeFile(content)
+  }
+
+  private buildMissingComparisonSide(
+    sourceKind: 'working_tree' | 'empty',
+    sourcePath: string,
+    requestedEncoding: WorkspaceTextEncoding,
+    writable: boolean,
+    readOnlyReason?: string,
+  ): WorkspaceComparisonSide {
+    return {
+      source: {
+        kind: sourceKind,
+        path: sourcePath,
+        revision: `missing:${sourceKind}:${sourcePath}`,
+      },
+      exists: false,
+      state: 'missing',
+      requestedEncoding,
+      bom: 'none',
+      lineEnding: 'none',
+      writable,
+      ...(!writable && readOnlyReason ? { readOnlyReason } : {}),
+    }
+  }
+
+  private buildUnavailableComparisonSide(
+    sourceKind: Exclude<WorkspaceComparisonSourceKind, 'empty'>,
+    sourcePath: string,
+    requestedEncoding: WorkspaceTextEncoding,
+    error: string,
+    writable = false,
+    readOnlyReason = 'Comparison source is unavailable.',
+  ): WorkspaceComparisonSide {
+    return {
+      source: {
+        kind: sourceKind,
+        path: sourcePath,
+        revision: `unavailable:${sourceKind}:${sourcePath}`,
+      },
+      exists: true,
+      state: 'unavailable',
+      requestedEncoding,
+      bom: 'unknown',
+      lineEnding: 'unknown',
+      writable,
+      ...(!writable ? { readOnlyReason } : {}),
+      error,
+    }
+  }
+
+  private fingerprintWorkspaceBytes(buffer: Buffer): string {
+    return `sha256:${createHash('sha256').update(buffer).digest('hex')}`
+  }
+
+  private async fingerprintWorkspaceFile(filePath: string): Promise<string> {
+    const hash = createHash('sha256')
+    const handle = await fs.open(filePath, 'r')
+    const chunk = Buffer.allocUnsafe(64 * 1024)
+    try {
+      let position = 0
+      for (;;) {
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, position)
+        if (bytesRead === 0) break
+        hash.update(chunk.subarray(0, bytesRead))
+        position += bytesRead
+      }
+    } finally {
+      await handle.close()
+    }
+    return `sha256:${hash.digest('hex')}`
+  }
+
+  private detectComparisonBom(buffer: Buffer): WorkspaceComparisonSide['bom'] {
+    if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) return 'utf8'
+    if (
+      (buffer.length >= 2 && ((buffer[0] === 0xff && buffer[1] === 0xfe) || (buffer[0] === 0xfe && buffer[1] === 0xff)))
+      || (buffer.length >= 4 && buffer[0] === 0 && buffer[1] === 0 && buffer[2] === 0xfe && buffer[3] === 0xff)
+    ) return 'unknown'
+    return 'none'
+  }
+
+  private detectComparisonLineEnding(content: string): WorkspaceComparisonSide['lineEnding'] {
+    const crlf = (content.match(/\r\n/g) ?? []).length
+    const withoutCrlf = content.replace(/\r\n/g, '')
+    const lf = (withoutCrlf.match(/\n/g) ?? []).length
+    const cr = (withoutCrlf.match(/\r/g) ?? []).length
+    const styles = Number(crlf > 0) + Number(lf > 0) + Number(cr > 0)
+    if (styles === 0) return 'none'
+    if (styles > 1) return 'mixed'
+    if (crlf > 0) return 'crlf'
+    if (lf > 0) return 'lf'
+    return 'cr'
+  }
+
+  private async resolveWorkingSideWritable(
+    resolvedPath: WorkspacePathResolution,
+  ): Promise<{ writable: boolean; readOnlyReason?: string }> {
+    if (resolvedPath.isExternalRoot) {
+      return { writable: false, readOnlyReason: 'Registered external roots are read-only.' }
+    }
+    try {
+      const stat = await this.safeStat(resolvedPath.absolutePath)
+      const accessPath = stat.kind === 'ok'
+        ? resolvedPath.absolutePath
+        : await this.findNearestExistingDirectory(
+            path.dirname(resolvedPath.absolutePath),
+            resolvedPath.canonicalWorkspaceRoot,
+          )
+      await fs.access(accessPath, fsConstants.W_OK)
+      return { writable: true }
+    } catch (error) {
+      return {
+        writable: false,
+        readOnlyReason: this.formatFsError('Workspace comparison source is read-only', resolvedPath.absolutePath, error),
+      }
+    }
   }
 
   private async getStoredWorkspaceDiff(
@@ -1681,6 +2597,10 @@ export class WorkspaceService {
     return isSameOrInsidePathForPlatform(targetPath, rootPath)
   }
 
+  private isSamePath(firstPath: string, secondPath: string): boolean {
+    return this.isWithinRoot(firstPath, secondPath) && this.isWithinRoot(secondPath, firstPath)
+  }
+
   private isAbsoluteRequestPath(requestedPath: string): boolean {
     const pathApi = process.platform === 'win32' ? path.win32 : path
     return pathApi.isAbsolute(normalizeDriveRootPathForPlatform(requestedPath))
@@ -2058,6 +2978,8 @@ export class WorkspaceService {
     sessionId: string,
     resolvedPath: WorkspacePathResolution,
     svnRoot: string,
+    leftRequestedEncoding: WorkspaceTextEncoding,
+    rightRequestedEncoding: WorkspaceTextEncoding,
   ): Promise<WorkspaceDiffResult> {
     const statusEntries = await this.getSvnStatusEntries(svnRoot)
     if (statusEntries.kind === 'error') {
@@ -2073,13 +2995,34 @@ export class WorkspaceService {
     if (!entry) {
       const storedDiff = await this.getStoredWorkspaceDiff(sessionId, resolvedPath.workspaceRoot, resolvedPath.relativePath)
       return storedDiff
-        ? { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+        ? {
+            state: 'ok',
+            path: resolvedPath.relativePath,
+            diff: storedDiff,
+            ...await this.getFileHistoryComparisonResult(
+              sessionId,
+              resolvedPath,
+              leftRequestedEncoding,
+              rightRequestedEncoding,
+            ),
+          }
         : { state: 'missing', path: resolvedPath.relativePath }
     }
     if (entry.status === 'untracked') {
-      const diff = await this.buildUntrackedDiff(entry.absolutePath, entry.path)
+      const diff = await this.buildUntrackedDiff(entry.absolutePath, entry.path, rightRequestedEncoding)
       return diff.kind === 'ok'
-        ? { state: 'ok', path: resolvedPath.relativePath, diff: diff.diff }
+        ? {
+            state: 'ok',
+            path: resolvedPath.relativePath,
+            diff: diff.diff,
+            comparison: await this.buildSvnComparison(
+              resolvedPath,
+              svnRoot,
+              entry,
+              leftRequestedEncoding,
+              rightRequestedEncoding,
+            ),
+          }
         : diff.kind === 'missing'
           ? { state: 'missing', path: resolvedPath.relativePath }
           : { state: 'error', path: resolvedPath.relativePath, error: diff.message }
@@ -2088,9 +3031,33 @@ export class WorkspaceService {
       svnRoot,
       resolvedPath.canonicalTargetPath,
     )
-    if (diff.kind === 'error') return { state: 'error', path: resolvedPath.relativePath, error: diff.message }
+    if (diff.kind === 'error') {
+      return {
+        state: 'error',
+        path: resolvedPath.relativePath,
+        error: diff.message,
+        comparison: await this.buildSvnComparison(
+          resolvedPath,
+          svnRoot,
+          entry,
+          leftRequestedEncoding,
+          rightRequestedEncoding,
+        ),
+      }
+    }
     return diff.diff.trim()
-      ? { state: 'ok', path: resolvedPath.relativePath, diff: diff.diff }
+      ? {
+          state: 'ok',
+          path: resolvedPath.relativePath,
+          diff: diff.diff,
+          comparison: await this.buildSvnComparison(
+            resolvedPath,
+            svnRoot,
+            entry,
+            leftRequestedEncoding,
+            rightRequestedEncoding,
+          ),
+        }
       : { state: 'missing', path: resolvedPath.relativePath }
   }
 
@@ -2493,7 +3460,13 @@ export class WorkspaceService {
           'Failed to read git diff',
           args,
           workDir,
-          result,
+          {
+            stdout: '',
+            stderr: result.stderr,
+            code: result.code,
+            failure: result.failure,
+            outputLimitExceeded: result.outputLimitExceeded,
+          },
         ),
       }
     }
@@ -2504,7 +3477,7 @@ export class WorkspaceService {
   private async runGitBuffer(
     workDir: string,
     args: string[],
-  ): Promise<{ stdout: Buffer; stderr: string; code: number }> {
+  ): Promise<BufferCommandResult> {
     try {
       const result = await execFile('git', args, {
         cwd: workDir,
@@ -2515,10 +3488,15 @@ export class WorkspaceService {
       return { stdout: result.stdout, stderr: result.stderr.toString('utf8'), code: 0 }
     } catch (error) {
       const err = error as NodeJS.ErrnoException & { stdout?: string | Buffer; stderr?: string | Buffer; code?: number | string }
+      const outputLimitExceeded = this.isOutputLimitError(err)
       return {
-        stdout: Buffer.isBuffer(err.stdout) ? err.stdout : Buffer.from(err.stdout ?? ''),
-        stderr: Buffer.isBuffer(err.stderr) ? err.stderr.toString('utf8') : err.stderr ?? '',
+        stdout: Buffer.alloc(0),
+        stderr: outputLimitExceeded ? '' : decodeCommandOutput(err.stderr),
         code: typeof err.code === 'number' ? err.code : 1,
+        failure: outputLimitExceeded
+          ? `Git command output exceeded ${MAX_GIT_BUFFER_BYTES} bytes.`
+          : err.message || (typeof err.code === 'string' ? err.code : undefined),
+        ...(outputLimitExceeded ? { outputLimitExceeded: true } : {}),
       }
     }
   }
@@ -2631,13 +3609,17 @@ export class WorkspaceService {
           lastMissingExecutableError = err
           continue
         }
+        const outputLimitExceeded = this.isOutputLimitError(err)
         return {
-          stdout: decodeCommandOutput(err.stdout),
-          stderr: decodeCommandOutput(err.stderr),
+          stdout: '',
+          stderr: outputLimitExceeded ? '' : decodeCommandOutput(err.stderr),
           code: typeof err.code === 'number' ? err.code : 1,
-          failure: err.killed
-            ? `SVN command timed out after ${timeout} ms.`
+          failure: outputLimitExceeded
+            ? `SVN command output exceeded ${maxBuffer} bytes.`
+            : err.killed
+              ? `SVN command timed out after ${timeout} ms.`
             : err.message || (typeof err.code === 'string' ? err.code : undefined),
+          ...(outputLimitExceeded ? { outputLimitExceeded: true } : {}),
         }
       }
     }
@@ -2646,6 +3628,67 @@ export class WorkspaceService {
     const workDirStat = await this.safeStat(workDir)
     return {
       stdout: '',
+      stderr: '',
+      code: 1,
+      failure: lastMissingExecutableError
+        ? workDirStat.kind === 'missing'
+          ? `SVN working directory was not found: ${workDir}`
+          : `SVN executable was not found. Tried: ${attempted}`
+        : 'No SVN executable candidates were configured.',
+    }
+  }
+
+  private async runSvnBuffer(
+    workDir: string,
+    args: string[],
+    maxBuffer = MAX_GIT_BUFFER_BYTES,
+  ): Promise<BufferCommandResult> {
+    let lastMissingExecutableError: NodeJS.ErrnoException | null = null
+    const executables = this.resolveSvnExecutables()
+
+    for (const executable of executables) {
+      try {
+        const result = await execFile(executable, args, {
+          cwd: workDir,
+          timeout: GIT_TIMEOUT_MS,
+          maxBuffer,
+          encoding: 'buffer',
+        })
+        return {
+          stdout: result.stdout,
+          stderr: decodeCommandOutput(result.stderr),
+          code: 0,
+        }
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException & {
+          stdout?: string | Buffer
+          stderr?: string | Buffer
+          code?: number | string
+          killed?: boolean
+        }
+        if (err.code === 'ENOENT') {
+          lastMissingExecutableError = err
+          continue
+        }
+        const outputLimitExceeded = this.isOutputLimitError(err)
+        return {
+          stdout: Buffer.alloc(0),
+          stderr: outputLimitExceeded ? '' : decodeCommandOutput(err.stderr),
+          code: typeof err.code === 'number' ? err.code : 1,
+          failure: outputLimitExceeded
+            ? `SVN command output exceeded ${maxBuffer} bytes.`
+            : err.killed
+            ? `SVN command timed out after ${GIT_TIMEOUT_MS} ms.`
+            : err.message || (typeof err.code === 'string' ? err.code : undefined),
+          ...(outputLimitExceeded ? { outputLimitExceeded: true } : {}),
+        }
+      }
+    }
+
+    const attempted = executables.length > 0 ? executables.join(', ') : 'svn'
+    const workDirStat = await this.safeStat(workDir)
+    return {
+      stdout: Buffer.alloc(0),
       stderr: '',
       code: 1,
       failure: lastMissingExecutableError
@@ -2760,8 +3803,8 @@ export class WorkspaceService {
     workDir: string,
     result: GitCommandResult,
   ): string {
-    const stderr = result.stderr.trim() || result.stdout.trim() || 'unknown git failure'
-    return `${prefix} (git ${args.join(' ')} in ${workDir}): ${stderr}`
+    const details = result.stderr.trim() || result.failure || `Git exited with code ${result.code}.`
+    return `${prefix} (git ${this.formatCommandArgs(args)} in ${this.limitCommandErrorText(workDir)}): ${this.limitCommandErrorText(details)}`
   }
 
   private formatSvnError(
@@ -2771,12 +3814,29 @@ export class WorkspaceService {
     result: GitCommandResult,
   ): string {
     const stderr = result.stderr.trim()
-    // When Node stops a verbose `svn --xml` command for a process-level
-    // reason, stdout can be a multi-megabyte partial XML document. It is not
-    // an SVN diagnostic and must not replace the file tree with raw markup.
-    const details = stderr || (result.stdout.trimStart().startsWith('<?xml')
-      ? 'SVN returned XML status output but the command did not complete.'
-      : result.stdout.trim() || result.failure || `SVN exited with code ${result.code}.`)
-    return `${prefix} (svn ${args.join(' ')} in ${workDir}): ${details}`
+    // Failed commands may carry partial stdout containing megabytes of source
+    // or XML. Never place stdout on the HTTP/UI error surface.
+    const details = stderr
+      || result.failure
+      || (result.stdout.trimStart().startsWith('<?xml')
+        ? 'SVN returned XML status output but the command did not complete.'
+        : `SVN exited with code ${result.code}.`)
+    return `${prefix} (svn ${this.formatCommandArgs(args)} in ${this.limitCommandErrorText(workDir)}): ${this.limitCommandErrorText(details)}`
+  }
+
+  private isOutputLimitError(error: NodeJS.ErrnoException): boolean {
+    return error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      || /maxbuffer|stdout maxbuffer|stderr maxbuffer/i.test(error.message ?? '')
+  }
+
+  private limitCommandErrorText(value: string): string {
+    const normalized = value.replace(/[\r\n\t]+/g, ' ').trim()
+    return normalized.length <= MAX_COMMAND_ERROR_DETAILS_CHARS
+      ? normalized
+      : `${normalized.slice(0, MAX_COMMAND_ERROR_DETAILS_CHARS)}…`
+  }
+
+  private formatCommandArgs(args: string[]): string {
+    return this.limitCommandErrorText(args.join(' '))
   }
 }

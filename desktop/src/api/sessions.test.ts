@@ -125,6 +125,97 @@ describe('sessionsApi', () => {
     expect(init).toMatchObject({ method: 'GET' })
   })
 
+  it('forwards an explicit null CAS expectation when creating a workspace file', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      state: 'ok',
+      path: '新建/-review.txt',
+      content: 'created\n',
+      size: 8,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await sessionsApi.writeWorkspaceFile('session-1', {
+      path: '新建/-review.txt',
+      expectedContent: null,
+      content: 'created\n',
+    })
+
+    expect(result).toMatchObject({ state: 'ok', content: 'created\n', size: 8 })
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('http://127.0.0.1:3456/api/sessions/session-1/workspace/file')
+    expect(init).toMatchObject({
+      method: 'PUT',
+      body: JSON.stringify({
+        path: '新建/-review.txt',
+        expectedContent: null,
+        content: 'created\n',
+      }),
+    })
+  })
+
+  it('forwards independent comparison encodings and encoded raw-CAS writes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      state: 'ok',
+      path: '-中文.txt',
+      diff: '',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      state: 'ok',
+      path: '-中文.txt',
+      content: '修改\r\n',
+      size: 6,
+      contentFingerprint: 'sha256:new',
+      actualEncoding: 'gbk',
+      bom: 'none',
+      lineEnding: 'crlf',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await sessionsApi.getWorkspaceDiff('session-1', '-中文.txt', 'auto', {
+      left: 'gbk',
+      right: 'utf8',
+    })
+    const result = await sessionsApi.writeWorkspaceFile('session-1', {
+      path: '-中文.txt',
+      expectedContent: '原\r\n',
+      expectedFingerprint: 'sha256:old',
+      content: '修改\n',
+      encoding: 'gbk',
+      bom: 'none',
+      lineEnding: 'crlf',
+    })
+
+    expect(result).toMatchObject({
+      state: 'ok',
+      contentFingerprint: 'sha256:new',
+      actualEncoding: 'gbk',
+    })
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'http://127.0.0.1:3456/api/sessions/session-1/workspace/diff?path=-%E4%B8%AD%E6%96%87.txt&leftEncoding=gbk&rightEncoding=utf8',
+    )
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: 'PUT',
+      body: JSON.stringify({
+        path: '-中文.txt',
+        expectedContent: '原\r\n',
+        expectedFingerprint: 'sha256:old',
+        content: '修改\n',
+        encoding: 'gbk',
+        bom: 'none',
+        lineEnding: 'crlf',
+      }),
+    })
+  })
+
   it('preserves optional local index progress from session list responses', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({

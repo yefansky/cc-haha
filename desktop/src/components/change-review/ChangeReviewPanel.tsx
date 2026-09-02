@@ -21,7 +21,8 @@ import { IconButton } from '@/components/ui/IconButton'
 import { LoadingState } from '@/components/ui/LoadingState'
 import { SearchField } from '@/components/ui/SearchField'
 import { TextArea } from '@/components/ui/TextArea'
-import { WorkspaceDiffSurface } from '../workspace/WorkspaceDiffSurface'
+import { WorkspaceReadonlyComparisonSurface } from '../workspace/WorkspaceReadonlyComparisonSurface'
+import { createPositionedPatchComparisonInput } from '../workspace/workspaceComparisonInput'
 import { buildHunkRevertContent } from './reviewDiffActions'
 
 type ReviewFile = {
@@ -604,9 +605,14 @@ export function ChangeReviewPanel({ sessionId }: { sessionId: string }) {
                 </Button>
               </div>
               {active.diff.state === 'ok' ? (
-                <WorkspaceDiffSurface
-                  value={active.diff.diff ?? ''}
-                  path={active.file.displayPath}
+                <WorkspaceReadonlyComparisonSurface
+                  input={createPositionedPatchComparisonInput({
+                    originId: `checkpoint:${sessionId}:${active.checkpoint.target.targetUserMessageId}:${active.checkpoint.target.userMessageIndex}:${active.file.sourcePath}`,
+                    path: active.file.displayPath,
+                    value: active.diff.diff ?? '',
+                    revision: active.checkpoint.createdAt ?? null,
+                    hostCapabilities: { hunkAction: true },
+                  })}
                   hideSingleFileHeader
                   renderHunkAction={(hunkId) => (
                     <Button

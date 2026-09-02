@@ -34,6 +34,10 @@ import {
   getWorkspacePreviewTabId,
   useWorkspacePanelStore,
 } from './workspacePanelStore'
+import {
+  addWorkspaceManualAlignmentAnchor,
+  editWorkspaceComparisonSide,
+} from '../components/workspace/workspaceComparisonSession'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -455,6 +459,186 @@ describe('workspacePanelStore', () => {
     } else {
       expect(storage).toBeNull()
     }
+  })
+
+  it('keeps the server comparison snapshot attached to the diff tab', async () => {
+    const comparison = {
+      schemaVersion: 1 as const,
+      left: {
+        source: { kind: 'git_head' as const, path: 'src/a.ts', revision: 'sha256:left' },
+        exists: true,
+        state: 'ok' as const,
+        content: 'before\n',
+        contentFingerprint: 'sha256:left',
+        size: 7,
+        requestedEncoding: 'auto' as const,
+        actualEncoding: 'utf8' as const,
+        bom: 'none' as const,
+        lineEnding: 'lf' as const,
+        writable: false,
+        readOnlyReason: 'Git HEAD baselines are read-only.',
+      },
+      right: {
+        source: { kind: 'working_tree' as const, path: 'src/a.ts', revision: 'sha256:right' },
+        exists: true,
+        state: 'ok' as const,
+        content: 'after\n',
+        contentFingerprint: 'sha256:right',
+        size: 6,
+        requestedEncoding: 'auto' as const,
+        actualEncoding: 'utf8' as const,
+        bom: 'none' as const,
+        lineEnding: 'lf' as const,
+        writable: true,
+      },
+    }
+    mocks.getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: 'src/a.ts',
+      diff: '@@ -1 +1 @@\n-before\n+after',
+      comparison,
+    })
+
+    await useWorkspacePanelStore.getState().openPreview('session-comparison', 'src/a.ts', 'diff')
+
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-comparison']).toMatchObject([{
+      id: 'diff:src/a.ts',
+      diff: '@@ -1 +1 @@\n-before\n+after',
+      comparison,
+      comparisonSession: {
+        left: { sourceSide: 'left', originContent: 'before\n', content: 'before\n', dirty: false },
+        right: { sourceSide: 'right', originContent: 'after\n', content: 'after\n', dirty: false },
+        undoStack: [],
+      },
+    }])
+  })
+
+  it('reloads a diff with independent source encodings and reuses them on refresh', async () => {
+    const comparison = {
+      schemaVersion: 1 as const,
+      left: {
+        source: { kind: 'git_head' as const, path: '-中文.txt', revision: 'sha256:left' },
+        exists: true, state: 'ok' as const, content: '旧\n', requestedEncoding: 'gbk' as const,
+        actualEncoding: 'gbk' as const, bom: 'none' as const, lineEnding: 'lf' as const,
+        writable: false, readOnlyReason: 'read-only',
+      },
+      right: {
+        source: { kind: 'working_tree' as const, path: '-中文.txt', revision: 'sha256:right' },
+        exists: true, state: 'ok' as const, content: '新\n', requestedEncoding: 'utf8' as const,
+        actualEncoding: 'utf8' as const, bom: 'none' as const, lineEnding: 'lf' as const, writable: true,
+      },
+    }
+    mocks.getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: '-中文.txt',
+      diff: '',
+      comparison,
+    })
+
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-encoding',
+      '-中文.txt',
+      'diff',
+      undefined,
+      undefined,
+      { kind: 'workspace' },
+      'auto',
+      { left: 'gbk', right: 'utf8' },
+    )
+    await useWorkspacePanelStore.getState().openPreview('session-encoding', '-中文.txt', 'diff')
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenNthCalledWith(
+      1,
+      'session-encoding',
+      '-中文.txt',
+      'auto',
+      { left: 'gbk', right: 'utf8' },
+    )
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenNthCalledWith(
+      2,
+      'session-encoding',
+      '-中文.txt',
+      'auto',
+      { left: 'gbk', right: 'utf8' },
+    )
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-encoding']?.[0]).toMatchObject({
+      comparisonEncodings: { left: 'gbk', right: 'utf8' },
+      comparisonSession: {
+        left: { requestedEncoding: 'gbk' },
+        right: { requestedEncoding: 'utf8' },
+      },
+    })
+  })
+
+  it('preserves a dirty comparison session when an unguarded refresh result arrives', async () => {
+    const comparison = {
+      schemaVersion: 1 as const,
+      left: {
+        source: { kind: 'git_head' as const, path: 'src/a.ts', revision: 'left' },
+        exists: true, state: 'ok' as const, content: 'before\n', requestedEncoding: 'auto' as const,
+        actualEncoding: 'utf8' as const, bom: 'none' as const, lineEnding: 'lf' as const,
+        writable: false, readOnlyReason: 'read-only',
+      },
+      right: {
+        source: { kind: 'working_tree' as const, path: 'src/a.ts', revision: 'right' },
+        exists: true, state: 'ok' as const, content: 'after\n', requestedEncoding: 'auto' as const,
+        actualEncoding: 'utf8' as const, bom: 'none' as const, lineEnding: 'lf' as const, writable: true,
+      },
+    }
+    mocks.getWorkspaceDiffMock.mockResolvedValue({ state: 'ok', path: 'src/a.ts', diff: 'first', comparison })
+    await useWorkspacePanelStore.getState().openPreview('session-dirty-refresh', 'src/a.ts', 'diff')
+    const tab = useWorkspacePanelStore.getState().previewTabsBySession['session-dirty-refresh']![0]!
+    const dirty = editWorkspaceComparisonSide(tab.comparisonSession!, 'right', 'in memory\n')
+    useWorkspacePanelStore.getState().setComparisonSession('session-dirty-refresh', tab.id, dirty)
+
+    mocks.getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: 'src/a.ts',
+      diff: 'external',
+      comparison: { ...comparison, right: { ...comparison.right, content: 'external\n' } },
+    })
+    await useWorkspacePanelStore.getState().openPreview('session-dirty-refresh', 'src/a.ts', 'diff')
+
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-dirty-refresh']?.[0]?.comparisonSession).toMatchObject({
+      right: { content: 'in memory\n', originContent: 'after\n', dirty: true },
+    })
+  })
+
+  it('rebases clean manual anchors when refresh or per-side encoding reload replaces the comparison session', async () => {
+    const makeSide = (content: string, requestedEncoding: 'auto' | 'gbk' = 'auto') => ({
+      source: { kind: 'working_tree' as const, path: 'src/a.ts', revision: `rev:${content}` },
+      exists: true,
+      state: 'ok' as const,
+      content,
+      requestedEncoding,
+      actualEncoding: requestedEncoding === 'gbk' ? 'gbk' as const : 'utf8' as const,
+      bom: 'none' as const,
+      lineEnding: 'lf' as const,
+      writable: true,
+    })
+    const initialComparison = { schemaVersion: 1 as const, left: makeSide('head\nleft anchor\ntail\n'), right: makeSide('head\nright anchor\ntail\n') }
+    mocks.getWorkspaceDiffMock.mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: '', comparison: initialComparison })
+    await useWorkspacePanelStore.getState().openPreview('session-anchor-refresh', 'src/a.ts', 'diff')
+    const tab = useWorkspacePanelStore.getState().previewTabsBySession['session-anchor-refresh']![0]!
+    const added = addWorkspaceManualAlignmentAnchor(tab.comparisonSession!, 2, 2, tab.comparisonSession!.revision)
+    if (added.state !== 'ok') throw new Error('anchor add failed')
+    useWorkspacePanelStore.getState().setComparisonSession('session-anchor-refresh', tab.id, added.session)
+
+    const reloadedComparison = {
+      schemaVersion: 1 as const,
+      left: makeSide('inserted\nhead\nleft anchor\ntail\n', 'gbk'),
+      right: makeSide('head\nright anchor\ntail\n'),
+    }
+    mocks.getWorkspaceDiffMock.mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: '', comparison: reloadedComparison })
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-anchor-refresh', 'src/a.ts', 'diff', undefined, undefined, { kind: 'workspace' }, 'auto',
+      { left: 'gbk', right: 'auto' },
+    )
+
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-anchor-refresh']?.[0]?.comparisonSession).toMatchObject({
+      left: { requestedEncoding: 'gbk', actualEncoding: 'gbk', dirty: false },
+      manualAnchors: [{ id: 'manual-anchor-1', state: 'valid', left: { lineNumber: 3 }, right: { lineNumber: 2 } }],
+    })
   })
 
   it('opens a turn-bound diff without falling back to the live workspace diff', async () => {

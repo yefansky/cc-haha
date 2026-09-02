@@ -1,12 +1,20 @@
 import { create } from 'zustand'
 import {
   sessionsApi,
+  type WorkspaceComparison,
+  type WorkspaceComparisonEncodings,
   type WorkspaceDiffResult,
   type WorkspaceReadFileResult,
   type WorkspaceTextEncoding,
   type WorkspaceStatusResult,
   type WorkspaceTreeResult,
 } from '../api/sessions'
+import {
+  createWorkspaceComparisonSession,
+  isWorkspaceComparisonSessionDirty,
+  reloadWorkspaceComparisonSession,
+  type WorkspaceComparisonSession,
+} from '../components/workspace/workspaceComparisonSession'
 
 export const WORKSPACE_PANEL_DEFAULT_WIDTH = 860
 export const WORKSPACE_PANEL_MIN_WIDTH = 420
@@ -53,11 +61,14 @@ export type WorkspacePreviewTab = {
   mimeType?: string
   previewType?: 'text' | 'image'
   diff?: string
+  comparison?: WorkspaceComparison
   diffSource?: WorkspaceDiffSource
   state?: WorkspacePreviewState
   error?: string
   size?: number
   textEncoding?: WorkspaceTextEncoding
+  comparisonSession?: WorkspaceComparisonSession
+  comparisonEncodings?: WorkspaceComparisonEncodings
 }
 
 export type WorkspaceMountedRoot = {
@@ -132,9 +143,12 @@ type WorkspacePanelStore = {
     reveal?: { line: number; column?: number },
     diffSource?: WorkspaceDiffSource,
     textEncoding?: WorkspaceTextEncoding,
+    comparisonEncodings?: WorkspaceComparisonEncodings,
   ) => Promise<void>
   closePreview: (sessionId: string, tabId: string) => void
   closePreviewTabs: (sessionId: string, tabId: string, scope: WorkspacePreviewCloseScope) => void
+  activatePreview: (sessionId: string, tabId: string) => void
+  setComparisonSession: (sessionId: string, tabId: string, comparisonSession: WorkspaceComparisonSession | null) => void
   clearSession: (sessionId: string) => void
   resetSessionUi: (sessionId: string) => void
 }
@@ -607,7 +621,16 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     }
   },
 
-  openPreview: async (sessionId, path, kind, origin, reveal, diffSource = { kind: 'workspace' }, textEncoding = 'auto') => {
+  openPreview: async (
+    sessionId,
+    path,
+    kind,
+    origin,
+    reveal,
+    diffSource = { kind: 'workspace' },
+    textEncoding = 'auto',
+    comparisonEncodings,
+  ) => {
     // Ensure the workspace panel is visible — openPreview is now triggered from places
     // where the panel may be closed (e.g. the chat "打开方式" menu / turn-changes card),
     // not only from inside the already-open file tree. Opening a file always switches the
@@ -631,6 +654,14 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     const tabId = getWorkspacePreviewTabId(path, kind, diffSource)
     const requestKey = makePreviewKey(sessionId, tabId)
     const existing = get().previewTabsBySession[sessionId]?.find((tab) => tab.id === tabId)
+    const effectiveComparisonEncodings = comparisonEncodings ?? existing?.comparisonEncodings ?? (
+      existing?.comparisonSession
+        ? {
+            left: existing.comparisonSession.left.requestedEncoding,
+            right: existing.comparisonSession.right.requestedEncoding,
+          }
+        : undefined
+    )
 
     const requestId = nextRequestId(previewRequestIds, requestKey)
     // Omitting a reveal must not clear the one already on the tab: reopening the
@@ -650,6 +681,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
               ...tab,
               reveal: nextReveal,
               diffSource: kind === 'diff' || diffSource.kind === 'turn' ? diffSource : undefined,
+              comparisonEncodings: kind === 'diff' ? effectiveComparisonEncodings : undefined,
             }),
           ),
         },
@@ -683,6 +715,9 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         kind,
         title: getPathTitle(path),
         textEncoding,
+        ...(kind === 'diff' && effectiveComparisonEncodings
+          ? { comparisonEncodings: effectiveComparisonEncodings }
+          : {}),
         ...(kind === 'diff' || diffSource.kind === 'turn' ? { diffSource } : {}),
         state: 'loading',
         ...(nextReveal ? { reveal: nextReveal } : {}),
@@ -727,9 +762,11 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
               path,
               diffSource.userMessageIndex,
             )
-          : textEncoding === 'auto'
-            ? await sessionsApi.getWorkspaceDiff(sessionId, path)
-            : await sessionsApi.getWorkspaceDiff(sessionId, path, textEncoding)
+          : effectiveComparisonEncodings
+            ? await sessionsApi.getWorkspaceDiff(sessionId, path, textEncoding, effectiveComparisonEncodings)
+            : textEncoding === 'auto'
+              ? await sessionsApi.getWorkspaceDiff(sessionId, path)
+              : await sessionsApi.getWorkspaceDiff(sessionId, path, textEncoding)
         if (!isLatestRequest(previewRequestIds, requestKey, requestId)) return
         if (!get().previewTabsBySession[sessionId]?.some((tab) => tab.id === tabId)) return
 
@@ -745,6 +782,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
                 : upsertPreviewTab(tabs, tabId, (tab) => ({
                     ...tab,
                     diff: result.diff ?? '',
+                    comparison: result.comparison,
                     diffSource,
                     content: undefined,
                     language: undefined,
@@ -752,6 +790,17 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
                     state: result.state,
                     error: result.error,
                     textEncoding,
+                    comparisonEncodings: effectiveComparisonEncodings ?? (result.comparison
+                      ? {
+                          left: result.comparison.left.requestedEncoding,
+                          right: result.comparison.right.requestedEncoding,
+                        }
+                      : undefined),
+                    comparisonSession: isWorkspaceComparisonSessionDirty(tab.comparisonSession)
+                      ? tab.comparisonSession
+                      : tab.comparisonSession
+                        ? reloadWorkspaceComparisonSession(tab.comparisonSession, result.comparison) ?? undefined
+                        : createWorkspaceComparisonSession(result.comparison) ?? undefined,
                   })),
             },
             loading: {
@@ -799,6 +848,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
                   mimeType: result.mimeType,
                   previewType: result.previewType ?? 'text',
                   diff: undefined,
+                  comparison: undefined,
                   language: result.language,
                   size: result.size,
                   state: result.state,
@@ -872,6 +922,29 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
 
   closePreview: (sessionId, tabId) => {
     get().closePreviewTabs(sessionId, tabId, 'current')
+  },
+
+  activatePreview: (sessionId, tabId) => {
+    if (!get().previewTabsBySession[sessionId]?.some((tab) => tab.id === tabId)) return
+    set((state) => ({
+      activePreviewTabIdBySession: {
+        ...state.activePreviewTabIdBySession,
+        [sessionId]: tabId,
+      },
+    }))
+  },
+
+  setComparisonSession: (sessionId, tabId, comparisonSession) => {
+    set((state) => ({
+      previewTabsBySession: {
+        ...state.previewTabsBySession,
+        [sessionId]: upsertPreviewTab(
+          state.previewTabsBySession[sessionId] ?? [],
+          tabId,
+          (tab) => ({ ...tab, comparisonSession: comparisonSession ?? undefined }),
+        ),
+      },
+    }))
   },
 
   closePreviewTabs: (sessionId, tabId, scope) => {

@@ -19,6 +19,7 @@ import {
 
 type Props = {
   toolName: string
+  originId?: string
   input: unknown
   result?: { content: unknown; isError: boolean } | null
   agentTaskNotification?: AgentTaskNotification
@@ -119,7 +120,7 @@ type ContentStats = {
   windowed?: boolean
 }
 
-export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, result, compact = false, isPending = false, status, partialInput, defaultExpanded = false, durationMs }: Props) {
+export const ToolCallBlock = memo(function ToolCallBlock({ toolName, originId, input, result, compact = false, isPending = false, status, partialInput, defaultExpanded = false, durationMs }: Props) {
   const isExitPlanTool = isExitPlanModeTool(toolName)
   const isEnterPlanTool = isEnterPlanModeTool(toolName)
   const [expanded, setExpanded] = useState(defaultExpanded || isExitPlanTool)
@@ -146,7 +147,10 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, resu
   )
   const liveStatsSummary = liveStats ? formatContentStats(liveStats, t) : ''
 
-  const preview = useMemo(() => renderPreview(toolName, obj, result, t), [obj, result, toolName, t])
+  const preview = useMemo(
+    () => renderPreview(toolName, obj, result, originId, t),
+    [obj, originId, result, toolName, t],
+  )
   const details = useMemo(() => renderDetails(toolName, obj, t, isPending ? partialInput : undefined), [isPending, obj, partialInput, toolName, t])
   const hasResultDetails = Boolean(result && extractTextContent(result.content))
   const hasEditPreview = toolName === 'Edit' && typeof obj.old_string === 'string' && typeof obj.new_string === 'string'
@@ -424,6 +428,7 @@ function renderPreview(
   toolName: string,
   obj: Record<string, unknown>,
   result?: { content: unknown; isError: boolean } | null,
+  originId?: string,
   t?: (key: TranslationKey, params?: Record<string, string | number>) => string,
 ) {
   const filePath = typeof obj.file_path === 'string' ? obj.file_path : 'file'
@@ -439,7 +444,13 @@ function renderPreview(
   if (toolName === 'Edit' && typeof obj.old_string === 'string' && typeof obj.new_string === 'string') {
     return (
       <>
-        <DiffViewer filePath={filePath} oldString={obj.old_string} newString={obj.new_string} />
+        <DiffViewer
+          filePath={filePath}
+          oldString={obj.old_string}
+          newString={obj.new_string}
+          scope="replacement-fragment"
+          originId={originId}
+        />
         {resultOutput}
       </>
     )
@@ -448,7 +459,12 @@ function renderPreview(
   if (toolName === 'Write' && typeof obj.content === 'string') {
     return (
       <>
-        <DiffViewer filePath={filePath} oldString="" newString={obj.content} />
+        <DiffViewer
+          filePath={filePath}
+          newString={obj.content}
+          scope="proposed-content"
+          originId={originId}
+        />
         {resultOutput}
       </>
     )

@@ -529,11 +529,17 @@ async function handleSessionWorkspaceRoute(
         readWorkspaceTextEncoding(url),
       ))
     case 'diff':
+    {
+      const sharedEncoding = readWorkspaceTextEncoding(url)
+      const leftEncoding = readWorkspaceSideEncoding(url, 'leftEncoding', sharedEncoding)
+      const rightEncoding = readWorkspaceSideEncoding(url, 'rightEncoding', sharedEncoding)
       return await runWorkspaceDiffRequest(() => workspaceService.getDiff(
         sessionId,
         requireWorkspacePath(url, 'diff'),
-        readWorkspaceTextEncoding(url),
+        leftEncoding,
+        rightEncoding,
       ))
+    }
     default:
       throw ApiError.notFound(`Unknown workspace resource: ${workspaceResource || 'workspace'}`)
   }
@@ -545,11 +551,29 @@ function readWorkspaceTextEncoding(url: URL): 'auto' | 'utf8' | 'gbk' {
   throw ApiError.badRequest('encoding must be auto, utf8, or gbk')
 }
 
+function readWorkspaceSideEncoding(
+  url: URL,
+  parameter: 'leftEncoding' | 'rightEncoding',
+  fallback: 'auto' | 'utf8' | 'gbk',
+): 'auto' | 'utf8' | 'gbk' {
+  const encoding = url.searchParams.get(parameter) ?? fallback
+  if (encoding === 'auto' || encoding === 'utf8' || encoding === 'gbk') return encoding
+  throw ApiError.badRequest(`${parameter} must be auto, utf8, or gbk`)
+}
+
 async function writeSessionWorkspaceFile(req: Request, sessionId: string): Promise<Response> {
   await requireSessionWorkspace(sessionId)
-  let body: { path?: unknown; expectedContent?: unknown; content?: unknown }
+  let body: {
+    path?: unknown
+    expectedContent?: unknown
+    content?: unknown
+    expectedFingerprint?: unknown
+    encoding?: unknown
+    bom?: unknown
+    lineEnding?: unknown
+  }
   try {
-    body = await req.json() as { path?: unknown; expectedContent?: unknown; content?: unknown }
+    body = await req.json() as typeof body
   } catch {
     throw ApiError.badRequest('Expected a JSON workspace file update')
   }
@@ -562,12 +586,39 @@ async function writeSessionWorkspaceFile(req: Request, sessionId: string): Promi
   if (typeof body.content !== 'string' && body.content !== null) {
     throw ApiError.badRequest('content must be a string or null')
   }
+  if (body.expectedFingerprint !== undefined
+    && typeof body.expectedFingerprint !== 'string'
+    && body.expectedFingerprint !== null) {
+    throw ApiError.badRequest('expectedFingerprint must be a string or null when provided')
+  }
+  if (body.encoding !== undefined && body.encoding !== 'utf8' && body.encoding !== 'gbk') {
+    throw ApiError.badRequest('encoding must be utf8 or gbk when provided for writing')
+  }
+  if (body.bom !== undefined && body.bom !== 'utf8' && body.bom !== 'none') {
+    throw ApiError.badRequest('bom must be utf8 or none when provided')
+  }
+  const lineEndings = new Set(['lf', 'crlf', 'cr', 'mixed', 'none', 'unknown'])
+  if (body.lineEnding !== undefined && (typeof body.lineEnding !== 'string' || !lineEndings.has(body.lineEnding))) {
+    throw ApiError.badRequest('lineEnding is invalid')
+  }
+  if (body.expectedFingerprint === undefined
+    && (body.encoding !== undefined || body.bom !== undefined || body.lineEnding !== undefined)) {
+    throw ApiError.badRequest('expectedFingerprint is required for encoded workspace writes')
+  }
 
   const result = await workspaceService.writeTextFile(
     sessionId,
     body.path,
     body.expectedContent,
     body.content,
+    body.expectedFingerprint !== undefined
+      ? {
+          expectedFingerprint: body.expectedFingerprint as string | null,
+          ...(body.encoding ? { encoding: body.encoding as 'utf8' | 'gbk' } : {}),
+          ...(body.bom ? { bom: body.bom as 'utf8' | 'none' } : {}),
+          ...(body.lineEnding ? { lineEnding: body.lineEnding as 'lf' | 'crlf' | 'cr' | 'mixed' | 'none' | 'unknown' } : {}),
+        }
+      : undefined,
   )
   return Response.json(
     result.state === 'conflict' ? { ...result, message: result.error } : result,

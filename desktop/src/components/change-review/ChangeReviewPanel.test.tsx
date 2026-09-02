@@ -16,9 +16,19 @@ const { api } = vi.hoisted(() => ({
 }))
 
 vi.mock('../../api/sessions', () => ({ sessionsApi: api }))
-vi.mock('../workspace/WorkspaceDiffSurface', () => ({
-  WorkspaceDiffSurface: ({ renderHunkAction }: { renderHunkAction?: (hunkId: string) => ReactNode }) => (
-    <div data-testid="workspace-diff-surface">{renderHunkAction?.('hunk-1')}</div>
+vi.mock('../workspace/WorkspaceReadonlyComparisonSurface', () => ({
+  WorkspaceReadonlyComparisonSurface: ({ input, renderHunkAction }: {
+    input: { scope: string; origin: { id: string }; value: string }
+    renderHunkAction?: (hunkId: string) => ReactNode
+  }) => (
+    <div
+      data-testid="workspace-readonly-comparison"
+      data-comparison-scope={input.scope}
+      data-origin-id={input.origin.id}
+      data-value={input.value}
+    >
+      {renderHunkAction?.('hunk-1')}
+    </div>
   ),
 }))
 
@@ -94,7 +104,14 @@ describe('ChangeReviewPanel checkpoint timeline', () => {
       'C:/workspace/src/first.ts',
       0,
     ))
-    expect(screen.getByTestId('workspace-diff-surface')).toBeInTheDocument()
+    const surface = screen.getByTestId('workspace-readonly-comparison')
+    expect(surface).toHaveAttribute('data-comparison-scope', 'positioned-patch')
+    expect(surface).toHaveAttribute(
+      'data-origin-id',
+      'checkpoint:review-session:turn-1:0:C:/workspace/src/first.ts',
+    )
+    expect(surface).toHaveAttribute('data-value', 'diff --git a/file b/file')
+    expect(screen.getByRole('button', { name: 'Revert hunk' })).toBeInTheDocument()
   })
 
   it('filters files and prompt summaries across the whole timeline', async () => {

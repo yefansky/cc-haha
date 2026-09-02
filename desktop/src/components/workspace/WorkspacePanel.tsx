@@ -6,6 +6,7 @@ import {
   type WorkspaceSearchResult,
   type WorkspaceChangedFile,
   type WorkspaceFileStatus,
+  type WorkspaceTextEncoding,
   type WorkspaceTreeEntry,
   type WorkspaceTreeResult,
 } from '../../api/sessions'
@@ -24,6 +25,7 @@ import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextS
 import { useUIStore } from '../../stores/uiStore'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
+import { ActionDialog } from '@/components/ui/ActionDialog'
 import { useDismissable } from '@/hooks/useDismissable'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { getDesktopHost } from '../../lib/desktopHost'
@@ -37,11 +39,17 @@ import {
   getFileExtension,
   normalizePrismLanguage,
   WORKSPACE_PREVIEW_LINE_LIMIT,
-  WorkspaceDiffSurface,
   workspacePrismTheme,
   type WorkspaceDiffCommentSelection,
 } from './WorkspaceCodeSurface'
 import { WorkspaceFileOpenWith } from './WorkspaceFileOpenWith'
+import { WorkspaceSideBySideDiffSurface } from './WorkspaceSideBySideDiffSurface'
+import {
+  discardWorkspaceComparisonSession,
+  isWorkspaceComparisonSessionDirty,
+  saveWorkspaceComparisonSession,
+  type WorkspaceComparisonSourceSide,
+} from './workspaceComparisonSession'
 import { WorkspaceTableSurface } from './WorkspaceTableSurface'
 import { getWorkspaceStatusLabel } from './fileIdentity'
 import type { WorkspaceDiffHighlightToken } from './workspaceDiffHighlighter'
@@ -62,6 +70,14 @@ type WorkspacePanelProps = {
    * depending on the right-side panel's open bit.
    */
   forceVisible?: boolean
+}
+
+type WorkspaceDirtyActionKind = 'refresh' | 'switch' | 'close'
+
+type WorkspacePendingDirtyAction = {
+  kind: WorkspaceDirtyActionKind
+  tabIds: string[]
+  proceed: () => void | Promise<void>
 }
 
 type TreeNodeProps = {
@@ -1391,6 +1407,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const [workspaceSearchLoading, setWorkspaceSearchLoading] = useState(false)
   const [workspaceSearchError, setWorkspaceSearchError] = useState<string | null>(null)
   const [workspaceSearchRevision, setWorkspaceSearchRevision] = useState(0)
+  const [manualRefreshPending, setManualRefreshPending] = useState(false)
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false)
   const [navigatorWidth, setNavigatorWidth] = useState(readWorkspaceNavigatorWidth)
   // The navigator and preview are separate views so narrow workbench tabs do
@@ -1401,6 +1418,10 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const isVscodeLayout = layout === 'vscode'
   const [previewTabContextMenu, setPreviewTabContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null)
+  const [pendingDirtyAction, setPendingDirtyAction] = useState<WorkspacePendingDirtyAction | null>(null)
+  const [comparisonSaving, setComparisonSaving] = useState(false)
+  const [comparisonSaveError, setComparisonSaveError] = useState<string | null>(null)
+  const [encodingChangingSide, setEncodingChangingSide] = useState<WorkspaceComparisonSourceSide | null>(null)
   const previewTabContextMenuRef = useRef<HTMLDivElement>(null)
   const fileContextMenuRef = useRef<HTMLDivElement>(null)
   const width = useWorkspacePanelStore((state) => state.width)
@@ -1428,6 +1449,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const openPreview = useWorkspacePanelStore((state) => state.openPreview)
   const closePreview = useWorkspacePanelStore((state) => state.closePreview)
   const closePreviewTabs = useWorkspacePanelStore((state) => state.closePreviewTabs)
+  const activatePreview = useWorkspacePanelStore((state) => state.activatePreview)
+  const setComparisonSession = useWorkspacePanelStore((state) => state.setComparisonSession)
   const closePanel = useWorkspacePanelStore((state) => state.closePanel)
   const addMountedRoot = useWorkspacePanelStore((state) => state.addMountedRoot)
   const removeMountedRoot = useWorkspacePanelStore((state) => state.removeMountedRoot)
@@ -1440,6 +1463,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     chatState: 'idle',
   })
   const workspaceSearchRequestIdRef = useRef(0)
+  const manualRefreshRequestIdRef = useRef(0)
+  const manualRefreshInFlightRef = useRef(false)
   const filterInputRef = useRef<HTMLInputElement>(null)
   const previewHeaderRef = useRef<HTMLDivElement>(null)
   const workspaceLayoutRef = useRef<HTMLDivElement>(null)
@@ -1565,6 +1590,13 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const activePreviewRefreshState = useWorkspacePanelStore((state) =>
     activePreviewRequestKey ? state.errors.previewRefreshStateByTabId[activePreviewRequestKey] ?? null : null,
   )
+  const workspaceRefreshLoading = manualRefreshPending || statusLoading || activePreviewLoading
+
+  useEffect(() => {
+    manualRefreshRequestIdRef.current += 1
+    manualRefreshInFlightRef.current = false
+    setManualRefreshPending(false)
+  }, [sessionId])
 
   useEffect(() => {
     const previous = refreshLifecycleRef.current
@@ -1735,17 +1767,102 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const panelMaxWidth = hasPreviewTabs ? 'min(62%, calc(100% - 328px))' : '36%'
   const panelMinWidth = hasPreviewTabs ? 'min(420px, 54%)' : 'min(340px, 40%)'
 
-  const handleRefresh = () => {
-    void loadStatus(sessionId, { force: true })
+  const findTabs = (tabIds: string[]) => previewTabs.filter((tab) => tabIds.includes(tab.id))
+
+  const saveComparisonTabs = async (tabs: WorkspacePreviewTab[]) => {
+    setComparisonSaving(true)
+    setComparisonSaveError(null)
+    try {
+      for (const requestedTab of tabs) {
+        const liveTab = useWorkspacePanelStore.getState().previewTabsBySession[sessionId]
+          ?.find((tab) => tab.id === requestedTab.id)
+        if (!liveTab?.comparisonSession || !isWorkspaceComparisonSessionDirty(liveTab.comparisonSession)) continue
+        const outcome = await saveWorkspaceComparisonSession(liveTab.comparisonSession, (request) => (
+          sessionsApi.writeWorkspaceFile(sessionId, request)
+        ))
+        setComparisonSession(sessionId, liveTab.id, outcome.session)
+        if (outcome.state !== 'ok') {
+          setComparisonSaveError(outcome.state === 'conflict'
+            ? t('workspace.diffEdit.saveConflict')
+            : t('workspace.diffEdit.saveFailed', { reason: outcome.error ?? outcome.state }))
+          return false
+        }
+      }
+      return true
+    } finally {
+      setComparisonSaving(false)
+    }
+  }
+
+  const requestDirtyAction = (
+    kind: WorkspaceDirtyActionKind,
+    tabs: WorkspacePreviewTab[],
+    proceed: () => void | Promise<void>,
+  ) => {
+    const dirtyTabs = tabs.filter((tab) => isWorkspaceComparisonSessionDirty(tab.comparisonSession))
+    if (dirtyTabs.length === 0) {
+      void proceed()
+      return
+    }
+    setComparisonSaveError(null)
+    setPendingDirtyAction({ kind, tabIds: dirtyTabs.map((tab) => tab.id), proceed })
+  }
+
+  const performRefresh = async () => {
+    if (manualRefreshInFlightRef.current) return
+    manualRefreshInFlightRef.current = true
+    const requestId = ++manualRefreshRequestIdRef.current
+    setManualRefreshPending(true)
+    const requests: Promise<unknown>[] = [loadStatus(sessionId, { force: true })]
     if (activePreviewTab) {
-      void openPreview(sessionId, activePreviewTab.path, activePreviewTab.kind, undefined, undefined, activePreviewTab.diffSource, activePreviewTab.textEncoding)
+      requests.push(openPreview(sessionId, activePreviewTab.path, activePreviewTab.kind, undefined, undefined, activePreviewTab.diffSource, activePreviewTab.textEncoding))
     }
     if (hasWorkspaceSearch) {
       setWorkspaceSearchRevision((revision) => revision + 1)
     } else if (navigatorView === 'all') {
       const pathsToRefresh = new Set(['', ...expandedPaths, ...mountedRoots.map((root) => root.path)])
-      for (const path of pathsToRefresh) void loadTree(sessionId, path)
+      for (const path of pathsToRefresh) requests.push(loadTree(sessionId, path))
     }
+    await Promise.allSettled(requests)
+    if (manualRefreshRequestIdRef.current === requestId) {
+      manualRefreshInFlightRef.current = false
+      setManualRefreshPending(false)
+    }
+  }
+
+  const handleRefresh = () => {
+    requestDirtyAction('refresh', activePreviewTab ? [activePreviewTab] : [], performRefresh)
+  }
+
+  const handleComparisonEncodingChange = (
+    sourceSide: WorkspaceComparisonSourceSide,
+    encoding: WorkspaceTextEncoding,
+  ) => {
+    if (!activePreviewTab?.comparisonSession || activePreviewTab.kind !== 'diff') return
+    if (activePreviewTab.comparisonSession[sourceSide].requestedEncoding === encoding) return
+    const comparisonEncodings = {
+      left: activePreviewTab.comparisonSession.left.requestedEncoding,
+      right: activePreviewTab.comparisonSession.right.requestedEncoding,
+      [sourceSide]: encoding,
+    }
+    const proceed = async () => {
+      setEncodingChangingSide(sourceSide)
+      try {
+        await openPreview(
+          sessionId,
+          activePreviewTab.path,
+          activePreviewTab.kind,
+          undefined,
+          undefined,
+          activePreviewTab.diffSource,
+          activePreviewTab.textEncoding,
+          comparisonEncodings,
+        )
+      } finally {
+        setEncodingChangingSide(null)
+      }
+    }
+    requestDirtyAction('switch', [activePreviewTab], proceed)
   }
 
   const handleAddWorkspaceFolder = async () => {
@@ -1774,38 +1891,44 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   }
 
   const handleOpenFile = (path: string) => {
-    if (!isVscodeLayout) setIsNavigatorOpen(false)
-    void openPreview(sessionId, path, 'file')
-    if (isHtmlFilePath(path)) {
-      // HTML has a source tab in this workspace already, but its default view
-      // must be the native browser surface. Unlike a renderer iframe, the
-      // Electron WebContentsView is the proven path for local HTML, remote
-      // pages, and their page-level scripts/styles. The workbench's 文件 tab
-      // remains the explicit source-mode switch for this same loaded file.
-      const absolutePath = status?.workDir && !/^(?:[A-Za-z]:[\\/]|\/)/.test(path)
-        ? `${status.workDir.replace(/[\\/]+$/, '')}/${path.replace(/^[/\\]+/, '')}`
-        : path
-      openPreviewLink(absolutePath, sessionId)
+    const proceed = () => {
+      if (!isVscodeLayout) setIsNavigatorOpen(false)
+      void openPreview(sessionId, path, 'file')
+      if (isHtmlFilePath(path)) {
+        // HTML has a source tab in this workspace already, but its default view
+        // must be the native browser surface. Unlike a renderer iframe, the
+        // Electron WebContentsView is the proven path for local HTML, remote
+        // pages, and their page-level scripts/styles. The workbench's 文件 tab
+        // remains the explicit source-mode switch for this same loaded file.
+        const absolutePath = status?.workDir && !/^(?:[A-Za-z]:[\\/]|\/)/.test(path)
+          ? `${status.workDir.replace(/[\\/]+$/, '')}/${path.replace(/^[/\\]+/, '')}`
+          : path
+        openPreviewLink(absolutePath, sessionId)
+      }
+      focusPreviewAfterOpen()
     }
-    focusPreviewAfterOpen()
+    requestDirtyAction('switch', activePreviewTab ? [activePreviewTab] : [], proceed)
   }
 
   const handleTogglePreviewKind = () => {
     if (!activePreviewTab) return
-    const previousTabId = activePreviewTab.id
-    const nextKind: WorkspacePreviewKind = activePreviewTab.kind === 'file' ? 'diff' : 'file'
-    const diffSource = activePreviewTab.diffSource ?? { kind: 'workspace' as const }
-    const nextTabId = getWorkspacePreviewTabId(activePreviewTab.path, nextKind, diffSource)
-    void openPreview(
-      sessionId,
-      activePreviewTab.path,
-      nextKind,
-      undefined,
-      activePreviewTab.reveal,
-      diffSource,
-      activePreviewTab.textEncoding,
-    )
-    if (nextTabId !== previousTabId) closePreview(sessionId, previousTabId)
+    const tab = activePreviewTab
+    requestDirtyAction('switch', [tab], () => {
+      const previousTabId = tab.id
+      const nextKind: WorkspacePreviewKind = tab.kind === 'file' ? 'diff' : 'file'
+      const diffSource = tab.diffSource ?? { kind: 'workspace' as const }
+      const nextTabId = getWorkspacePreviewTabId(tab.path, nextKind, diffSource)
+      void openPreview(
+        sessionId,
+        tab.path,
+        nextKind,
+        undefined,
+        tab.reveal,
+        diffSource,
+        tab.textEncoding,
+      )
+      if (nextTabId !== previousTabId) closePreview(sessionId, previousTabId)
+    })
   }
 
   const clearWorkspaceSearch = () => {
@@ -1904,9 +2027,24 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     setFileContextMenu({ path, isDirectory, x: event.clientX, y: event.clientY })
   }
 
+  const tabsClosedByScope = (tabId: string, scope: WorkspacePreviewCloseScope) => {
+    const index = previewTabs.findIndex((tab) => tab.id === tabId)
+    if (index < 0) return []
+    if (scope === 'all') return previewTabs
+    if (scope === 'others') return previewTabs.filter((_, candidateIndex) => candidateIndex !== index)
+    if (scope === 'left') return previewTabs.slice(0, index)
+    if (scope === 'right') return previewTabs.slice(index + 1)
+    return [previewTabs[index]!]
+  }
+
+  const requestClosePreviewTabs = (tabId: string, scope: WorkspacePreviewCloseScope) => {
+    const closingTabs = tabsClosedByScope(tabId, scope)
+    requestDirtyAction('close', closingTabs, () => closePreviewTabs(sessionId, tabId, scope))
+  }
+
   const handleClosePreviewTabs = (scope: WorkspacePreviewCloseScope) => {
     if (!previewTabContextMenu) return
-    closePreviewTabs(sessionId, previewTabContextMenu.tabId, scope)
+    requestClosePreviewTabs(previewTabContextMenu.tabId, scope)
     setPreviewTabContextMenu(null)
   }
 
@@ -2187,7 +2325,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             </span>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            {activePreviewTab.previewType !== 'image' && (
+            {activePreviewTab.previewType !== 'image' && activePreviewTab.kind !== 'diff' && (
               <IconButton
                 icon={activePreviewTab.kind === 'file'
                   ? <GitCompareArrows size={16} strokeWidth={1.9} aria-hidden="true" />
@@ -2242,15 +2380,16 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                   aria-label={t('workspace.textEncoding')}
                   value={activePreviewTab.textEncoding ?? 'auto'}
                   onChange={(event) => {
-                    void openPreview(
+                    const nextEncoding = event.target.value as 'auto' | 'utf8' | 'gbk'
+                    requestDirtyAction('switch', [activePreviewTab], () => openPreview(
                       sessionId,
                       activePreviewTab.path,
                       activePreviewTab.kind,
                       undefined,
                       undefined,
                       activePreviewTab.diffSource,
-                      event.target.value as 'auto' | 'utf8' | 'gbk',
-                    )
+                      nextEncoding,
+                    ))
                   }}
                   className="h-7 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 text-[10px] text-[var(--color-text-primary)]"
                 >
@@ -2273,7 +2412,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             <IconButton
               icon={<RefreshCw size={16} strokeWidth={1.9} aria-hidden="true" />}
               label={t('workspace.refresh')}
-              onClick={handleRefresh}
+              onClick={() => void handleRefresh()}
+              loading={workspaceRefreshLoading}
               size="md"
               tone="muted"
               showTooltip={false}
@@ -2305,13 +2445,6 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                 showTooltip={false}
               />
             )}
-            {activePreviewLoading && state === 'ok' && (
-              <RefreshCw
-                size={13}
-                className="mx-1 shrink-0 animate-spin text-[var(--color-text-tertiary)]"
-                aria-hidden="true"
-              />
-            )}
           </div>
         </div>
 
@@ -2326,7 +2459,15 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               variant="danger-outline"
               size="sm"
               onClick={() => {
-                void openPreview(sessionId, activePreviewTab.path, activePreviewTab.kind, undefined, undefined, activePreviewTab.diffSource, activePreviewTab.textEncoding)
+                requestDirtyAction('refresh', [activePreviewTab], () => openPreview(
+                  sessionId,
+                  activePreviewTab.path,
+                  activePreviewTab.kind,
+                  undefined,
+                  undefined,
+                  activePreviewTab.diffSource,
+                  activePreviewTab.textEncoding,
+                ))
               }}
               className="shrink-0"
             >
@@ -2340,10 +2481,34 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
         ) : state === 'ok' && activePreviewTab.previewType === 'image' ? (
           <ImagePreview tab={activePreviewTab} />
         ) : state === 'ok' && activePreviewTab.kind === 'diff' ? (
-          <WorkspaceDiffSurface
+          <WorkspaceSideBySideDiffSurface
             value={activePreviewTab.diff ?? ''}
+            comparison={activePreviewTab.comparison}
+            comparisonSession={activePreviewTab.comparisonSession}
             path={activePreviewTab.path}
             hideSingleFileHeader
+            onComparisonSessionChange={(comparisonSession) => {
+              setComparisonSaveError(null)
+              setComparisonSession(sessionId, activePreviewTab.id, comparisonSession)
+            }}
+            onSave={async () => {
+              const saved = await saveComparisonTabs([activePreviewTab])
+              if (saved) {
+                await openPreview(
+                  sessionId,
+                  activePreviewTab.path,
+                  activePreviewTab.kind,
+                  undefined,
+                  undefined,
+                  activePreviewTab.diffSource,
+                  activePreviewTab.textEncoding,
+                )
+              }
+            }}
+            saving={comparisonSaving}
+            saveError={comparisonSaveError}
+            onEncodingChange={handleComparisonEncodingChange}
+            encodingChangingSide={encodingChangingSide}
             onAddComment={(selection, note) => addDiffCommentToChat(activePreviewTab.path, selection, note)}
           />
         ) : state === 'ok' && activeMarkdownView === 'preview' ? (
@@ -2413,7 +2578,10 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                     role="tab"
                     aria-selected={isActive}
                     onClick={() => {
-                      void openPreview(sessionId, tab.path, tab.kind, undefined, undefined, tab.diffSource, tab.textEncoding)
+                      if (isActive) return
+                      requestDirtyAction('switch', activePreviewTab ? [activePreviewTab] : [], () => {
+                        activatePreview(sessionId, tab.id)
+                      })
                     }}
                     className="min-w-0 flex flex-1 items-center gap-2 text-left"
                   >
@@ -2429,7 +2597,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                       icon="close"
                       label={`${t('workspace.closeTab')} ${tab.title} ${kindLabel}`}
                       onClick={() => {
-                        closePreview(sessionId, tab.id)
+                        requestClosePreviewTabs(tab.id, 'current')
                       }}
                       size="2xs"
                       tone="muted"
@@ -2603,7 +2771,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                   <IconButton
                     icon={<RefreshCw size={16} strokeWidth={1.9} aria-hidden="true" />}
                     label={t('workspace.refresh')}
-                    onClick={handleRefresh}
+                    onClick={() => void handleRefresh()}
+                    loading={workspaceRefreshLoading}
                     size="md"
                     tone="muted"
                     showTooltip={false}
@@ -2710,6 +2879,62 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
           />
         </div>
       )}
+      <ActionDialog
+        open={Boolean(pendingDirtyAction)}
+        onClose={() => {
+          if (!comparisonSaving) setPendingDirtyAction(null)
+        }}
+        title={t('workspace.diffEdit.dirtyTitle')}
+        body={pendingDirtyAction
+          ? (
+              <div className="space-y-2">
+                <p className="text-sm leading-6 text-[var(--color-text-secondary)]">
+                  {t('workspace.diffEdit.dirtyBody', {
+                    action: t(`workspace.diffEdit.action.${pendingDirtyAction.kind}`),
+                  })}
+                </p>
+                {comparisonSaveError && (
+                  <p role="alert" className="text-sm leading-6 text-[var(--color-error)]">{comparisonSaveError}</p>
+                )}
+              </div>
+            )
+          : null}
+        actions={[
+          {
+            label: t('common.cancel'),
+            onClick: () => setPendingDirtyAction(null),
+          },
+          {
+            label: t('workspace.diffEdit.discard'),
+            variant: 'danger',
+            onClick: async () => {
+              if (!pendingDirtyAction) return
+              for (const tab of findTabs(pendingDirtyAction.tabIds)) {
+                if (tab.comparisonSession) {
+                  setComparisonSession(sessionId, tab.id, discardWorkspaceComparisonSession(tab.comparisonSession))
+                }
+              }
+              const proceed = pendingDirtyAction.proceed
+              setPendingDirtyAction(null)
+              setComparisonSaveError(null)
+              await proceed()
+            },
+          },
+          {
+            label: t('common.save'),
+            variant: 'primary',
+            loading: comparisonSaving,
+            onClick: async () => {
+              if (!pendingDirtyAction) return
+              const saved = await saveComparisonTabs(findTabs(pendingDirtyAction.tabIds))
+              if (!saved) return
+              const proceed = pendingDirtyAction.proceed
+              setPendingDirtyAction(null)
+              await proceed()
+            },
+          },
+        ]}
+      />
     </aside>
   )
 }
