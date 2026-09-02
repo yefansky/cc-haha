@@ -1777,6 +1777,11 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     resolvedSessionId ? s.sessions[resolvedSessionId] : undefined,
   )
   const branchSession = useSessionStore((s) => s.branchSession)
+  const sessionWorkDir = useSessionStore((s) => (
+    resolvedSessionId
+      ? s.sessions.find((session) => session.id === resolvedSessionId)?.workDir ?? null
+      : null
+  ))
   const stopGeneration = useChatStore((s) => s.stopGeneration)
   const sendMessage = useChatStore((s) => s.sendMessage)
   const reloadHistory = useChatStore((s) => s.reloadHistory)
@@ -2515,11 +2520,8 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     setIsLoadingTurnChangeCards(true)
     setTurnChangeLoadError(null)
 
-    Promise.all([
-      sessionsApi.getTurnCheckpoints(resolvedSessionId),
-      sessionsApi.getWorkspaceStatus(resolvedSessionId).catch(() => null),
-    ])
-      .then(([checkpointResponse, workspaceStatus]) => {
+    sessionsApi.getTurnCheckpoints(resolvedSessionId)
+      .then((checkpointResponse) => {
         if (cancelled) return
         const targetByTranscriptMessageId = new Map<string, RewindTurnTarget>()
         for (const target of completedTurnTargets) {
@@ -2542,7 +2544,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
             return [{
               target,
               checkpoint,
-              workDir: checkpoint.workDir ?? workspaceStatus?.workDir ?? null,
+              workDir: checkpoint.workDir ?? sessionWorkDir,
               isLatest: target.uiMessageId === latestCompletedTurnId,
             }]
           }),
@@ -2562,7 +2564,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     return () => {
       cancelled = true
     }
-  }, [chatState, completedTurnTargets, hasRunningBackgroundTasks, historyMutationEpoch, isMemberSession, latestCompletedTurnId, resolvedSessionId])
+  }, [chatState, completedTurnTargets, hasRunningBackgroundTasks, historyMutationEpoch, isMemberSession, latestCompletedTurnId, resolvedSessionId, sessionWorkDir])
 
   const handleUndoCurrentTurn = useCallback(async (mode: SessionRewindMode = 'both') => {
     if (!resolvedSessionId || !confirmTurnCard || rewindingTurnId || hasRunningBackgroundTasks) return

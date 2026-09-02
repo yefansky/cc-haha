@@ -423,6 +423,8 @@ export function parseStatus(code: string): WorkspaceFileStatus {
 }
 
 export class WorkspaceService {
+  private readonly statusRequestsInFlight = new Map<string, Promise<WorkspaceStatusResult>>()
+
   constructor(
     private readonly resolveSessionWorkDir: (
       sessionId: string,
@@ -454,6 +456,21 @@ export class WorkspaceService {
   }
 
   async getStatus(sessionId: string): Promise<WorkspaceStatusResult> {
+    const existingRequest = this.statusRequestsInFlight.get(sessionId)
+    if (existingRequest) return existingRequest
+
+    const request = this.computeStatus(sessionId)
+    this.statusRequestsInFlight.set(sessionId, request)
+    try {
+      return await request
+    } finally {
+      if (this.statusRequestsInFlight.get(sessionId) === request) {
+        this.statusRequestsInFlight.delete(sessionId)
+      }
+    }
+  }
+
+  private async computeStatus(sessionId: string): Promise<WorkspaceStatusResult> {
     const workDir = await this.requireWorkDir(sessionId)
     const workspaceInfo = await this.getWorkspaceRoot(workDir)
     if (workspaceInfo.kind === 'missing') {

@@ -975,7 +975,7 @@ describe('workspacePanelStore', () => {
       .mockReturnValueOnce(second.promise)
 
     const firstLoad = useWorkspacePanelStore.getState().loadStatus('session-race')
-    const secondLoad = useWorkspacePanelStore.getState().loadStatus('session-race')
+    const secondLoad = useWorkspacePanelStore.getState().loadStatus('session-race', { force: true })
 
     second.resolve({
       state: 'ok',
@@ -998,6 +998,41 @@ describe('workspacePanelStore', () => {
     await firstLoad
 
     expect(useWorkspacePanelStore.getState().statusBySession['session-race']?.branch).toBe('new')
+  })
+
+  it('coalesces concurrent status loads and skips repeated preloads after success', async () => {
+    const status = deferred<{
+      state: 'ok'
+      workDir: string
+      repoName: string | null
+      branch: string | null
+      isGitRepo: boolean
+      changedFiles: []
+    }>()
+    mocks.getWorkspaceStatusMock.mockReturnValue(status.promise)
+
+    const loads = Array.from({ length: 24 }, () => (
+      useWorkspacePanelStore.getState().loadStatus('session-single-flight')
+    ))
+    expect(mocks.getWorkspaceStatusMock).toHaveBeenCalledTimes(1)
+
+    status.resolve({
+      state: 'ok',
+      workDir: '/repo',
+      repoName: 'repo',
+      branch: 'main',
+      isGitRepo: true,
+      changedFiles: [],
+    })
+    await Promise.all(loads)
+
+    for (let index = 0; index < 24; index += 1) {
+      useWorkspacePanelStore.getState().preloadStatus('session-single-flight')
+    }
+    expect(mocks.getWorkspaceStatusMock).toHaveBeenCalledTimes(1)
+
+    await useWorkspacePanelStore.getState().loadStatus('session-single-flight')
+    expect(mocks.getWorkspaceStatusMock).toHaveBeenCalledTimes(2)
   })
 
   it('ignores stale preview responses after close and reopen', async () => {

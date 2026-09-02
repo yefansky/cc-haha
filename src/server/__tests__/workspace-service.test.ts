@@ -199,6 +199,29 @@ describe('WorkspaceService outside-workspace preview', () => {
 })
 
 describe('WorkspaceService', () => {
+  it('coalesces concurrent status requests for the same session', async () => {
+    const missingWorkDir = path.join(os.tmpdir(), `workspace-service-missing-${crypto.randomUUID()}`)
+    let resolveWorkDir!: (value: string) => void
+    const workDirPromise = new Promise<string>((resolve) => { resolveWorkDir = resolve })
+    let resolverCalls = 0
+    const service = new WorkspaceService(async () => {
+      resolverCalls += 1
+      return workDirPromise
+    })
+
+    const requests = Array.from({ length: 24 }, () => service.getStatus('session-single-flight'))
+    expect(resolverCalls).toBe(1)
+    resolveWorkDir(missingWorkDir)
+
+    const results = await Promise.all(requests)
+    expect(results).toHaveLength(24)
+    expect(results.every((result) => result.state === 'missing_workdir')).toBe(true)
+    expect(resolverCalls).toBe(1)
+
+    await service.getStatus('session-single-flight')
+    expect(resolverCalls).toBe(2)
+  })
+
   it('discovers common Windows SVN installations when the desktop PATH omits svn', () => {
     expect(resolveSvnExecutableCandidates({
       SVN_EXECUTABLE: 'D:\\PortableSVN\\svn.exe',

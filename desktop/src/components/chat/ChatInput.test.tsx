@@ -106,6 +106,7 @@ import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useTabStore } from '../../stores/tabStore'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { browserHost } from '../../lib/desktopHost/browserHost'
 
@@ -355,6 +356,22 @@ describe('ChatInput file mentions', () => {
       'This temporary workspace was cleaned up. Start a new session in the original project to continue.',
     )
     expect(editor).toHaveAttribute('contenteditable', 'false')
+  })
+
+  it('does not start a workspace status scan while the user is only typing', () => {
+    const preloadStatus = vi.spyOn(useWorkspacePanelStore.getState(), 'preloadStatus')
+    try {
+      render(<ChatInput />)
+
+      act(() => {
+        setComposerText('typing must stay independent from SVN status', 43)
+      })
+
+      expect(getComposerText()).toBe('typing must stay independent from SVN status')
+      expect(preloadStatus).not.toHaveBeenCalled()
+    } finally {
+      preloadStatus.mockRestore()
+    }
   })
 
   it('passes diff metadata to the composer card and clears the reference after send', async () => {

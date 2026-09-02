@@ -190,6 +190,7 @@ function persistMountedRoots(roots: WorkspaceMountedRoot[]): void {
 }
 
 const statusRequestIds = new Map<string, number>()
+const statusRequestsInFlight = new Map<string, Promise<void>>()
 const treeRequestIds = new Map<string, number>()
 const previewRequestIds = new Map<string, number>()
 const WORKSPACE_STATUS_CACHE_TTL_MS = 15_000
@@ -417,71 +418,95 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     }))
   },
 
-  loadStatus: async (sessionId, options) => {
-    const requestId = nextRequestId(statusRequestIds, sessionId)
-    const knownWorkDirKey = get().workDirKeyBySession[sessionId]
-    const cached = knownWorkDirKey ? get().statusCacheByWorkDir[knownWorkDirKey] : undefined
+  loadStatus: (sessionId, options) => {
+    const existingRequest = statusRequestsInFlight.get(sessionId)
+    if (!options?.force && existingRequest) return existingRequest
 
-    // A session's normal reload remains a real refresh. The cache is for a
-    // different session that happens to point at the same checkout.
-    if (!options?.force && !get().statusBySession[sessionId] && cached && Date.now() - cached.loadedAt < WORKSPACE_STATUS_CACHE_TTL_MS) {
+    const request = (async () => {
+      const requestId = nextRequestId(statusRequestIds, sessionId)
+      const knownWorkDirKey = get().workDirKeyBySession[sessionId]
+      const cached = knownWorkDirKey ? get().statusCacheByWorkDir[knownWorkDirKey] : undefined
+
+      // A session's normal reload remains a real refresh. The cache is for a
+      // different session that happens to point at the same checkout.
+      if (!options?.force && !get().statusBySession[sessionId] && cached && Date.now() - cached.loadedAt < WORKSPACE_STATUS_CACHE_TTL_MS) {
+        set((state) => ({
+          statusBySession: { ...state.statusBySession, [sessionId]: cached.result },
+          loading: {
+            ...state.loading,
+            statusBySession: { ...state.loading.statusBySession, [sessionId]: false },
+          },
+          errors: {
+            ...state.errors,
+            statusBySession: { ...state.errors.statusBySession, [sessionId]: cached.result.error ?? null },
+          },
+        }))
+        return
+      }
+
       set((state) => ({
-        statusBySession: { ...state.statusBySession, [sessionId]: cached.result },
         loading: {
           ...state.loading,
-          statusBySession: { ...state.loading.statusBySession, [sessionId]: false },
+          statusBySession: {
+            ...state.loading.statusBySession,
+            [sessionId]: true,
+          },
         },
         errors: {
           ...state.errors,
-          statusBySession: { ...state.errors.statusBySession, [sessionId]: cached.result.error ?? null },
+          statusBySession: {
+            ...state.errors.statusBySession,
+            [sessionId]: null,
+          },
         },
       }))
-      return
-    }
 
-    set((state) => ({
-      loading: {
-        ...state.loading,
-        statusBySession: {
-          ...state.loading.statusBySession,
-          [sessionId]: true,
-        },
-      },
-      errors: {
-        ...state.errors,
-        statusBySession: {
-          ...state.errors.statusBySession,
-          [sessionId]: null,
-        },
-      },
-    }))
+      try {
+        const result = await sessionsApi.getWorkspaceStatus(sessionId)
+        if (!isLatestRequest(statusRequestIds, sessionId, requestId)) return
 
-    try {
-      const result = await sessionsApi.getWorkspaceStatus(sessionId)
-      if (!isLatestRequest(statusRequestIds, sessionId, requestId)) return
-
-      set((state) => {
-        const panel = getSessionPanelState(state.panelBySession, sessionId)
-        const workDirKey = getWorkDirCacheKey(result.workDir)
-        return {
-          panelBySession: {
-            ...state.panelBySession,
-            [sessionId]: {
-              ...panel,
+        set((state) => {
+          const panel = getSessionPanelState(state.panelBySession, sessionId)
+          const workDirKey = getWorkDirCacheKey(result.workDir)
+          return {
+            panelBySession: {
+              ...state.panelBySession,
+              [sessionId]: {
+                ...panel,
+              },
             },
-          },
-          statusBySession: {
-            ...state.statusBySession,
-            [sessionId]: result,
-          },
-          statusCacheByWorkDir: {
-            ...state.statusCacheByWorkDir,
-            [workDirKey]: { result, loadedAt: Date.now() },
-          },
-          workDirKeyBySession: {
-            ...state.workDirKeyBySession,
-            [sessionId]: workDirKey,
-          },
+            statusBySession: {
+              ...state.statusBySession,
+              [sessionId]: result,
+            },
+            statusCacheByWorkDir: {
+              ...state.statusCacheByWorkDir,
+              [workDirKey]: { result, loadedAt: Date.now() },
+            },
+            workDirKeyBySession: {
+              ...state.workDirKeyBySession,
+              [sessionId]: workDirKey,
+            },
+            loading: {
+              ...state.loading,
+              statusBySession: {
+                ...state.loading.statusBySession,
+                [sessionId]: false,
+              },
+            },
+            errors: {
+              ...state.errors,
+              statusBySession: {
+                ...state.errors.statusBySession,
+                [sessionId]: result.error ?? null,
+              },
+            },
+          }
+        })
+      } catch (error) {
+        if (!isLatestRequest(statusRequestIds, sessionId, requestId)) return
+
+        set((state) => ({
           loading: {
             ...state.loading,
             statusBySession: {
@@ -493,34 +518,25 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
             ...state.errors,
             statusBySession: {
               ...state.errors.statusBySession,
-              [sessionId]: result.error ?? null,
+              [sessionId]: error instanceof Error ? error.message : 'Failed to load workspace status',
             },
           },
-        }
-      })
-    } catch (error) {
-      if (!isLatestRequest(statusRequestIds, sessionId, requestId)) return
+        }))
+      }
+    })()
 
-      set((state) => ({
-        loading: {
-          ...state.loading,
-          statusBySession: {
-            ...state.loading.statusBySession,
-            [sessionId]: false,
-          },
-        },
-        errors: {
-          ...state.errors,
-          statusBySession: {
-            ...state.errors.statusBySession,
-            [sessionId]: error instanceof Error ? error.message : 'Failed to load workspace status',
-          },
-        },
-      }))
-    }
+    if (options?.force) return request
+    statusRequestsInFlight.set(sessionId, request)
+    return request.finally(() => {
+      if (statusRequestsInFlight.get(sessionId) === request) {
+        statusRequestsInFlight.delete(sessionId)
+      }
+    })
   },
 
   preloadStatus: (sessionId) => {
+    const state = get()
+    if (state.statusBySession[sessionId] || state.loading.statusBySession[sessionId]) return
     void get().loadStatus(sessionId)
   },
 

@@ -5562,6 +5562,7 @@ describe('MessageList nested tool calls', () => {
     expect(screen.getByText('first.ts')).toBeTruthy()
     expect(screen.getByText('second.ts')).toBeTruthy()
     expect(screen.queryByText('third.ts')).toBeNull()
+    expect(sessionsApi.getWorkspaceStatus).not.toHaveBeenCalled()
   })
 
   it('opens the turn snapshot diff when a historical turn change row is clicked', async () => {
