@@ -26,6 +26,8 @@ $localAppData = Join-Path $testRoot 'AppData\Local'
 $userProfile = Join-Path $testRoot 'UserProfile'
 $appExe = Join-Path $installDir 'Claude Code Haha.exe'
 $uninstaller = Join-Path $installDir 'Uninstall Claude Code Haha.exe'
+$desktopDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+$desktopShortcut = Join-Path $desktopDirectory 'Claude Code Haha.lnk'
 $recoveryHelper = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\build\recover-legacy-install-data.ps1')).Path
 $processHelper = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\build\check-install-processes.ps1')).Path
 $siblingProcess = $null
@@ -417,6 +419,25 @@ try {
   if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
     throw "Fresh install did not create the application executable: $appExe"
   }
+  if (-not (Test-Path -LiteralPath $desktopShortcut -PathType Leaf)) {
+    throw "Fresh install did not create the desktop shortcut: $desktopShortcut"
+  }
+  $shortcutShell = New-Object -ComObject WScript.Shell
+  $installedShortcut = $null
+  try {
+    $installedShortcut = $shortcutShell.CreateShortcut($desktopShortcut)
+    if ([IO.Path]::GetFullPath($installedShortcut.TargetPath) -ne [IO.Path]::GetFullPath($appExe)) {
+      throw "Desktop shortcut target '$($installedShortcut.TargetPath)' does not match installed app '$appExe'."
+    }
+    if (-not $installedShortcut.IconLocation.StartsWith($appExe, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Desktop shortcut icon '$($installedShortcut.IconLocation)' does not come from installed app '$appExe'."
+    }
+  } finally {
+    if ($null -ne $installedShortcut) {
+      [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installedShortcut)
+    }
+    [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcutShell)
+  }
   Invoke-InstalledApplicationSmoke `
     -FilePath $appExe `
     -InstallDirectory $installDir `
@@ -521,6 +542,9 @@ try {
   }
   if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
     Invoke-CheckedProcess -FilePath $uninstaller -Stage 'Cleanup uninstall' -Arguments @('/S', '/KEEP_APP_DATA', '/currentuser') -TimeoutSeconds 120
+  }
+  if (Test-Path -LiteralPath $desktopShortcut -PathType Leaf) {
+    throw "Cleanup uninstall left the desktop shortcut behind: $desktopShortcut"
   }
   foreach ($name in $savedEnvironment.Keys) {
     $value = $savedEnvironment[$name]
