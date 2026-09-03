@@ -372,6 +372,37 @@ describe('remote H5 auth and CORS integration', () => {
     expect(desktopResponse.status).toBe(200)
   })
 
+  test('allows authenticated desktop API requests to complete their loopback CORS preflight', async () => {
+    process.env.CC_HAHA_LOCAL_ACCESS_TOKEN = 'desktop-local-secret'
+    await restartRemoteServer()
+
+    const preflight = await fetch(`${baseUrl}/api/status`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://localhost:1420',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'authorization,content-type',
+      },
+    })
+
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:1420')
+    expect(preflight.headers.get('Access-Control-Allow-Headers')).toContain('Authorization')
+
+    const tokenlessResponse = await fetch(`${baseUrl}/api/status`, {
+      headers: { Origin: 'http://localhost:1420' },
+    })
+    expect(tokenlessResponse.status).toBe(403)
+
+    const desktopResponse = await fetch(`${baseUrl}/api/status`, {
+      headers: {
+        Origin: 'http://localhost:1420',
+        Authorization: 'Bearer desktop-local-secret',
+      },
+    })
+    expect(desktopResponse.status).toBe(200)
+  })
+
   test('still requires the desktop process token for the H5 control plane', async () => {
     process.env.CC_HAHA_LOCAL_ACCESS_TOKEN = 'desktop-local-secret'
     await restartRemoteServer()

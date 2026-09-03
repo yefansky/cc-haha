@@ -412,7 +412,7 @@ describe('workspacePanelStore', () => {
     expect(useWorkspacePanelStore.getState().getMode('session-preview-mode')).toBe('workspace')
   })
 
-  it('opens preview tabs, supports multiple kinds, and refreshes duplicates without persistence', async () => {
+  it('opens preview tabs, supports multiple kinds, and reuses duplicates without persistence', async () => {
     const storage = typeof globalThis.localStorage === 'undefined' ? null : globalThis.localStorage
     const setItemSpy = storage ? vi.spyOn(storage, 'setItem') : null
 
@@ -434,7 +434,7 @@ describe('workspacePanelStore', () => {
     await useWorkspacePanelStore.getState().openPreview('session-preview', 'src/a.ts', 'diff')
     await useWorkspacePanelStore.getState().openPreview('session-preview', 'src/a.ts', 'file')
 
-    expect(mocks.getWorkspaceFileMock).toHaveBeenCalledTimes(2)
+    expect(mocks.getWorkspaceFileMock).toHaveBeenCalledTimes(1)
     expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(1)
 
     const tabs = useWorkspacePanelStore.getState().previewTabsBySession['session-preview']
@@ -545,7 +545,9 @@ describe('workspacePanelStore', () => {
       'auto',
       { left: 'gbk', right: 'utf8' },
     )
-    await useWorkspacePanelStore.getState().openPreview('session-encoding', '-中文.txt', 'diff')
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-encoding', '-中文.txt', 'diff', undefined, undefined, undefined, undefined, undefined, { force: true },
+    )
 
     expect(mocks.getWorkspaceDiffMock).toHaveBeenNthCalledWith(
       1,
@@ -570,7 +572,7 @@ describe('workspacePanelStore', () => {
     })
   })
 
-  it('preserves a dirty comparison session when an unguarded refresh result arrives', async () => {
+  it('preserves a dirty comparison session when a forced refresh result arrives', async () => {
     const comparison = {
       schemaVersion: 1 as const,
       left: {
@@ -597,8 +599,11 @@ describe('workspacePanelStore', () => {
       diff: 'external',
       comparison: { ...comparison, right: { ...comparison.right, content: 'external\n' } },
     })
-    await useWorkspacePanelStore.getState().openPreview('session-dirty-refresh', 'src/a.ts', 'diff')
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-dirty-refresh', 'src/a.ts', 'diff', undefined, undefined, undefined, undefined, undefined, { force: true },
+    )
 
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
     expect(useWorkspacePanelStore.getState().previewTabsBySession['session-dirty-refresh']?.[0]?.comparisonSession).toMatchObject({
       right: { content: 'in memory\n', originContent: 'after\n', dirty: true },
     })
@@ -697,32 +702,198 @@ describe('workspacePanelStore', () => {
     }])
   })
 
-  it('refreshes an existing preview tab when the same path is opened again', async () => {
+  it('reuses an existing successful preview when the same request identity is opened again', async () => {
     mocks.getWorkspaceDiffMock
       .mockResolvedValueOnce({
         state: 'ok',
         path: 'src/a.ts',
         diff: '@@ -1 +1 @@\n-old\n+first',
       })
-      .mockResolvedValueOnce({
-        state: 'ok',
-        path: 'src/a.ts',
-        diff: '@@ -1 +1 @@\n-old\n+latest',
-      })
 
     await useWorkspacePanelStore.getState().openPreview('session-refresh', 'src/a.ts', 'diff')
     await useWorkspacePanelStore.getState().openPreview('session-refresh', 'src/a.ts', 'diff')
 
-    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledOnce()
     expect(useWorkspacePanelStore.getState().previewTabsBySession['session-refresh']).toMatchObject([
       {
         id: 'diff:src/a.ts',
         kind: 'diff',
         path: 'src/a.ts',
-        diff: '@@ -1 +1 @@\n-old\n+latest',
+        diff: '@@ -1 +1 @@\n-old\n+first',
       },
     ])
+    expect(useWorkspacePanelStore.getState().loading.previewByTabId['session-refresh::diff:src/a.ts']).toBe(false)
     expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession['session-refresh']).toBe('diff:src/a.ts')
+  })
+
+  it('preloads one preview without opening UI and shares the in-flight request with the first open', async () => {
+    const preview = deferred<{ state: 'ok'; path: string; diff: string }>()
+    mocks.getWorkspaceDiffMock.mockReturnValue(preview.promise)
+
+    const preload = useWorkspacePanelStore.getState().preloadPreview(
+      'session-preload', 'src/a.ts', 'diff', { kind: 'workspace' },
+    )
+    const opening = useWorkspacePanelStore.getState().openPreview(
+      'session-preload', 'src/a.ts', 'diff', undefined, undefined, { kind: 'workspace' },
+    )
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledOnce()
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-preload']).toEqual([
+      expect.objectContaining({ id: 'diff:src/a.ts', state: 'loading' }),
+    ])
+    preview.resolve({ state: 'ok', path: 'src/a.ts', diff: 'prefetched' })
+    await Promise.all([preload, opening])
+
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-preload']).toEqual([
+      expect.objectContaining({ id: 'diff:src/a.ts', state: 'ok', diff: 'prefetched' }),
+    ])
+  })
+
+  it('keeps a completed preload invisible until open consumes it without another request', async () => {
+    mocks.getWorkspaceDiffMock.mockResolvedValue({ state: 'ok', path: 'src/a.ts', diff: 'warm' })
+
+    await useWorkspacePanelStore.getState().preloadPreview(
+      'session-warm-cache', 'src/a.ts', 'diff', { kind: 'workspace' },
+    )
+
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-warm-cache']).toBeUndefined()
+    expect(useWorkspacePanelStore.getState().isPanelOpen('session-warm-cache')).toBe(false)
+
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-warm-cache', 'src/a.ts', 'diff', undefined, undefined, { kind: 'workspace' },
+    )
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledOnce()
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-warm-cache']).toEqual([
+      expect.objectContaining({ state: 'ok', diff: 'warm' }),
+    ])
+  })
+
+  it('does not let a stale preload overwrite a newer forced result in the cache', async () => {
+    const stale = deferred<{ state: 'ok'; path: string; diff: string }>()
+    const fresh = deferred<{ state: 'ok'; path: string; diff: string }>()
+    mocks.getWorkspaceDiffMock
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(fresh.promise)
+
+    const preload = useWorkspacePanelStore.getState().preloadPreview(
+      'session-preload-race', 'src/a.ts', 'diff', { kind: 'workspace' },
+    )
+    const forcedOpen = useWorkspacePanelStore.getState().openPreview(
+      'session-preload-race', 'src/a.ts', 'diff', undefined, undefined, undefined, undefined, undefined, { force: true },
+    )
+    fresh.resolve({ state: 'ok', path: 'src/a.ts', diff: 'fresh' })
+    await forcedOpen
+    stale.resolve({ state: 'ok', path: 'src/a.ts', diff: 'stale' })
+    await preload
+
+    useWorkspacePanelStore.getState().closePreview('session-preload-race', 'diff:src/a.ts')
+    await useWorkspacePanelStore.getState().openPreview('session-preload-race', 'src/a.ts', 'diff')
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-preload-race']).toEqual([
+      expect.objectContaining({ state: 'ok', diff: 'fresh' }),
+    ])
+  })
+
+  it('does not let a request from before clearSession overwrite a reopened session cache', async () => {
+    const stale = deferred<{ state: 'ok'; path: string; diff: string }>()
+    const fresh = deferred<{ state: 'ok'; path: string; diff: string }>()
+    mocks.getWorkspaceDiffMock
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(fresh.promise)
+
+    const stalePreload = useWorkspacePanelStore.getState().preloadPreview(
+      'session-clear-preload-race', 'src/a.ts', 'diff', { kind: 'workspace' },
+    )
+    useWorkspacePanelStore.getState().clearSession('session-clear-preload-race')
+    const reopened = useWorkspacePanelStore.getState().openPreview(
+      'session-clear-preload-race', 'src/a.ts', 'diff',
+    )
+
+    fresh.resolve({ state: 'ok', path: 'src/a.ts', diff: 'fresh-after-clear' })
+    await reopened
+    stale.resolve({ state: 'ok', path: 'src/a.ts', diff: 'stale-before-clear' })
+    await stalePreload
+
+    useWorkspacePanelStore.getState().closePreview('session-clear-preload-race', 'diff:src/a.ts')
+    await useWorkspacePanelStore.getState().openPreview('session-clear-preload-race', 'src/a.ts', 'diff')
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-clear-preload-race']).toEqual([
+      expect.objectContaining({ state: 'ok', diff: 'fresh-after-clear' }),
+    ])
+  })
+
+  it('keeps the forced default-encoding payload after closing and reopening the tab', async () => {
+    mocks.getWorkspaceDiffMock
+      .mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: 'old' })
+      .mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: 'fresh' })
+
+    await useWorkspacePanelStore.getState().openPreview('session-default-encoding-cache', 'src/a.ts', 'diff')
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-default-encoding-cache', 'src/a.ts', 'diff', undefined, undefined, undefined, undefined, undefined, { force: true },
+    )
+    useWorkspacePanelStore.getState().closePreview('session-default-encoding-cache', 'diff:src/a.ts')
+    await useWorkspacePanelStore.getState().openPreview('session-default-encoding-cache', 'src/a.ts', 'diff')
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-default-encoding-cache']).toEqual([
+      expect.objectContaining({ state: 'ok', diff: 'fresh' }),
+    ])
+  })
+
+  it('invalidates a clean workspace preview after a forced status refresh', async () => {
+    mocks.getWorkspaceDiffMock
+      .mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: 'before-turn' })
+      .mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: 'after-turn' })
+    mocks.getWorkspaceStatusMock.mockResolvedValue({
+      state: 'ok', workDir: '/repo', repoName: 'repo', branch: 'main', isGitRepo: true,
+      changedFiles: [{ path: 'src/a.ts', status: 'modified', additions: 1, deletions: 1 }],
+    })
+
+    await useWorkspacePanelStore.getState().openPreview('session-turn-invalidates', 'src/a.ts', 'diff')
+    await useWorkspacePanelStore.getState().loadStatus('session-turn-invalidates', { force: true })
+    await useWorkspacePanelStore.getState().openPreview('session-turn-invalidates', 'src/a.ts', 'diff')
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-turn-invalidates']).toEqual([
+      expect.objectContaining({ diff: 'after-turn' }),
+    ])
+  })
+
+  it('forces a successful preview reload only when explicitly requested', async () => {
+    mocks.getWorkspaceDiffMock
+      .mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: 'first' })
+      .mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: 'latest' })
+
+    await useWorkspacePanelStore.getState().openPreview('session-force-refresh', 'src/a.ts', 'diff')
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-force-refresh', 'src/a.ts', 'diff', undefined, undefined, undefined, undefined, undefined, { force: true },
+    )
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-force-refresh']).toEqual([
+      expect.objectContaining({ diff: 'latest' }),
+    ])
+  })
+
+  it('invalidates a cached preview when either comparison encoding changes', async () => {
+    mocks.getWorkspaceDiffMock
+      .mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: 'auto' })
+      .mockResolvedValueOnce({ state: 'ok', path: 'src/a.ts', diff: 'gbk-right' })
+
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-cache-encoding', 'src/a.ts', 'diff', undefined, undefined, undefined, 'auto', { left: 'auto', right: 'auto' },
+    )
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-cache-encoding', 'src/a.ts', 'diff', undefined, undefined, undefined, 'auto', { left: 'auto', right: 'gbk' },
+    )
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-cache-encoding']).toEqual([
+      expect.objectContaining({ diff: 'gbk-right', comparisonEncodings: { left: 'auto', right: 'gbk' } }),
+    ])
   })
 
   it('keeps the last successful preview payload while a refresh is pending and after it fails', async () => {
@@ -736,7 +907,9 @@ describe('workspacePanelStore', () => {
       .mockReturnValueOnce(refresh.promise)
 
     await useWorkspacePanelStore.getState().openPreview('session-stale-refresh', 'src/a.ts', 'diff')
-    const refreshPromise = useWorkspacePanelStore.getState().openPreview('session-stale-refresh', 'src/a.ts', 'diff')
+    const refreshPromise = useWorkspacePanelStore.getState().openPreview(
+      'session-stale-refresh', 'src/a.ts', 'diff', undefined, undefined, undefined, undefined, undefined, { force: true },
+    )
     const previewKey = 'session-stale-refresh::diff:src/a.ts'
 
     expect(useWorkspacePanelStore.getState().previewTabsBySession['session-stale-refresh']).toEqual([
@@ -769,7 +942,9 @@ describe('workspacePanelStore', () => {
       })
 
     await useWorkspacePanelStore.getState().openPreview('session-file-refresh-error', 'src/a.ts', 'file')
-    await useWorkspacePanelStore.getState().openPreview('session-file-refresh-error', 'src/a.ts', 'file')
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-file-refresh-error', 'src/a.ts', 'file', undefined, undefined, undefined, undefined, undefined, { force: true },
+    )
 
     expect(useWorkspacePanelStore.getState().previewTabsBySession['session-file-refresh-error']).toEqual([
       expect.objectContaining({ state: 'ok', content: 'cached file', language: 'typescript' }),
@@ -793,7 +968,9 @@ describe('workspacePanelStore', () => {
       })
 
     await useWorkspacePanelStore.getState().openPreview('session-diff-refresh-missing', 'src/a.ts', 'diff')
-    await useWorkspacePanelStore.getState().openPreview('session-diff-refresh-missing', 'src/a.ts', 'diff')
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-diff-refresh-missing', 'src/a.ts', 'diff', undefined, undefined, undefined, undefined, undefined, { force: true },
+    )
 
     expect(useWorkspacePanelStore.getState().previewTabsBySession['session-diff-refresh-missing']).toEqual([
       expect.objectContaining({ state: 'ok', diff: '@@ -1 +1 @@\n-old\n+cached' }),
@@ -1000,7 +1177,7 @@ describe('workspacePanelStore', () => {
     expect(useWorkspacePanelStore.getState().statusBySession['session-race']?.branch).toBe('new')
   })
 
-  it('coalesces concurrent status loads and skips repeated preloads after success', async () => {
+  it('coalesces concurrent status loads and reuses status after success', async () => {
     const status = deferred<{
       state: 'ok'
       workDir: string
@@ -1032,7 +1209,7 @@ describe('workspacePanelStore', () => {
     expect(mocks.getWorkspaceStatusMock).toHaveBeenCalledTimes(1)
 
     await useWorkspacePanelStore.getState().loadStatus('session-single-flight')
-    expect(mocks.getWorkspaceStatusMock).toHaveBeenCalledTimes(2)
+    expect(mocks.getWorkspaceStatusMock).toHaveBeenCalledTimes(1)
   })
 
   it('ignores stale preview responses after close and reopen', async () => {
@@ -1045,7 +1222,9 @@ describe('workspacePanelStore', () => {
 
     const firstOpen = useWorkspacePanelStore.getState().openPreview('session-preview-race', 'src/a.ts', 'file')
     useWorkspacePanelStore.getState().closePreview('session-preview-race', 'file:src/a.ts')
-    const secondOpen = useWorkspacePanelStore.getState().openPreview('session-preview-race', 'src/a.ts', 'file')
+    const secondOpen = useWorkspacePanelStore.getState().openPreview(
+      'session-preview-race', 'src/a.ts', 'file', undefined, undefined, undefined, undefined, undefined, { force: true },
+    )
 
     second.resolve({
       state: 'ok',

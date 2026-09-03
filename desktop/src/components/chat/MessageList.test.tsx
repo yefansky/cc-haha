@@ -5,6 +5,7 @@ import {
   buildTurnReferencedFilesByMessageId,
   buildRenderModel,
   buildVirtualItemOffsets,
+  collapseEarlierToolActivity,
   getActiveConversationNavigationItemId,
   getConversationNavigationTargetScrollTop,
   getEditableTurnTargets,
@@ -2103,6 +2104,231 @@ describe('MessageList nested tool calls', () => {
 
     fireEvent.click(groupButton!)
     expect(screen.getByText('local_bash')).toBeTruthy()
+  })
+
+  it('folds the completed prefix of a thinking-separated tool streak and keeps the last three calls visible', () => {
+    const messages: UIMessage[] = [
+      { id: 'user', type: 'user_text', content: 'Inspect the repo', timestamp: 1 },
+    ]
+    for (let index = 1; index <= 5; index += 1) {
+      messages.push(
+        { id: `thinking-${index}`, type: 'thinking', content: `Thinking ${index}`, timestamp: index * 3 },
+        {
+          id: `tool-${index}`,
+          type: 'tool_use',
+          toolName: 'Bash',
+          toolUseId: `bash-${index}`,
+          input: { command: `echo tool-${index}` },
+          timestamp: index * 3 + 1,
+        },
+        {
+          id: `result-${index}`,
+          type: 'tool_result',
+          toolUseId: `bash-${index}`,
+          content: `tool-${index}`,
+          isError: index === 2,
+          timestamp: index * 3 + 2,
+        },
+      )
+    }
+    messages.push({ id: 'assistant', type: 'assistant_text', content: 'Done', timestamp: 20 })
+
+    const model = buildRenderModel(messages)
+    const collapsed = collapseEarlierToolActivity(
+      model.renderItems,
+      model.toolResultMap,
+      model.childToolCallsByParent,
+    )
+    const history = collapsed.find((item) => item.kind === 'tool_history')
+    const visibleToolIds = collapsed.flatMap((item) =>
+      item.kind === 'tool_group' ? item.toolCalls.map((toolCall) => toolCall.toolUseId) : [],
+    )
+
+    expect(history).toMatchObject({
+      kind: 'tool_history',
+      hiddenToolCount: 2,
+      failedToolCount: 1,
+    })
+    expect(visibleToolIds).toEqual(['bash-3', 'bash-4', 'bash-5'])
+    expect(collapsed.filter((item) => item.kind === 'message').map((item) => item.message.type))
+      .toEqual(['user_text', 'thinking', 'thinking', 'thinking', 'assistant_text'])
+
+    const exactThreeModel = buildRenderModel(messages.slice(1, 10))
+    expect(collapseEarlierToolActivity(
+      exactThreeModel.renderItems,
+      exactThreeModel.toolResultMap,
+      exactThreeModel.childToolCallsByParent,
+    ).some((item) => item.kind === 'tool_history')).toBe(false)
+
+    const assistantBoundaryModel = buildRenderModel([
+      ...messages.slice(1, 7),
+      { id: 'assistant-boundary', type: 'assistant_text', content: 'Interim update', timestamp: 9.5 },
+      ...messages.slice(10, 16),
+    ])
+    expect(collapseEarlierToolActivity(
+      assistantBoundaryModel.renderItems,
+      assistantBoundaryModel.toolResultMap,
+      assistantBoundaryModel.childToolCallsByParent,
+    ).some((item) => item.kind === 'tool_history')).toBe(false)
+  })
+
+  it('keeps running and interactive tools visible and uses them as collapse boundaries', () => {
+    const messages: UIMessage[] = []
+    for (let index = 1; index <= 4; index += 1) {
+      messages.push(
+        {
+          id: `tool-${index}`,
+          type: 'tool_use',
+          toolName: 'Bash',
+          toolUseId: `bash-${index}`,
+          input: { command: `echo ${index}` },
+          timestamp: index * 2,
+        },
+        {
+          id: `result-${index}`,
+          type: 'tool_result',
+          toolUseId: `bash-${index}`,
+          content: 'ok',
+          isError: false,
+          timestamp: index * 2 + 1,
+        },
+      )
+    }
+    messages.push(
+      {
+        id: 'thinking-before-running',
+        type: 'thinking',
+        content: 'Waiting for the long command',
+        timestamp: 19,
+      },
+      {
+        id: 'tool-running',
+        type: 'tool_use',
+        toolName: 'Bash',
+        toolUseId: 'bash-running',
+        input: { command: 'long-running' },
+        timestamp: 20,
+        isPending: true,
+      },
+      {
+        id: 'tool-agent',
+        type: 'tool_use',
+        toolName: 'Agent',
+        toolUseId: 'agent-1',
+        input: { description: 'Inspect the UI' },
+        timestamp: 21,
+      },
+      {
+        id: 'result-agent',
+        type: 'tool_result',
+        toolUseId: 'agent-1',
+        content: 'done',
+        isError: false,
+        timestamp: 22,
+      },
+      {
+        id: 'permission-1',
+        type: 'permission_request',
+        requestId: 'permission-1',
+        toolName: 'Write',
+        input: { file_path: '/tmp/protected.ts' },
+        timestamp: 23,
+      },
+      {
+        id: 'tool-ask',
+        type: 'tool_use',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'ask-1',
+        input: { questions: [] },
+        timestamp: 24,
+      },
+      {
+        id: 'tool-plan',
+        type: 'tool_use',
+        toolName: 'EnterPlanMode',
+        toolUseId: 'plan-1',
+        input: {},
+        timestamp: 25,
+      },
+      {
+        id: 'result-plan',
+        type: 'tool_result',
+        toolUseId: 'plan-1',
+        content: 'entered plan mode',
+        isError: false,
+        timestamp: 26,
+      },
+    )
+
+    const model = buildRenderModel(messages, 'ask-1')
+    const collapsed = collapseEarlierToolActivity(
+      model.renderItems,
+      model.toolResultMap,
+      model.childToolCallsByParent,
+    )
+
+    expect(collapsed.filter((item) => item.kind === 'tool_history')).toHaveLength(1)
+    expect(collapsed.some((item) =>
+      item.kind === 'tool_group' && item.toolCalls.some((toolCall) => toolCall.toolUseId === 'bash-running'),
+    )).toBe(true)
+    expect(collapsed.some((item) =>
+      item.kind === 'tool_group' && item.toolCalls.some((toolCall) => toolCall.toolUseId === 'agent-1'),
+    )).toBe(true)
+    expect(collapsed.some((item) =>
+      item.kind === 'message' && item.message.type === 'permission_request',
+    )).toBe(true)
+    expect(collapsed.some((item) =>
+      item.kind === 'message' && item.message.type === 'tool_use' && item.message.toolUseId === 'ask-1',
+    )).toBe(true)
+    expect(collapsed.some((item) =>
+      item.kind === 'tool_group' && item.toolCalls.some((toolCall) => toolCall.toolUseId === 'plan-1'),
+    )).toBe(true)
+  })
+
+  it('expands and re-collapses earlier tool calls while reporting hidden failures', () => {
+    const messages: UIMessage[] = []
+    for (let index = 1; index <= 5; index += 1) {
+      messages.push(
+        { id: `thinking-${index}`, type: 'thinking', content: `Thinking ${index}`, timestamp: index * 3 },
+        {
+          id: `tool-${index}`,
+          type: 'tool_use',
+          toolName: 'Bash',
+          toolUseId: `bash-${index}`,
+          input: { command: `echo unique-tool-${index}` },
+          timestamp: index * 3 + 1,
+        },
+        {
+          id: `result-${index}`,
+          type: 'tool_result',
+          toolUseId: `bash-${index}`,
+          content: 'done',
+          isError: index === 1,
+          timestamp: index * 3 + 2,
+        },
+      )
+    }
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({ messages }),
+      },
+    })
+
+    render(<MessageList />)
+
+    const toggle = screen.getByRole('button', { name: 'Expand 2 earlier tool calls' })
+    expect(screen.getByText('1 failed')).toBeTruthy()
+    expect(screen.queryByText('echo unique-tool-1')).toBeNull()
+    expect(screen.getByText('echo unique-tool-3')).toBeTruthy()
+    expect(screen.getByText('echo unique-tool-4')).toBeTruthy()
+    expect(screen.getByText('echo unique-tool-5')).toBeTruthy()
+
+    fireEvent.click(toggle)
+    expect(screen.getByText('echo unique-tool-1')).toBeTruthy()
+    expect(screen.getByText('echo unique-tool-2')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse 2 earlier tool calls' }))
+    expect(screen.queryByText('echo unique-tool-1')).toBeNull()
   })
 
   it('does not render blank assistant bubbles for whitespace-only text', () => {

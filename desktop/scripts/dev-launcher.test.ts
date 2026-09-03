@@ -1,8 +1,15 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { createElectronDevEnv, DEFAULT_RENDERER_URL, mergeNoProxy, resolveElectronExecutable } from './electron-dev'
+import {
+  createElectronDevEnv,
+  DEFAULT_RENDERER_URL,
+  isSidecarBuildStale,
+  mergeNoProxy,
+  resolveSidecarBuildCommand,
+  resolveElectronExecutable,
+} from './electron-dev'
 
 // resolveElectronExecutable 依赖 node_modules/electron/dist 真实存在,
 // 但 bun 默认不执行 electron 的 postinstall 下载,dist 在本机/CI 经常缺席。
@@ -55,5 +62,33 @@ describe('desktop dev launcher environment', () => {
 
   it('throws an actionable error when the Electron executable is missing', () => {
     expect(() => resolveElectronExecutable(createDesktopRootFixture(false), 'linux')).toThrow(/Electron executable not found/)
+  })
+
+  it('reuses the absolute Bun runtime path when rebuilding the sidecar on Windows', () => {
+    expect(resolveSidecarBuildCommand('C:\\tools\\bun\\bun.exe')).toEqual({
+      command: 'C:\\tools\\bun\\bun.exe',
+      args: ['run', 'build:sidecars'],
+    })
+  })
+
+  it('rebuilds the development sidecar only when server sources are newer than the executable', () => {
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'cc-haha-sidecar-freshness-'))
+    const desktopRoot = path.join(repoRoot, 'desktop')
+    const source = path.join(repoRoot, 'src', 'server', 'services', 'workspaceService.ts')
+    const binary = path.join(desktopRoot, 'src-tauri', 'binaries', 'claude-sidecar-x86_64-pc-windows-msvc.exe')
+    mkdirSync(path.dirname(source), { recursive: true })
+    mkdirSync(path.dirname(binary), { recursive: true })
+    writeFileSync(source, 'export const version = 1')
+    writeFileSync(binary, 'compiled')
+    const older = new Date('2026-09-01T00:00:00Z')
+    const newer = new Date('2026-09-02T00:00:00Z')
+
+    utimesSync(source, older, older)
+    utimesSync(binary, newer, newer)
+    expect(isSidecarBuildStale(desktopRoot, 'win32', 'x64')).toBe(false)
+
+    utimesSync(source, newer, newer)
+    utimesSync(binary, older, older)
+    expect(isSidecarBuildStale(desktopRoot, 'win32', 'x64')).toBe(true)
   })
 })

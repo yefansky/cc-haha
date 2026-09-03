@@ -69,7 +69,17 @@ export type WorkspacePreviewTab = {
   textEncoding?: WorkspaceTextEncoding
   comparisonSession?: WorkspaceComparisonSession
   comparisonEncodings?: WorkspaceComparisonEncodings
+  /** Exact request inputs that produced the last successful payload. */
+  requestIdentity?: string
 }
+
+export type WorkspaceOpenPreviewOptions = {
+  force?: boolean
+}
+
+type WorkspacePreviewPayload =
+  | { kind: 'diff'; result: WorkspaceDiffResult }
+  | { kind: 'file'; result: WorkspaceReadFileResult }
 
 export type WorkspaceMountedRoot = {
   path: string
@@ -131,7 +141,7 @@ type WorkspacePanelStore = {
   addMountedRoot: (path: string) => void
   removeMountedRoot: (path: string) => void
   registerSessionWorkDir: (sessionId: string, workDir?: string) => void
-  loadStatus: (sessionId: string, options?: { force?: boolean }) => Promise<void>
+  loadStatus: (sessionId: string, options?: { force?: boolean; invalidatePreviews?: boolean }) => Promise<void>
   preloadStatus: (sessionId: string) => void
   loadTree: (sessionId: string, path?: string) => Promise<void>
   toggleTreeNode: (sessionId: string, path: string) => Promise<void>
@@ -141,6 +151,15 @@ type WorkspacePanelStore = {
     kind: WorkspacePreviewKind,
     origin?: WorkspacePanelOrigin,
     reveal?: { line: number; column?: number },
+    diffSource?: WorkspaceDiffSource,
+    textEncoding?: WorkspaceTextEncoding,
+    comparisonEncodings?: WorkspaceComparisonEncodings,
+    options?: WorkspaceOpenPreviewOptions,
+  ) => Promise<void>
+  preloadPreview: (
+    sessionId: string,
+    path: string,
+    kind: WorkspacePreviewKind,
     diffSource?: WorkspaceDiffSource,
     textEncoding?: WorkspaceTextEncoding,
     comparisonEncodings?: WorkspaceComparisonEncodings,
@@ -193,6 +212,11 @@ const statusRequestIds = new Map<string, number>()
 const statusRequestsInFlight = new Map<string, Promise<void>>()
 const treeRequestIds = new Map<string, number>()
 const previewRequestIds = new Map<string, number>()
+const previewPayloadCache = new Map<string, WorkspacePreviewPayload>()
+const previewPayloadRequestsInFlight = new Map<string, Promise<WorkspacePreviewPayload>>()
+const previewPayloadRequestTokens = new Map<string, number>()
+let nextPreviewPayloadRequestToken = 0
+const WORKSPACE_PREVIEW_CACHE_SIZE = 16
 const WORKSPACE_STATUS_CACHE_TTL_MS = 15_000
 
 function getWorkDirCacheKey(workDir: string) {
@@ -248,6 +272,125 @@ export function getWorkspacePreviewTabId(
 
 function makePreviewKey(sessionId: string, tabId: string) {
   return `${sessionId}::${tabId}`
+}
+
+function makePreviewRequestIdentity(
+  kind: WorkspacePreviewKind,
+  diffSource: WorkspaceDiffSource,
+  textEncoding: WorkspaceTextEncoding,
+  comparisonEncodings?: WorkspaceComparisonEncodings,
+) {
+  const sourceIdentity = diffSource.kind === 'turn'
+    ? `turn:${diffSource.targetUserMessageId}:${diffSource.userMessageIndex}`
+    : 'workspace'
+  const normalizedComparisonEncodings = comparisonEncodings ?? (
+    kind === 'diff' && diffSource.kind === 'workspace'
+      ? { left: textEncoding, right: textEncoding }
+      : undefined
+  )
+  const encodingIdentity = normalizedComparisonEncodings
+    ? `${normalizedComparisonEncodings.left}:${normalizedComparisonEncodings.right}`
+    : '-'
+  return `${kind}|${sourceIdentity}|${textEncoding}|${encodingIdentity}`
+}
+
+function makePreviewPayloadCacheKey(
+  sessionId: string,
+  path: string,
+  requestIdentity: string,
+) {
+  return `${sessionId}\0${path}\0${requestIdentity}`
+}
+
+function setPreviewPayloadCache(cacheKey: string, payload: WorkspacePreviewPayload) {
+  previewPayloadCache.delete(cacheKey)
+  previewPayloadCache.set(cacheKey, payload)
+  while (previewPayloadCache.size > WORKSPACE_PREVIEW_CACHE_SIZE) {
+    const oldest = previewPayloadCache.keys().next().value
+    if (oldest === undefined) break
+    previewPayloadCache.delete(oldest)
+  }
+}
+
+function clearSessionPreviewPayloadCache(sessionId: string) {
+  const prefix = `${sessionId}\0`
+  for (const key of previewPayloadCache.keys()) {
+    if (key.startsWith(prefix)) previewPayloadCache.delete(key)
+  }
+  for (const key of previewPayloadRequestsInFlight.keys()) {
+    if (key.startsWith(prefix)) previewPayloadRequestsInFlight.delete(key)
+  }
+  for (const key of previewPayloadRequestTokens.keys()) {
+    if (key.startsWith(prefix)) previewPayloadRequestTokens.delete(key)
+  }
+}
+
+function requestWorkspacePreviewPayload(
+  sessionId: string,
+  path: string,
+  kind: WorkspacePreviewKind,
+  diffSource: WorkspaceDiffSource,
+  textEncoding: WorkspaceTextEncoding,
+  comparisonEncodings: WorkspaceComparisonEncodings | undefined,
+  options: { force?: boolean; cacheResult?: boolean } = {},
+) {
+  const requestIdentity = makePreviewRequestIdentity(kind, diffSource, textEncoding, comparisonEncodings)
+  const cacheKey = makePreviewPayloadCacheKey(sessionId, path, requestIdentity)
+  if (options.force) previewPayloadCache.delete(cacheKey)
+  else {
+    const cached = previewPayloadCache.get(cacheKey)
+    if (cached) {
+      setPreviewPayloadCache(cacheKey, cached)
+      return Promise.resolve(cached)
+    }
+    const existing = previewPayloadRequestsInFlight.get(cacheKey)
+    if (existing) return existing
+  }
+
+  // The token is process-wide monotonic, rather than a per-key generation that
+  // can restart after clearSession. This prevents an old request from passing
+  // the guard after clear -> reopen reuses the same cache key (ABA).
+  nextPreviewPayloadRequestToken += 1
+  const requestToken = nextPreviewPayloadRequestToken
+  previewPayloadRequestTokens.set(cacheKey, requestToken)
+
+  const request: Promise<WorkspacePreviewPayload> = kind === 'diff'
+    ? (diffSource.kind === 'turn'
+        ? sessionsApi.getTurnCheckpointDiff(
+            sessionId,
+            diffSource.targetUserMessageId,
+            path,
+            diffSource.userMessageIndex,
+          )
+        : comparisonEncodings
+          ? sessionsApi.getWorkspaceDiff(sessionId, path, textEncoding, comparisonEncodings)
+          : textEncoding === 'auto'
+            ? sessionsApi.getWorkspaceDiff(sessionId, path)
+            : sessionsApi.getWorkspaceDiff(sessionId, path, textEncoding))
+      .then((result) => ({ kind: 'diff' as const, result }))
+    : (textEncoding === 'auto'
+        ? sessionsApi.getWorkspaceFile(sessionId, path)
+        : sessionsApi.getWorkspaceFile(sessionId, path, textEncoding))
+      .then((result) => ({ kind: 'file' as const, result }))
+
+  const tracked = request
+    .then((payload) => {
+      if (
+        options.cacheResult !== false
+        && payload.result.state === 'ok'
+        && previewPayloadRequestTokens.get(cacheKey) === requestToken
+      ) {
+        setPreviewPayloadCache(cacheKey, payload)
+      }
+      return payload
+    })
+    .finally(() => {
+      if (previewPayloadRequestsInFlight.get(cacheKey) === tracked) {
+        previewPayloadRequestsInFlight.delete(cacheKey)
+      }
+    })
+  previewPayloadRequestsInFlight.set(cacheKey, tracked)
+  return tracked
 }
 
 function getPathTitle(path: string) {
@@ -421,14 +564,28 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
   loadStatus: (sessionId, options) => {
     const existingRequest = statusRequestsInFlight.get(sessionId)
     if (!options?.force && existingRequest) return existingRequest
+    if (!options?.force && get().statusBySession[sessionId]) return Promise.resolve()
+    if (options?.force && options.invalidatePreviews !== false) {
+      clearSessionPreviewPayloadCache(sessionId)
+      set((state) => ({
+        previewTabsBySession: {
+          ...state.previewTabsBySession,
+          [sessionId]: state.previewTabsBySession[sessionId]?.map((tab) => (
+            tab.diffSource?.kind === 'turn' || isWorkspaceComparisonSessionDirty(tab.comparisonSession)
+              ? tab
+              : { ...tab, requestIdentity: undefined }
+          )),
+        },
+      }))
+    }
 
     const request = (async () => {
       const requestId = nextRequestId(statusRequestIds, sessionId)
       const knownWorkDirKey = get().workDirKeyBySession[sessionId]
       const cached = knownWorkDirKey ? get().statusCacheByWorkDir[knownWorkDirKey] : undefined
 
-      // A session's normal reload remains a real refresh. The cache is for a
-      // different session that happens to point at the same checkout.
+      // The shared checkout cache warms newly created sessions. Once a session
+      // has status, normal opens reuse it; explicit refresh remains authoritative.
       if (!options?.force && !get().statusBySession[sessionId] && cached && Date.now() - cached.loadedAt < WORKSPACE_STATUS_CACHE_TTL_MS) {
         set((state) => ({
           statusBySession: { ...state.statusBySession, [sessionId]: cached.result },
@@ -637,6 +794,27 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     }
   },
 
+  preloadPreview: async (
+    sessionId,
+    path,
+    kind,
+    diffSource = { kind: 'workspace' },
+    textEncoding = 'auto',
+    comparisonEncodings,
+  ) => {
+    const tabId = getWorkspacePreviewTabId(path, kind, diffSource)
+    const existing = get().previewTabsBySession[sessionId]?.find((tab) => tab.id === tabId)
+    if (isWorkspaceComparisonSessionDirty(existing?.comparisonSession)) return
+    await requestWorkspacePreviewPayload(
+      sessionId,
+      path,
+      kind,
+      diffSource,
+      textEncoding,
+      comparisonEncodings,
+    )
+  },
+
   openPreview: async (
     sessionId,
     path,
@@ -646,6 +824,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     diffSource = { kind: 'workspace' },
     textEncoding = 'auto',
     comparisonEncodings,
+    options,
   ) => {
     // Ensure the workspace panel is visible — openPreview is now triggered from places
     // where the panel may be closed (e.g. the chat "打开方式" menu / turn-changes card),
@@ -678,6 +857,12 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
           }
         : undefined
     )
+    const requestIdentity = makePreviewRequestIdentity(
+      kind,
+      diffSource,
+      textEncoding,
+      effectiveComparisonEncodings,
+    )
 
     const requestId = nextRequestId(previewRequestIds, requestKey)
     // Omitting a reveal must not clear the one already on the tab: reopening the
@@ -685,6 +870,28 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     const nextReveal: WorkspacePreviewReveal | undefined = reveal
       ? { ...reveal, nonce: nextRevealNonce() }
       : existing?.reveal
+
+    // Re-selecting a successful tab is navigation, not an implicit refresh.
+    // Keep the exact request identity with the payload so encoding/checkpoint
+    // changes invalidate naturally. External changes are refreshed explicitly
+    // (or after a completed write), which also protects dirty in-memory edits.
+    if (!options?.force && existing?.state === 'ok' && existing.requestIdentity === requestIdentity) {
+      set((state) => ({
+        previewTabsBySession: {
+          ...state.previewTabsBySession,
+          [sessionId]: upsertPreviewTab(
+            state.previewTabsBySession[sessionId] ?? [],
+            tabId,
+            (tab) => ({ ...tab, reveal: nextReveal }),
+          ),
+        },
+        activePreviewTabIdBySession: {
+          ...state.activePreviewTabIdBySession,
+          [sessionId]: tabId,
+        },
+      }))
+      return
+    }
 
     if (existing) {
       set((state) => ({
@@ -736,6 +943,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
           : {}),
         ...(kind === 'diff' || diffSource.kind === 'turn' ? { diffSource } : {}),
         state: 'loading',
+        requestIdentity,
         ...(nextReveal ? { reveal: nextReveal } : {}),
       }
 
@@ -770,19 +978,21 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     }
 
     try {
+      const payload = await requestWorkspacePreviewPayload(
+        sessionId,
+        path,
+        kind,
+        diffSource,
+        textEncoding,
+        effectiveComparisonEncodings,
+        {
+          force: options?.force,
+          cacheResult: !isWorkspaceComparisonSessionDirty(existing?.comparisonSession),
+        },
+      )
       if (kind === 'diff') {
-        const result = diffSource.kind === 'turn'
-          ? await sessionsApi.getTurnCheckpointDiff(
-              sessionId,
-              diffSource.targetUserMessageId,
-              path,
-              diffSource.userMessageIndex,
-            )
-          : effectiveComparisonEncodings
-            ? await sessionsApi.getWorkspaceDiff(sessionId, path, textEncoding, effectiveComparisonEncodings)
-            : textEncoding === 'auto'
-              ? await sessionsApi.getWorkspaceDiff(sessionId, path)
-              : await sessionsApi.getWorkspaceDiff(sessionId, path, textEncoding)
+        if (payload.kind !== 'diff') return
+        const result = payload.result
         if (!isLatestRequest(previewRequestIds, requestKey, requestId)) return
         if (!get().previewTabsBySession[sessionId]?.some((tab) => tab.id === tabId)) return
 
@@ -790,6 +1000,12 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
           const tabs = state.previewTabsBySession[sessionId] ?? []
           const current = tabs.find((tab) => tab.id === tabId)
           const preserveSuccessfulPayload = current?.state === 'ok' && result.state !== 'ok'
+          const resolvedComparisonEncodings = effectiveComparisonEncodings ?? (result.comparison
+            ? {
+                left: result.comparison.left.requestedEncoding,
+                right: result.comparison.right.requestedEncoding,
+              }
+            : undefined)
           return {
             previewTabsBySession: {
               ...state.previewTabsBySession,
@@ -806,17 +1022,18 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
                     state: result.state,
                     error: result.error,
                     textEncoding,
-                    comparisonEncodings: effectiveComparisonEncodings ?? (result.comparison
-                      ? {
-                          left: result.comparison.left.requestedEncoding,
-                          right: result.comparison.right.requestedEncoding,
-                        }
-                      : undefined),
+                    comparisonEncodings: resolvedComparisonEncodings,
                     comparisonSession: isWorkspaceComparisonSessionDirty(tab.comparisonSession)
                       ? tab.comparisonSession
                       : tab.comparisonSession
                         ? reloadWorkspaceComparisonSession(tab.comparisonSession, result.comparison) ?? undefined
                         : createWorkspaceComparisonSession(result.comparison) ?? undefined,
+                    requestIdentity: makePreviewRequestIdentity(
+                      kind,
+                      diffSource,
+                      textEncoding,
+                      resolvedComparisonEncodings,
+                    ),
                   })),
             },
             loading: {
@@ -842,9 +1059,8 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         return
       }
 
-      const result = textEncoding === 'auto'
-        ? await sessionsApi.getWorkspaceFile(sessionId, path)
-        : await sessionsApi.getWorkspaceFile(sessionId, path, textEncoding)
+      if (payload.kind !== 'file') return
+      const result = payload.result
       if (!isLatestRequest(previewRequestIds, requestKey, requestId)) return
       if (!get().previewTabsBySession[sessionId]?.some((tab) => tab.id === tabId)) return
 
@@ -870,6 +1086,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
                   state: result.state,
                   error: result.error,
                   textEncoding,
+                  requestIdentity,
                 })),
           },
           loading: {
@@ -1056,6 +1273,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     invalidateRequest(statusRequestIds, sessionId)
     invalidateSessionScopedRequests(treeRequestIds, sessionId)
     invalidateSessionScopedRequests(previewRequestIds, sessionId)
+    clearSessionPreviewPayloadCache(sessionId)
 
     set((state) => ({
       panelBySession: removeRecordKey(state.panelBySession, sessionId),

@@ -364,6 +364,8 @@ export function WorkspaceSideBySideDiffSurface({
   const files = model.files
   const [viewMode, setViewMode] = useState<WorkspaceSideBySideViewMode>('context')
   const [swapped, setSwapped] = useState(false)
+  const [leftPanePercent, setLeftPanePercent] = useState(50)
+  const [resizingPanes, setResizingPanes] = useState(false)
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null)
   const [editingSide, setEditingSide] = useState<WorkspaceComparisonSourceSide | null>(null)
   const [editDraft, setEditDraft] = useState('')
@@ -413,6 +415,38 @@ export function WorkspaceSideBySideDiffSurface({
     : plainHighlightResult
   const [commentDraft, setCommentDraft] = useState<CommentDraft | null>(null)
   const editorRef = useRef<HTMLTextAreaElement>(null)
+  const comparisonContentRef = useRef<HTMLDivElement>(null)
+
+  const updatePaneSplit = (clientX: number) => {
+    const bounds = comparisonContentRef.current?.getBoundingClientRect()
+    if (!bounds || bounds.width <= 0) return
+    const next = Math.round(((clientX - bounds.left) / bounds.width) * 100)
+    setLeftPanePercent(Math.min(80, Math.max(20, next)))
+  }
+
+  useEffect(() => {
+    if (!resizingPanes) return
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    const handlePointerMove = (event: PointerEvent) => updatePaneSplit(event.clientX)
+    const handlePointerUp = () => setResizingPanes(false)
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+    }
+  }, [resizingPanes])
+
+  const paneGridStyle: CSSProperties = {
+    gridTemplateColumns: 'minmax(28rem, var(--workspace-diff-left-pane)) minmax(28rem, var(--workspace-diff-right-pane))',
+  }
 
   const modeItems = useMemo(() => {
     const unavailableTitle = fullOnlyDisabledReason ?? (
@@ -933,7 +967,8 @@ export function WorkspaceSideBySideDiffSurface({
         <div
           key={item.id}
           data-diff-separator=""
-          className="grid min-w-full grid-cols-2 border-y border-[var(--color-border)] bg-[var(--color-surface-container)] text-center text-[11px] text-[var(--color-text-tertiary)]"
+          className="grid min-w-full border-y border-[var(--color-border)] bg-[var(--color-surface-container)] text-center text-[11px] text-[var(--color-text-tertiary)]"
+          style={paneGridStyle}
         >
           <span className="col-span-2 py-0.5">
             {item.hiddenCount === null
@@ -963,7 +998,8 @@ export function WorkspaceSideBySideDiffSurface({
             : undefined}
         data-active-diff-section={active ? '' : undefined}
         role="row"
-        className={`grid min-w-full grid-cols-2 ${active ? 'outline outline-1 outline-offset-[-1px] outline-[var(--color-info)]' : ''}`}
+        className={`grid min-w-full ${active ? 'outline outline-1 outline-offset-[-1px] outline-[var(--color-info)]' : ''}`}
+        style={paneGridStyle}
       >
         {isSectionFirstRow && section && comparisonSession && (
           <div
@@ -1247,7 +1283,15 @@ export function WorkspaceSideBySideDiffSurface({
             <Button variant="primary" size="sm" onClick={applyEdit}>{t('workspace.diffEdit.apply')}</Button>
           </div>
         </div>
-      ) : <div data-testid="workspace-side-by-side-diff-content" className="relative min-w-full w-max pb-3">
+      ) : <div
+        ref={comparisonContentRef}
+        data-testid="workspace-side-by-side-diff-content"
+        className="relative min-w-full w-max pb-3"
+        style={{
+          '--workspace-diff-left-pane': `${leftPanePercent}%`,
+          '--workspace-diff-right-pane': `${100 - leftPanePercent}%`,
+        } as CSSProperties}
+      >
         <div
           data-workspace-code=""
           data-testid="workspace-code"
@@ -1270,7 +1314,10 @@ export function WorkspaceSideBySideDiffSurface({
                     <span>{displayDirectory && <span className="text-[var(--color-text-tertiary)]">{displayDirectory}</span>}<strong>{displayName}</strong></span>
                   </div>
                 )}
-                <div className="sticky top-10 z-[var(--z-raised)] grid min-w-full grid-cols-2 border-b border-[var(--color-border)] bg-[var(--color-surface-glass)] text-[11px] font-semibold text-[var(--color-text-secondary)] backdrop-blur">
+                <div
+                  className="sticky top-10 z-[var(--z-raised)] grid min-w-full border-b border-[var(--color-border)] bg-[var(--color-surface-glass)] text-[11px] font-semibold text-[var(--color-text-secondary)] backdrop-blur"
+                  style={paneGridStyle}
+                >
                   {visualSides.map((side) => (
                     <div key={side} data-visual-header={side} className="flex min-w-[28rem] items-center gap-2 border-r border-[var(--color-border)] px-3 py-1.5">
                       <span>{sideLabel(side)} · {side === 'old' ? file.oldPath ?? '/dev/null' : file.newPath ?? '/dev/null'}</span>
@@ -1320,6 +1367,42 @@ export function WorkspaceSideBySideDiffSurface({
               {t('workspace.diffView.empty')}
             </div>
           )}
+        </div>
+        <div
+          role="separator"
+          aria-label={t('workspace.diffView.resizePanes')}
+          aria-orientation="vertical"
+          aria-valuemin={20}
+          aria-valuemax={80}
+          aria-valuenow={leftPanePercent}
+          tabIndex={0}
+          data-testid="workspace-diff-pane-resize-handle"
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            event.preventDefault()
+            updatePaneSplit(event.clientX)
+            setResizingPanes(true)
+          }}
+          onDoubleClick={() => setLeftPanePercent(50)}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowLeft') {
+              event.preventDefault()
+              setLeftPanePercent((current) => Math.max(20, current - 5))
+            } else if (event.key === 'ArrowRight') {
+              event.preventDefault()
+              setLeftPanePercent((current) => Math.min(80, current + 5))
+            } else if (event.key === 'Home') {
+              event.preventDefault()
+              setLeftPanePercent(20)
+            } else if (event.key === 'End') {
+              event.preventDefault()
+              setLeftPanePercent(80)
+            }
+          }}
+          className="group absolute inset-y-0 z-[var(--z-sticky)] w-3 -translate-x-1/2 cursor-col-resize touch-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+          style={{ left: `${leftPanePercent}%` }}
+        >
+          <span className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--color-border)] transition-colors group-hover:bg-[var(--color-border-focus)]" />
         </div>
         {displayRows.length > lineLimit && (
           <div className="sticky bottom-0 left-0 flex items-center gap-3 border-t border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">

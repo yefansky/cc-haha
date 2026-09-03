@@ -30,6 +30,7 @@ import { handleStaticH5Request } from './staticH5.js'
 import {
   classifyH5Request,
   isH5AccessControlPath,
+  isLocalDesktopCorsPreflight,
   isLocalH5AccessControlPreflight,
   requiresLocalAccessCredential,
   shouldBlockDisabledH5Access,
@@ -337,6 +338,17 @@ export function startServer(port = PORT, host = HOST) {
           context: h5RequestContext,
         })
         const h5AccessControlBlocked = isH5AccessControlRequest(req, url, h5RequestContext)
+
+        // The renderer's authenticated cross-origin request is preceded by an
+        // unauthenticated OPTIONS request. Let only the fully-loopback
+        // preflight reach CORS before the disabled-H5 browser gate; the actual
+        // API call below still has to carry the Electron process token.
+        if (isLocalDesktopCorsPreflight(req, url, h5RequestContext)) {
+          if (cors.rejected) {
+            return corsRejectedResponse(cors)
+          }
+          return new Response(null, { status: 204, headers: cors.headers })
+        }
 
         if (h5AccessControlBlocked) {
           return h5AccessControlRejectedResponse()

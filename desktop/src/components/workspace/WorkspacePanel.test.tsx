@@ -34,6 +34,7 @@ type WorkspaceApiMocks = {
   searchWorkspaceMock: ReturnType<typeof vi.fn>
   getWorkspaceFileMock: ReturnType<typeof vi.fn>
   getWorkspaceDiffMock: ReturnType<typeof vi.fn>
+  getTurnCheckpointDiffMock: ReturnType<typeof vi.fn>
   writeWorkspaceFileMock: ReturnType<typeof vi.fn>
   registerWorkspaceRootMock: ReturnType<typeof vi.fn>
 }
@@ -265,6 +266,7 @@ vi.mock('../../api/sessions', () => ({
         searchWorkspaceMock: vi.fn(),
         getWorkspaceFileMock: vi.fn(),
         getWorkspaceDiffMock: vi.fn(),
+        getTurnCheckpointDiffMock: vi.fn(),
         writeWorkspaceFileMock: vi.fn(),
         registerWorkspaceRootMock: vi.fn(),
       }
@@ -276,6 +278,7 @@ vi.mock('../../api/sessions', () => ({
       searchWorkspace: mocks.searchWorkspaceMock,
       getWorkspaceFile: mocks.getWorkspaceFileMock,
       getWorkspaceDiff: mocks.getWorkspaceDiffMock,
+      getTurnCheckpointDiff: mocks.getTurnCheckpointDiffMock,
       writeWorkspaceFile: mocks.writeWorkspaceFileMock,
       registerWorkspaceRoot: mocks.registerWorkspaceRootMock,
     }
@@ -554,7 +557,8 @@ describe('WorkspacePanel', () => {
     expect(view.getByTestId('workspace-preview-column').className).toContain('overflow-hidden')
     expect(previewHeader.textContent).not.toContain('DIFF')
     expect(view.getByRole('tab', { name: 'File tree' }).getAttribute('aria-selected')).toBe('false')
-    expect(view.getByRole('tab', { name: /View files/ }).getAttribute('aria-selected')).toBe('true')
+    expect(view.getByRole('tab', { name: /View files/ }).getAttribute('aria-selected')).toBe('false')
+    expect(view.getByRole('tab', { name: 'Workspace comparison' }).getAttribute('aria-selected')).toBe('true')
     expect(view.getByTestId('workspace-file-navigator').className).toContain('hidden')
     expect(view.getByTestId('workspace-file-navigator-header')).toBeTruthy()
     expect(view.queryByText('1 file')).toBeNull()
@@ -562,6 +566,163 @@ describe('WorkspacePanel', () => {
     expect(expandedPanel.style.width).toBe('860px')
     expect(expandedPanel.style.maxWidth).toBe('min(62%, calc(100% - 328px))')
     expect(expandedPanel.style.minWidth).toBe('min(420px, 54%)')
+  })
+
+  it('opens workspace comparison as its own view without treating a turn checkpoint as editable workspace state', async () => {
+    const sessionId = 'session-workspace-comparison-view'
+    const path = 'src/app.ts'
+    const checkpointPath = 'docs/turn-note.md'
+    const comparison = editableComparison(path)
+    getMocks().getTurnCheckpointDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: checkpointPath,
+      diff: '@@ -1 +1 @@\n-before\n+after',
+    })
+    getMocks().getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path,
+      diff: '@@ -1 +1 @@\n-old\n+new',
+      comparison,
+    })
+    await setWorkspaceState((state) => ({
+      ...state,
+      statusBySession: {
+        ...state.statusBySession,
+        [sessionId]: {
+          state: 'ok',
+          workDir: '/repo',
+          repoName: 'repo',
+          branch: 'main',
+          isGitRepo: true,
+          changedFiles: [{ path, status: 'modified', additions: 1, deletions: 1 }],
+        },
+      },
+    }))
+    await act(async () => {
+      await useWorkspacePanelStore.getState().openPreview(
+        sessionId,
+        checkpointPath,
+        'diff',
+        undefined,
+        undefined,
+        { kind: 'turn', targetUserMessageId: 'message-1', userMessageIndex: 2 },
+      )
+    })
+
+    const view = await renderPanel(sessionId)
+
+    await waitFor(() => {
+      expect(view.getByRole('tab', { name: /View files/ }).getAttribute('aria-selected')).toBe('true')
+    })
+    expect(view.getByRole('tab', { name: 'Workspace comparison' }).getAttribute('aria-selected')).toBe('false')
+    expect(getMocks().getTurnCheckpointDiffMock).toHaveBeenCalledWith(sessionId, 'message-1', checkpointPath, 2)
+    expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalled()
+    expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession[sessionId])
+      .toBe(`diff:${checkpointPath}:turn:message-1`)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId])
+      .not.toContainEqual(expect.objectContaining({ id: `diff:${path}` }))
+
+    await clickElement(view.getByRole('tab', { name: 'Workspace comparison' }))
+
+    await waitFor(() => {
+      expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith(sessionId, path)
+    })
+    expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledTimes(1)
+    expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession[sessionId]).toBe(`diff:${path}`)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.find((tab) => tab.id === `diff:${path}`)).toMatchObject({
+      kind: 'diff',
+      diffSource: { kind: 'workspace' },
+      comparison: {
+        left: { writable: false },
+        right: { writable: true },
+      },
+    })
+    expect(view.getByRole('tab', { name: 'Workspace comparison' }).getAttribute('aria-selected')).toBe('true')
+    expect(view.getByRole('tab', { name: /View files/ }).getAttribute('aria-selected')).toBe('false')
+  })
+
+  it('silently preloads only the active changed file and reuses it on the first comparison click', async () => {
+    const sessionId = 'session-workspace-comparison-preload'
+    const path = 'src/app.ts'
+    const comparison = editableComparison(path)
+    getMocks().getWorkspaceFileMock.mockResolvedValue({
+      state: 'ok',
+      path,
+      content: 'new\n',
+      language: 'typescript',
+      size: 4,
+    })
+    getMocks().getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path,
+      diff: '@@ -1 +1 @@\n-old\n+new',
+      comparison,
+    })
+    await setWorkspaceState((state) => ({
+      ...state,
+      statusBySession: {
+        ...state.statusBySession,
+        [sessionId]: {
+          state: 'ok',
+          workDir: '/repo',
+          repoName: 'repo',
+          branch: 'main',
+          isGitRepo: true,
+          changedFiles: [
+            { path: '_local/generated.tmp', status: 'untracked', additions: 1, deletions: 0 },
+            { path, status: 'modified', additions: 1, deletions: 1 },
+          ],
+        },
+      },
+    }))
+    await act(async () => {
+      await useWorkspacePanelStore.getState().openPreview(sessionId, path, 'file')
+    })
+
+    const view = await renderPanel(sessionId)
+
+    await waitFor(() => {
+      expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith(sessionId, path)
+    })
+    expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledTimes(1)
+    expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalledWith(sessionId, '_local/generated.tmp')
+    expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession[sessionId]).toBe(`file:${path}`)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId])
+      .not.toContainEqual(expect.objectContaining({ id: `diff:${path}` }))
+
+    await clickElement(view.getByRole('tab', { name: 'Workspace comparison' }))
+
+    await waitFor(() => {
+      expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession[sessionId]).toBe(`diff:${path}`)
+    })
+    expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables workspace comparison when no changed file can be compared', async () => {
+    const sessionId = 'session-workspace-comparison-empty'
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: {
+        ...state.panelBySession,
+        [sessionId]: { isOpen: true, activeView: 'changed', hasUserSelectedView: true },
+      },
+      statusBySession: {
+        ...state.statusBySession,
+        [sessionId]: {
+          state: 'ok',
+          workDir: '/repo',
+          repoName: 'repo',
+          branch: 'main',
+          isGitRepo: true,
+          changedFiles: [],
+        },
+      },
+    }))
+
+    const view = await renderPanel(sessionId)
+
+    expect((view.getByRole('tab', { name: 'Workspace comparison' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalled()
   })
 
   it('restores and renders an extra mounted folder alongside the current workspace tree', async () => {
@@ -928,7 +1089,7 @@ describe('WorkspacePanel', () => {
     expect(view.getByText('next.ts')).toBeTruthy()
   })
 
-  it('refreshes status on open and preserves an explicitly selected changed-files view', async () => {
+  it('reuses loaded status on reopen and preserves an explicitly selected changed-files view', async () => {
     getMocks().getWorkspaceStatusMock.mockResolvedValue({
       state: 'ok',
       workDir: '/repo',
@@ -975,13 +1136,9 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel('session-stale-all')
 
-    await waitFor(() => {
-      expect(getMocks().getWorkspaceStatusMock).toHaveBeenCalledWith('session-stale-all')
-    })
-    await waitFor(() => {
-      expect(view.getByRole('button', { name: 'Changed files' })).toBeTruthy()
-    })
-    expect(view.container.querySelector('[data-workspace-file-path="src/Fresh.ts"]')).toBeTruthy()
+    expect(getMocks().getWorkspaceStatusMock).not.toHaveBeenCalled()
+    expect(view.getByRole('button', { name: 'Changed files' })).toBeTruthy()
+    expect(view.container.querySelector('[data-workspace-file-path="src/Fresh.ts"]')).toBeNull()
   })
 
   it('loads workspace status when opened while the chat is running', async () => {

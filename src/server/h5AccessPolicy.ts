@@ -337,7 +337,22 @@ export function isLocalH5AccessControlPreflight(
   url: URL,
   context: H5RequestContext,
 ): boolean {
-  if (request.method !== 'OPTIONS' || !isH5AccessControlPath(url.pathname)) {
+  return isH5AccessControlPath(url.pathname) &&
+    isLocalDesktopCorsPreflight(request, url, context)
+}
+
+/**
+ * Chromium CORS preflights never include the Authorization header that the
+ * Electron renderer sends on the real request. Permit only a fully-loopback
+ * desktop preflight to reach the CORS response; the following real request is
+ * still classified and authenticated normally.
+ */
+export function isLocalDesktopCorsPreflight(
+  request: Request,
+  url: URL,
+  context: H5RequestContext,
+): boolean {
+  if (request.method !== 'OPTIONS') {
     return false
   }
 

@@ -1367,23 +1367,29 @@ export class WorkspaceService {
     }
 
     // Some Windows/TortoiseSVN builds pass non-ASCII argv through the active
-    // code page. Resolve both URL and BASE revision from the same target entry
-    // while invoking `svn info` only with the ASCII `.` target. In particular,
-    // a switched subtree must not inherit the working-copy root URL.
-    const infoArgs = ['info', '--xml', '--depth', 'infinity', '.']
-    const infoResult = await this.runSvn(svnRoot, infoArgs, MAX_SVN_STATUS_BUFFER_BYTES)
+    // code page. Put the target's parent directory in cwd, which preserves its
+    // Unicode path without placing it in argv, then enumerate only immediate
+    // files using the ASCII `.` target. A root-wide `--depth infinity` query is
+    // both unnecessarily slow and can exceed the command output limit in large
+    // working copies. Reading the exact parent also preserves switched-subtree
+    // URL and BASE revision identity.
+    const normalizedRepoPath = this.normalizeRelativePath(repoPath)
+    const targetParent = path.dirname(path.resolve(svnRoot, ...normalizedRepoPath.split('/')))
+    const targetName = path.basename(normalizedRepoPath)
+    const infoArgs = ['info', '--xml', '--depth', 'files', '.']
+    const infoResult = await this.runSvn(targetParent, infoArgs, MAX_SVN_STATUS_BUFFER_BYTES)
     if (infoResult.code !== 0) {
       return {
         kind: 'error',
         message: this.formatSvnError(
           'Failed to resolve SVN baseline revision',
           infoArgs,
-          svnRoot,
+          targetParent,
           infoResult,
         ),
       }
     }
-    return this.resolveSvnBaseIdentityFromInfo(repoPath, infoResult.stdout)
+    return this.resolveSvnBaseIdentityFromInfo(targetName, infoResult.stdout)
   }
 
   private resolveSvnBaseIdentityFromInfo(

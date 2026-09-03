@@ -1447,6 +1447,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const loadTree = useWorkspacePanelStore((state) => state.loadTree)
   const toggleTreeNode = useWorkspacePanelStore((state) => state.toggleTreeNode)
   const openPreview = useWorkspacePanelStore((state) => state.openPreview)
+  const preloadPreview = useWorkspacePanelStore((state) => state.preloadPreview)
   const closePreview = useWorkspacePanelStore((state) => state.closePreview)
   const closePreviewTabs = useWorkspacePanelStore((state) => state.closePreviewTabs)
   const activatePreview = useWorkspacePanelStore((state) => state.activatePreview)
@@ -1488,6 +1489,9 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     : null
   const hasPreviewTabs = previewTabs.length > 0
   const isNavigatorVisible = isNavigatorOpen
+  const activePreviewIsWorkspaceComparison = activePreviewTab?.kind === 'diff'
+    && activePreviewTab.diffSource?.kind !== 'turn'
+  const isWorkspaceComparisonVisible = !isNavigatorVisible && activePreviewIsWorkspaceComparison
   const navigatorView = activeView
   const hasWorkspaceSearch = navigatorView === 'all' && normalizedFilterQuery.length > 0
   const activeWorkspaceSearch = workspaceSearch
@@ -1500,6 +1504,9 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const activeChangedFile = activePreviewTab
     ? status?.changedFiles.find((file) => file.path === activePreviewTab.path) ?? null
     : null
+  const workspaceComparisonPath = activeChangedFile && !activeChangedFile.isDirectory
+    ? activePreviewTab?.path
+    : status?.changedFiles.find((file) => !file.isDirectory)?.path
   const filteredChangedFiles = useMemo(() => {
     const allChangedFiles = status?.changedFiles ?? []
     const matchingFiles = allChangedFiles.filter((file) => (
@@ -1613,13 +1620,49 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     const shouldRefreshOnOpen = opened
     const shouldRefreshAfterCompletedTurn = completedTurn && chatState === 'idle'
     if ((!shouldRefreshOnOpen && !shouldRefreshAfterCompletedTurn) || statusLoading) return
-    void loadStatus(sessionId)
+    void loadStatus(sessionId, { force: shouldRefreshAfterCompletedTurn })
   }, [chatState, loadStatus, sessionId, shouldRender, statusLoading])
 
   useEffect(() => {
     if (!shouldRender || !isNavigatorVisible || navigatorView !== 'all' || rootTree || rootTreeLoading || rootTreeError) return
     void loadTree(sessionId, '')
   }, [isNavigatorVisible, loadTree, navigatorView, rootTree, rootTreeError, rootTreeLoading, sessionId, shouldRender])
+
+  useEffect(() => {
+    // Only speculate for the file the user is already looking at. Falling back
+    // to changedFiles[0] here can pick an arbitrary generated/untracked file in
+    // very large workspaces and start an expensive SVN diff on panel open.
+    if (
+      !shouldRender
+      || !workspaceComparisonPath
+      || !activeChangedFile
+      || activeChangedFile.isDirectory
+      || activePreviewIsWorkspaceComparison
+    ) return
+    const path = workspaceComparisonPath
+    const samePathTab = activePreviewTab?.path === path ? activePreviewTab : null
+    const timer = window.setTimeout(() => {
+      void preloadPreview(
+        sessionId,
+        path,
+        'diff',
+        { kind: 'workspace' },
+        samePathTab?.textEncoding,
+        samePathTab?.comparisonEncodings,
+      ).catch(() => {
+        // Speculative loading is intentionally silent; opening owns feedback.
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [
+    activePreviewIsWorkspaceComparison,
+    activePreviewTab,
+    activeChangedFile,
+    preloadPreview,
+    sessionId,
+    shouldRender,
+    workspaceComparisonPath,
+  ])
 
   useEffect(() => {
     if (!shouldRender || navigatorView !== 'all') return
@@ -1815,7 +1858,17 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     setManualRefreshPending(true)
     const requests: Promise<unknown>[] = [loadStatus(sessionId, { force: true })]
     if (activePreviewTab) {
-      requests.push(openPreview(sessionId, activePreviewTab.path, activePreviewTab.kind, undefined, undefined, activePreviewTab.diffSource, activePreviewTab.textEncoding))
+      requests.push(openPreview(
+        sessionId,
+        activePreviewTab.path,
+        activePreviewTab.kind,
+        undefined,
+        undefined,
+        activePreviewTab.diffSource,
+        activePreviewTab.textEncoding,
+        activePreviewTab.comparisonEncodings,
+        { force: true },
+      ))
     }
     if (hasWorkspaceSearch) {
       setWorkspaceSearchRevision((revision) => revision + 1)
@@ -1908,6 +1961,67 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       focusPreviewAfterOpen()
     }
     requestDirtyAction('switch', activePreviewTab ? [activePreviewTab] : [], proceed)
+  }
+
+  const handleShowFileView = () => {
+    if (!activePreviewTab || activePreviewTab.kind !== 'diff' || activePreviewTab.diffSource?.kind === 'turn') {
+      setIsNavigatorOpen(false)
+      return
+    }
+
+    const tab = activePreviewTab
+    requestDirtyAction('switch', [tab], () => {
+      setIsNavigatorOpen(false)
+      const fileTabId = getWorkspacePreviewTabId(tab.path, 'file')
+      if (previewTabs.some((candidate) => candidate.id === fileTabId)) {
+        activatePreview(sessionId, fileTabId)
+      } else {
+        void openPreview(sessionId, tab.path, 'file', undefined, tab.reveal, { kind: 'workspace' }, tab.textEncoding)
+      }
+      focusPreviewAfterOpen()
+    })
+  }
+
+  const handleShowWorkspaceComparison = () => {
+    if (activePreviewIsWorkspaceComparison) {
+      setIsNavigatorOpen(false)
+      focusPreviewAfterOpen()
+      return
+    }
+
+    const path = workspaceComparisonPath
+    if (!path) return
+
+    const proceed = () => {
+      setIsNavigatorOpen(false)
+      void openPreview(
+        sessionId,
+        path,
+        'diff',
+        undefined,
+        activePreviewTab?.reveal,
+        { kind: 'workspace' },
+        activePreviewTab?.textEncoding,
+      )
+      focusPreviewAfterOpen()
+    }
+    requestDirtyAction('switch', activePreviewTab ? [activePreviewTab] : [], proceed)
+  }
+
+  const preloadWorkspaceComparison = () => {
+    const path = workspaceComparisonPath
+    if (!path || activePreviewIsWorkspaceComparison) return
+    const samePathTab = activePreviewTab?.path === path ? activePreviewTab : null
+    void preloadPreview(
+      sessionId,
+      path,
+      'diff',
+      { kind: 'workspace' },
+      samePathTab?.textEncoding,
+      samePathTab?.comparisonEncodings,
+    ).catch(() => {
+      // This is speculative. The real open owns the visible loading/error state.
+    })
   }
 
   const handleTogglePreviewKind = () => {
@@ -2467,6 +2581,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                   undefined,
                   activePreviewTab.diffSource,
                   activePreviewTab.textEncoding,
+                  activePreviewTab.comparisonEncodings,
+                  { force: true },
                 ))
               }}
               className="shrink-0"
@@ -2502,6 +2618,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                   undefined,
                   activePreviewTab.diffSource,
                   activePreviewTab.textEncoding,
+                  activePreviewTab.comparisonEncodings,
+                  { force: true },
                 )
               }
             }}
@@ -2692,10 +2810,20 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
           <button
             type="button"
             role="tab"
-            aria-selected={!isNavigatorVisible}
-            onClick={() => setIsNavigatorOpen(false)}
-            className={`relative h-10 px-1 text-[12px] font-medium ${!isNavigatorVisible ? 'text-[var(--color-text-primary)] after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--color-info)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
+            aria-selected={!isNavigatorVisible && !isWorkspaceComparisonVisible}
+            onClick={handleShowFileView}
+            className={`relative h-10 px-1 text-[12px] font-medium ${!isNavigatorVisible && !isWorkspaceComparisonVisible ? 'text-[var(--color-text-primary)] after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--color-info)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
           >{t('workspace.viewFiles')}{hasPreviewTabs ? ` (${previewTabs.length})` : ''}</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isWorkspaceComparisonVisible}
+            disabled={!workspaceComparisonPath && !activePreviewIsWorkspaceComparison}
+            onClick={handleShowWorkspaceComparison}
+            onMouseEnter={preloadWorkspaceComparison}
+            onFocus={preloadWorkspaceComparison}
+            className={`relative h-10 px-1 text-[12px] font-medium disabled:cursor-not-allowed disabled:text-[var(--color-text-tertiary)] ${isWorkspaceComparisonVisible ? 'text-[var(--color-text-primary)] after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--color-info)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
+          >{t('workspace.compareWorkspace')}</button>
         </div>}
 
         {(hasPreviewTabs || isVscodeLayout) && <div data-testid="workspace-preview-column" className={`${isVscodeLayout || !isNavigatorVisible ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-surface)]`}>

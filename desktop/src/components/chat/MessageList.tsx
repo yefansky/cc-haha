@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { ArrowDown, BookMarked, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleStop, FileStack, LoaderCircle, MessageCircle, Settings, Target, XCircle } from 'lucide-react'
 import { ApiError } from '../../api/client'
 import { sessionsApi, type SessionRewindMode, type SessionTurnCheckpoint } from '../../api/sessions'
+import { loadSessionTurnCheckpoints } from '../../lib/sessionTurnCheckpoints'
 import {
   listPendingPermissions,
   selectAskUserDecisionProjection,
@@ -22,6 +23,8 @@ import { AssistantMessage } from './AssistantMessage'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { ToolCallGroup } from './ToolCallGroup'
+import { isImageGenerationToolName } from './imageGenerationTools'
+import { isEnterPlanModeTool, isExitPlanModeTool } from './PlanModePreview'
 import { ToolResultBlock } from './ToolResultBlock'
 import { PermissionDialog } from './PermissionDialog'
 import { AskUserQuestion } from './AskUserQuestion'
@@ -40,6 +43,7 @@ import { formatDurationMs, hasRunningBackgroundTasks as hasAnyRunningBackgroundT
 import { buildTurnCompletionByMessageId, type TurnCompletion } from '../../lib/turnCompletion'
 import { isTouchH5Document } from '../../lib/touchH5'
 import { Button } from '@/components/ui/Button'
+import { Badge } from '@/components/ui/Badge'
 import { ActionDialog, type ActionDialogAction } from '@/components/ui/ActionDialog'
 import { clearWindowSelection, getSelectionPopoverPosition, useSelectionPopoverDismiss } from '../../hooks/useSelectionPopoverDismiss'
 import {
@@ -55,17 +59,27 @@ import {
 
 type ToolCall = Extract<UIMessage, { type: 'tool_use' }>
 type ToolResult = Extract<UIMessage, { type: 'tool_result' }>
+type ThinkingMessage = Extract<UIMessage, { type: 'thinking' }>
 type MemoryEvent = Extract<UIMessage, { type: 'memory_event' }>
 type GoalEvent = Extract<UIMessage, { type: 'goal_event' }>
 type BackgroundTaskEvent = Extract<UIMessage, { type: 'background_task' }>
 type CompactSummaryEvent = Extract<UIMessage, { type: 'compact_summary' }>
 
+type ToolGroupRenderItem = { kind: 'tool_group'; toolCalls: ToolCall[]; id: string }
+type BaseRenderItem = ToolGroupRenderItem | { kind: 'message'; message: UIMessage }
+type ToolHistoryItem = ToolGroupRenderItem | { kind: 'message'; message: ThinkingMessage }
 type RenderItem =
-  | { kind: 'tool_group'; toolCalls: ToolCall[]; id: string }
-  | { kind: 'message'; message: UIMessage }
+  | BaseRenderItem
+  | {
+      kind: 'tool_history'
+      id: string
+      items: ToolHistoryItem[]
+      hiddenToolCount: number
+      failedToolCount: number
+    }
 
 type RenderModel = {
-  renderItems: RenderItem[]
+  renderItems: BaseRenderItem[]
   toolResultMap: Map<string, ToolResult>
   childToolCallsByParent: Map<string, ToolCall[]>
 }
@@ -642,7 +656,7 @@ export function buildRenderModel(
   activeAskUserQuestionToolUseId?: string | null,
   preserveAllUnresolvedAskUserQuestions = false,
 ): RenderModel {
-  const items: RenderItem[] = []
+  const items: BaseRenderItem[] = []
   const toolResultMap = new Map<string, ToolResult>()
   const childToolCallsByParent = new Map<string, ToolCall[]>()
   const toolUseIds = new Set<string>()
@@ -746,6 +760,150 @@ export function buildRenderModel(
 
   flushGroup()
   return { renderItems: items, toolResultMap, childToolCallsByParent }
+}
+
+const DEFAULT_VISIBLE_TOOL_ACTIVITY_COUNT = 3
+
+function toolCallHasFailedResult(
+  toolCall: ToolCall,
+  toolResultMap: Map<string, ToolResult>,
+  childToolCallsByParent: Map<string, ToolCall[]>,
+): boolean {
+  if (toolResultMap.get(toolCall.toolUseId)?.isError) return true
+  return (childToolCallsByParent.get(toolCall.toolUseId) ?? []).some((childToolCall) =>
+    toolCallHasFailedResult(childToolCall, toolResultMap, childToolCallsByParent),
+  )
+}
+
+function isResolvedToolActivity(
+  toolCall: ToolCall,
+  toolResultMap: Map<string, ToolResult>,
+  childToolCallsByParent: Map<string, ToolCall[]>,
+): boolean {
+  if (toolCall.status === 'stopped') return true
+  if (!toolResultMap.has(toolCall.toolUseId)) return false
+  return (childToolCallsByParent.get(toolCall.toolUseId) ?? []).every((childToolCall) =>
+    isResolvedToolActivity(childToolCall, toolResultMap, childToolCallsByParent),
+  )
+}
+
+function isMemoryActivityToolCall(toolCall: ToolCall): boolean {
+  if (!['Read', 'Write', 'Edit', 'MultiEdit'].includes(toolCall.toolName)) return false
+  if (!toolCall.input || typeof toolCall.input !== 'object') return false
+  const input = toolCall.input as Record<string, unknown>
+  const path = input.file_path ?? input.path
+  if (typeof path !== 'string') return false
+  const normalized = path.replace(/\\/g, '/')
+  return normalized.endsWith('.md') && normalized.includes('/memory/')
+}
+
+function isFoldableToolActivity(
+  toolCall: ToolCall,
+  toolResultMap: Map<string, ToolResult>,
+  childToolCallsByParent: Map<string, ToolCall[]>,
+): boolean {
+  if (
+    toolCall.toolName === 'AskUserQuestion' ||
+    toolCall.toolName === 'Agent' ||
+    isImageGenerationToolName(toolCall.toolName) ||
+    isEnterPlanModeTool(toolCall.toolName) ||
+    isExitPlanModeTool(toolCall.toolName) ||
+    isMemoryActivityToolCall(toolCall)
+  ) {
+    return false
+  }
+  return isResolvedToolActivity(toolCall, toolResultMap, childToolCallsByParent)
+}
+
+function singleToolGroup(toolCall: ToolCall): ToolGroupRenderItem {
+  return {
+    kind: 'tool_group',
+    toolCalls: [toolCall],
+    id: `group-${toolCall.id}`,
+  }
+}
+
+/**
+ * Collapse only completed, ordinary tool activity. Thinking blocks are allowed
+ * between calls because the transcript emits one after virtually every tool,
+ * but every user-visible message or interactive card remains a hard boundary.
+ */
+export function collapseEarlierToolActivity(
+  renderItems: BaseRenderItem[],
+  toolResultMap: Map<string, ToolResult>,
+  childToolCallsByParent: Map<string, ToolCall[]>,
+  visibleToolCount = DEFAULT_VISIBLE_TOOL_ACTIVITY_COUNT,
+): RenderItem[] {
+  const output: RenderItem[] = []
+  let streak: ToolHistoryItem[] = []
+  const keepCount = Math.max(1, visibleToolCount)
+
+  const flushStreak = () => {
+    if (streak.length === 0) return
+    const allToolCalls = streak.flatMap((item) =>
+      item.kind === 'tool_group' ? item.toolCalls : [],
+    )
+    const hiddenToolCount = allToolCalls.length - keepCount
+    if (hiddenToolCount <= 0) {
+      output.push(...streak)
+      streak = []
+      return
+    }
+
+    const hiddenItems: ToolHistoryItem[] = []
+    const visibleItems: ToolHistoryItem[] = []
+    const hiddenToolCalls: ToolCall[] = []
+    let remainingHiddenTools = hiddenToolCount
+
+    for (const item of streak) {
+      if (item.kind === 'message') {
+        const target = remainingHiddenTools > 0 ? hiddenItems : visibleItems
+        target.push(item)
+        continue
+      }
+
+      for (const toolCall of item.toolCalls) {
+        const target = remainingHiddenTools > 0 ? hiddenItems : visibleItems
+        target.push(singleToolGroup(toolCall))
+        if (remainingHiddenTools > 0) {
+          hiddenToolCalls.push(toolCall)
+          remainingHiddenTools -= 1
+        }
+      }
+    }
+
+    const firstHiddenToolCall = hiddenToolCalls[0]!
+    output.push({
+      kind: 'tool_history',
+      id: `tool-history-${firstHiddenToolCall.id}`,
+      items: hiddenItems,
+      hiddenToolCount,
+      failedToolCount: hiddenToolCalls.filter((toolCall) =>
+        toolCallHasFailedResult(toolCall, toolResultMap, childToolCallsByParent),
+      ).length,
+    })
+    output.push(...visibleItems)
+    streak = []
+  }
+
+  for (const item of renderItems) {
+    if (item.kind === 'message' && item.message.type === 'thinking') {
+      streak.push({ kind: 'message', message: item.message })
+      continue
+    }
+    if (item.kind === 'tool_group') {
+      if (item.toolCalls.every((toolCall) =>
+        isFoldableToolActivity(toolCall, toolResultMap, childToolCallsByParent),
+      )) {
+        streak.push(item)
+        continue
+      }
+    }
+    flushStreak()
+    output.push(item)
+  }
+  flushStreak()
+  return output
 }
 
 function includeProjectedAsks(
@@ -1053,31 +1211,6 @@ function getApiErrorMessage(error: unknown) {
       : String(error)
 }
 
-function isSessionTurnCheckpoint(value: unknown): value is SessionTurnCheckpoint {
-  if (!value || typeof value !== 'object') return false
-  const checkpoint = value as Partial<SessionTurnCheckpoint>
-  return (
-    Boolean(checkpoint.target) &&
-    typeof checkpoint.target?.targetUserMessageId === 'string' &&
-    typeof checkpoint.target?.userMessageIndex === 'number' &&
-    Boolean(checkpoint.code) &&
-    typeof checkpoint.code?.available === 'boolean' &&
-    Array.isArray(checkpoint.code?.filesChanged) &&
-    (checkpoint.restoreAvailable === undefined ||
-      typeof checkpoint.restoreAvailable === 'boolean') &&
-    (checkpoint.unverifiedChangeSources === undefined ||
-      (Array.isArray(checkpoint.unverifiedChangeSources) &&
-        checkpoint.unverifiedChangeSources.every((source) => typeof source === 'string')))
-  )
-}
-
-function normalizeTurnCheckpoints(response: unknown): SessionTurnCheckpoint[] {
-  if (!response || typeof response !== 'object') return []
-  const checkpoints = (response as { checkpoints?: unknown }).checkpoints
-  if (!Array.isArray(checkpoints)) return []
-  return checkpoints.filter(isSessionTurnCheckpoint)
-}
-
 function memoryFileLabel(path: string) {
   const normalized = path.replace(/\\/g, '/')
   return normalized.split('/').pop() || normalized
@@ -1291,7 +1424,7 @@ function clampNumber(value: number, min: number, max: number) {
 }
 
 function getRenderItemKey(item: RenderItem) {
-  return item.kind === 'tool_group' ? item.id : item.message.id
+  return item.kind === 'message' ? item.message.id : item.id
 }
 
 function findConversationMatches(
@@ -1455,6 +1588,15 @@ function getMessageContentWeight(message: UIMessage): number {
 
 function getRenderItemContentWeight(item: RenderItem): number {
   if (item.kind === 'message') return getMessageContentWeight(item.message)
+  if (item.kind === 'tool_history') {
+    return item.items.reduce((total, historyItem) =>
+      total + (historyItem.kind === 'message'
+        ? getMessageContentWeight(historyItem.message)
+        : historyItem.toolCalls.reduce(
+            (toolTotal, toolCall) => toolTotal + getMessageContentWeight(toolCall),
+            0,
+          )), 0)
+  }
   return item.toolCalls.reduce((total, toolCall) => total + getMessageContentWeight(toolCall), 0)
 }
 
@@ -1524,6 +1666,7 @@ function estimateMessageHeight(message: UIMessage): number {
 
 function estimateRenderItemHeight(item: RenderItem): number {
   if (item.kind === 'message') return estimateMessageHeight(item.message)
+  if (item.kind === 'tool_history') return 68
   const textWeight = getRenderItemContentWeight(item)
   return clampNumber(92 + item.toolCalls.length * 78 + Math.ceil(textWeight / 140) * 16, 88, 2600)
 }
@@ -1559,6 +1702,9 @@ function getMessageMetricSignature(message: UIMessage): string {
 
 function getRenderItemMetricSignature(item: RenderItem): string {
   if (item.kind === 'message') return getMessageMetricSignature(item.message)
+  if (item.kind === 'tool_history') {
+    return `${item.id}:${item.hiddenToolCount}:${item.failedToolCount}`
+  }
   return item.toolCalls.map(getMessageMetricSignature).join('|')
 }
 
@@ -1763,6 +1909,83 @@ const MeasuredRenderItem = memo(function MeasuredRenderItem({
     </div>
   )
 })
+
+function ToolActivityHistoryFold({
+  item,
+  sessionId,
+  resultMap,
+  childToolCallsByParent,
+  agentTaskNotifications,
+  agentTaskStatuses,
+  activeThinkingId,
+}: {
+  item: Extract<RenderItem, { kind: 'tool_history' }>
+  sessionId?: string | null
+  resultMap: Map<string, ToolResult>
+  childToolCallsByParent: Map<string, ToolCall[]>
+  agentTaskNotifications: Record<string, AgentTaskNotification>
+  agentTaskStatuses?: Record<string, BackgroundAgentTask['status']>
+  activeThinkingId: string | null
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const t = useTranslation()
+  const toggleLabel = t(
+    expanded ? 'toolGroup.collapseEarlierCalls' : 'toolGroup.expandEarlierCalls',
+    { count: item.hiddenToolCount },
+  )
+
+  return (
+    <div
+      data-testid="earlier-tool-activity"
+      className="mb-2 overflow-hidden rounded-[var(--radius-lg)] border border-dashed border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]"
+    >
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-label={toggleLabel}
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-[var(--color-surface-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]"
+      >
+        {expanded ? (
+          <ChevronDown size={15} className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true" />
+        ) : (
+          <ChevronRight size={15} className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--color-text-secondary)]">
+          {t('toolGroup.earlierCalls', { count: item.hiddenToolCount })}
+        </span>
+        {item.failedToolCount > 0 ? (
+          <Badge tone="danger" bordered>
+            {t('toolGroup.failedCalls', { count: item.failedToolCount })}
+          </Badge>
+        ) : null}
+      </button>
+
+      {expanded ? (
+        <div className="border-t border-[var(--color-border)] px-3.5 py-2.5">
+          {item.items.map((historyItem) => historyItem.kind === 'tool_group' ? (
+            <ToolCallGroup
+              key={historyItem.id}
+              sessionId={sessionId}
+              toolCalls={historyItem.toolCalls}
+              resultMap={resultMap}
+              childToolCallsByParent={childToolCallsByParent}
+              agentTaskNotifications={agentTaskNotifications}
+              agentTaskStatuses={agentTaskStatuses}
+              isStreaming={false}
+            />
+          ) : (
+            <ThinkingBlock
+              key={historyItem.message.id}
+              content={historyItem.message.content}
+              isActive={historyItem.message.id === activeThinkingId}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 export function MessageList({ sessionId, compact = false, mobileLayout = false }: MessageListProps = {}) {
   const activeTabId = useTabStore((s) => s.activeTabId)
@@ -2319,13 +2542,17 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     return () => observer.disconnect()
   }, [requestLiveFollow])
 
-  const { toolResultMap, childToolCallsByParent, renderItems } = useMemo(
+  const { toolResultMap, childToolCallsByParent, renderItems: rawRenderItems } = useMemo(
     () => buildRenderModel(
       projectedMessages,
       activeAskUserQuestionToolUseId,
       askUserDecisionProjection.source === 'server',
     ),
     [activeAskUserQuestionToolUseId, askUserDecisionProjection.source, projectedMessages],
+  )
+  const renderItems = useMemo(
+    () => collapseEarlierToolActivity(rawRenderItems, toolResultMap, childToolCallsByParent),
+    [childToolCallsByParent, rawRenderItems, toolResultMap],
   )
   const turnReferencedFilesByMessageId = useMemo(
     () => buildTurnReferencedFilesByMessageId(messages),
@@ -2520,8 +2747,8 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     setIsLoadingTurnChangeCards(true)
     setTurnChangeLoadError(null)
 
-    sessionsApi.getTurnCheckpoints(resolvedSessionId)
-      .then((checkpointResponse) => {
+    loadSessionTurnCheckpoints(resolvedSessionId)
+      .then((checkpoints) => {
         if (cancelled) return
         const targetByTranscriptMessageId = new Map<string, RewindTurnTarget>()
         for (const target of completedTurnTargets) {
@@ -2534,7 +2761,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
         )
 
         setTurnChangeCards(
-          normalizeTurnCheckpoints(checkpointResponse).flatMap((checkpoint) => {
+          checkpoints.flatMap((checkpoint) => {
             const target =
               targetByTranscriptMessageId.get(checkpoint.target.targetUserMessageId) ??
               targetByUserMessageIndex.get(checkpoint.target.userMessageIndex)
@@ -3034,6 +3261,16 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
               chatState === 'tool_executing' &&
               item.toolCalls.some((tc) => !toolResultMap.has(tc.toolUseId))
             }
+          />
+        ) : item.kind === 'tool_history' ? (
+          <ToolActivityHistoryFold
+            item={item}
+            sessionId={resolvedSessionId}
+            resultMap={toolResultMap}
+            childToolCallsByParent={childToolCallsByParent}
+            agentTaskNotifications={agentTaskNotifications}
+            agentTaskStatuses={agentTaskStatuses}
+            activeThinkingId={activeThinkingId}
           />
         ) : (
           <MessageBlock

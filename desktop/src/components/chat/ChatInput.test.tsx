@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   listAgents: vi.fn(),
   getRepositoryContext: vi.fn(),
   getRecentProjects: vi.fn(),
+  getTurnCheckpoints: vi.fn(),
   search: vi.fn(),
   browse: vi.fn(),
   wsSend: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock('../../api/sessions', () => ({
     getSlashCommands: mocks.getSlashCommands,
     getRepositoryContext: mocks.getRepositoryContext,
     getRecentProjects: mocks.getRecentProjects,
+    getTurnCheckpoints: mocks.getTurnCheckpoints,
   },
 }))
 
@@ -109,6 +111,7 @@ import { useTabStore } from '../../stores/tabStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { browserHost } from '../../lib/desktopHost/browserHost'
+import { clearSessionTurnCheckpointCache } from '../../lib/sessionTurnCheckpoints'
 
 /**
  * Opens the run-location pill's menu. Directory, branch and worktree all live
@@ -192,6 +195,7 @@ describe('ChatInput file mentions', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    clearSessionTurnCheckpointCache()
     mocks.webviewDragHandlers.length = 0
     Reflect.deleteProperty(window, 'desktopHost')
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
@@ -273,6 +277,7 @@ describe('ChatInput file mentions', () => {
     mocks.getGitInfo.mockResolvedValue({ branch: 'main', repoName: 'repo', workDir: '/repo', changedFiles: 0 })
     mocks.getRepositoryContext.mockResolvedValue(okRepositoryContext())
     mocks.getRecentProjects.mockResolvedValue({ projects: [] })
+    mocks.getTurnCheckpoints.mockResolvedValue({ checkpoints: [] })
     mocks.create.mockResolvedValue({ sessionId: 'created-session', workDir: '/repo' })
     mocks.delete.mockResolvedValue({ ok: true })
     mocks.list.mockResolvedValue({ sessions: [], total: 0 })
@@ -372,6 +377,42 @@ describe('ChatInput file mentions', () => {
     } finally {
       preloadStatus.mockRestore()
     }
+  })
+
+  it('renders the session checkpoint union collapsed directly above the composer', async () => {
+    mocks.getTurnCheckpoints.mockResolvedValue({
+      checkpoints: [{
+        target: { targetUserMessageId: 'turn-1', userMessageIndex: 0 },
+        workDir: '/repo',
+        code: {
+          available: true,
+          filesChanged: ['src/app.ts', 'docs/readme.md'],
+          insertions: 2,
+          deletions: 0,
+        },
+      }],
+    })
+    act(() => {
+      useChatStore.setState({
+        sessions: {
+          [sessionId]: {
+            ...useChatStore.getState().sessions[sessionId]!,
+            messages: [
+              { id: 'turn-1', type: 'user_text', content: 'change files', timestamp: 1 },
+              { id: 'reply-1', type: 'assistant_text', content: 'done', timestamp: 2 },
+            ],
+          },
+        },
+      })
+    })
+
+    render(<ChatInput />)
+
+    const toggle = await screen.findByRole('button', { name: 'Session file changes: 2' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    const strip = screen.getByTestId('session-changed-files-strip')
+    expect(strip.compareDocumentPosition(screen.getByRole('textbox')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(useWorkspacePanelStore.getState().statusBySession[sessionId]).toBeUndefined()
   })
 
   it('passes diff metadata to the composer card and clears the reference after send', async () => {

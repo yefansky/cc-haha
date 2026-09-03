@@ -1362,6 +1362,12 @@ describe('WorkspaceService', () => {
   it('reads a Unicode SVN baseline from the exact switched entry URL and BASE revision', async () => {
     const workspaceDir = await createSwitchedSvnWorkspace()
     const service = new WorkspaceService(async () => workspaceDir) as WorkspaceService & {
+      runSvn: (workDir: string, args: string[], maxBuffer?: number) => Promise<{
+        stdout: string
+        stderr: string
+        code: number
+        failure?: string
+      }>
       runSvnBuffer: (workDir: string, args: string[], maxBuffer?: number) => Promise<{
         stdout: Buffer
         stderr: string
@@ -1369,8 +1375,14 @@ describe('WorkspaceService', () => {
         failure?: string
       }>
     }
+    const runSvn = service.runSvn.bind(service)
     const runSvnBuffer = service.runSvnBuffer.bind(service)
+    const svnCalls: Array<{ workDir: string; args: string[] }> = []
     const svnBufferCalls: Array<{ workDir: string; args: string[] }> = []
+    service.runSvn = async (workDir, args, maxBuffer) => {
+      svnCalls.push({ workDir, args })
+      return await runSvn(workDir, args, maxBuffer)
+    }
     service.runSvnBuffer = async (workDir, args, maxBuffer) => {
       svnBufferCalls.push({ workDir, args })
       return await runSvnBuffer(workDir, args, maxBuffer)
@@ -1398,6 +1410,9 @@ describe('WorkspaceService', () => {
       },
     })
     expect(result.comparison?.left.content).not.toBe('TRUNK-BASE\n')
+    const infoCall = svnCalls.find((call) => call.args[0] === 'info' && call.args.includes('--xml'))
+    expect(infoCall?.workDir).toBe(path.join(workspaceDir, 'sub'))
+    expect(infoCall?.args).toEqual(['info', '--xml', '--depth', 'files', '.'])
     const catCall = svnBufferCalls.find((call) => call.args[0] === 'cat')
     expect(catCall?.workDir).toBe(workspaceDir)
     expect(catCall?.args.slice(0, 4)).toEqual(['cat', '-r', expect.stringMatching(/^\d+$/), '--'])

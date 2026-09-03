@@ -60,6 +60,7 @@ import type { PermissionMode } from '../../types/settings'
 import { getSessionWorkspaceState } from '../../lib/sessionWorkspace'
 import { hasRunningSubagentTasks } from '../../lib/backgroundTasks'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { SessionChangedFilesStrip } from './SessionChangedFilesStrip'
 
 type GitInfo = SessionGitInfo
 
@@ -268,6 +269,9 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     : true
   const isActive = chatState !== 'idle'
   const hasRunningSubagents = hasRunningSubagentTasks(sessionState?.backgroundAgentTasks)
+  const hasSessionUserMessage = sessionState?.messages?.some((message) => (
+    message.type === 'user_text' && !message.pending
+  )) ?? false
   const activePermissionMode = (activeSession?.permissionMode as PermissionMode | undefined) ?? defaultPermissionMode
   const runningConfig = activeTabId ? runningConfigBySession[activeTabId] : undefined
   const pendingPermissionMode = activeTabId ? pendingPermissionBySession[activeTabId] : undefined
@@ -1385,6 +1389,15 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
               />
               <span>{t('chat.applyInitialPromptPrefix')}</span>
             </label>
+          )}
+
+          {!isMemberSession && activeTabId && hasSessionUserMessage && (
+            <SessionChangedFilesStrip
+              sessionId={activeTabId}
+              workDir={resolvedWorkDir ?? null}
+              enabled={!isActive && !hasRunningSubagents}
+              refreshNonce={loadedMessageCount}
+            />
           )}
 
           {isHeroComposer ? (

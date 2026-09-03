@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 import { useState } from 'react'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, createEvent, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkspaceComparison, WorkspaceComparisonSide } from '@/api/sessions'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -173,6 +173,54 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(screen.getByText('11', { selector: '[data-diff-line-number][data-side="new"]' })).toBeInTheDocument()
     expect(screen.getByText('const answer = 41')).toBeInTheDocument()
     expect(screen.getByText('const answer = 42')).toBeInTheDocument()
+  })
+
+  it('resizes both comparison panes by dragging the center separator', () => {
+    render(<WorkspaceSideBySideDiffSurface value="" comparison={fullComparison} path="src/a.ts" />)
+
+    const content = screen.getByTestId('workspace-side-by-side-diff-content')
+    vi.spyOn(content, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 0,
+      left: 100,
+      top: 0,
+      right: 1100,
+      bottom: 500,
+      width: 1000,
+      height: 500,
+      toJSON: () => ({}),
+    })
+    const separator = screen.getByRole('separator', { name: 'Resize comparison panes' })
+
+    expect(separator).toHaveAttribute('aria-valuenow', '50')
+    const pointerDown = createEvent.pointerDown(separator)
+    Object.defineProperty(pointerDown, 'button', { value: 0 })
+    Object.defineProperty(pointerDown, 'clientX', { value: 600 })
+    fireEvent(separator, pointerDown)
+    const moveTo = (clientX: number) => {
+      const pointerMove = createEvent.pointerMove(window)
+      Object.defineProperty(pointerMove, 'clientX', { value: clientX })
+      fireEvent(window, pointerMove)
+    }
+    moveTo(0)
+    expect(separator).toHaveAttribute('aria-valuenow', '20')
+    moveTo(2000)
+    expect(separator).toHaveAttribute('aria-valuenow', '80')
+    moveTo(800)
+    fireEvent(window, createEvent.pointerUp(window))
+
+    expect(separator).toHaveAttribute('aria-valuenow', '70')
+    expect(content.style.getPropertyValue('--workspace-diff-left-pane')).toBe('70%')
+    expect(content.style.getPropertyValue('--workspace-diff-right-pane')).toBe('30%')
+
+    fireEvent.keyDown(separator, { key: 'Home' })
+    fireEvent.keyDown(separator, { key: 'ArrowLeft' })
+    expect(separator).toHaveAttribute('aria-valuenow', '20')
+    fireEvent.keyDown(separator, { key: 'End' })
+    fireEvent.keyDown(separator, { key: 'ArrowRight' })
+    expect(separator).toHaveAttribute('aria-valuenow', '80')
+    fireEvent.doubleClick(separator)
+    expect(separator).toHaveAttribute('aria-valuenow', '50')
   })
 
   it('renders an observable placeholder instead of inventing content for an unmatched side', () => {

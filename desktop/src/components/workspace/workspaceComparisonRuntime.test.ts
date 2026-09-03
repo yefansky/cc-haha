@@ -4,6 +4,7 @@ import {
   computeWorkspaceComparisonModel,
   createWorkspaceComparisonRevisionGate,
   requestWorkspaceComparisonModel,
+  resetWorkspaceComparisonRuntimeForTests,
 } from './workspaceComparisonRuntime'
 import { createDefaultWorkspaceComparisonSettings } from './workspaceComparisonSettings'
 
@@ -21,6 +22,7 @@ const comparison: WorkspaceComparison = {
 
 describe('workspaceComparisonRuntime', () => {
   afterEach(() => {
+    resetWorkspaceComparisonRuntimeForTests()
     vi.unstubAllGlobals()
   })
   it('computes the pure model from a serializable worker request', () => {
@@ -43,6 +45,82 @@ describe('workspaceComparisonRuntime', () => {
     resolveFirst({ id: 1 })
     await Promise.all([first, second])
     expect(accepted).toEqual([2])
+  })
+
+  it('reuses a completed alignment for the same source revisions, settings and content', async () => {
+    const instances: FakeWorker[] = []
+    class FakeWorker {
+      onmessage: ((event: MessageEvent<unknown>) => void) | null = null
+      onerror: ((event: ErrorEvent) => void) | null = null
+      terminate = vi.fn()
+      postMessage = vi.fn()
+      constructor() { instances.push(this) }
+    }
+    vi.stubGlobal('Worker', FakeWorker)
+    const cachedComparison: WorkspaceComparison = {
+      ...comparison,
+      left: { ...comparison.left, source: { ...comparison.left.source, revision: 'cache-head' } },
+      right: { ...comparison.right, source: { ...comparison.right.source, revision: 'cache-working' } },
+    }
+    const settings = createDefaultWorkspaceComparisonSettings('cache.cpp')
+    const input = {
+      sessionRevision: 0,
+      settingsRevision: 0,
+      value: 'cache-value',
+      comparison: cachedComparison,
+      path: 'cache.cpp',
+      anchors: [],
+      settings,
+    }
+
+    const first = requestWorkspaceComparisonModel(input)
+    instances[0]!.onmessage?.({
+      data: computeWorkspaceComparisonModel({ ...input, id: 1 }),
+    } as MessageEvent)
+    await first
+    const second = await requestWorkspaceComparisonModel(input)
+
+    expect(instances).toHaveLength(1)
+    expect(instances[0]!.postMessage).toHaveBeenCalledOnce()
+    expect(second).toMatchObject({ sessionRevision: 0, settingsRevision: 0 })
+  })
+
+  it('does not reuse alignment when a source revision changes', async () => {
+    const instances: FakeWorker[] = []
+    class FakeWorker {
+      onmessage: ((event: MessageEvent<unknown>) => void) | null = null
+      onerror: ((event: ErrorEvent) => void) | null = null
+      terminate = vi.fn()
+      postMessage = vi.fn()
+      constructor() { instances.push(this) }
+    }
+    vi.stubGlobal('Worker', FakeWorker)
+    const settings = createDefaultWorkspaceComparisonSettings('revision.cpp')
+    const baseInput = {
+      sessionRevision: 0,
+      settingsRevision: 0,
+      value: 'revision-value',
+      comparison,
+      path: 'revision.cpp',
+      anchors: [],
+      settings,
+    }
+
+    const first = requestWorkspaceComparisonModel(baseInput)
+    instances[0]!.onmessage?.({ data: computeWorkspaceComparisonModel({ ...baseInput, id: 1 }) } as MessageEvent)
+    await first
+    const changedInput = {
+      ...baseInput,
+      comparison: {
+        ...comparison,
+        right: { ...comparison.right, source: { ...comparison.right.source, revision: 'working-2' } },
+      },
+    }
+    const second = requestWorkspaceComparisonModel(changedInput)
+
+    expect(instances[0]!.postMessage).toHaveBeenCalledTimes(2)
+    instances[0]!.onmessage?.({ data: computeWorkspaceComparisonModel({ ...changedInput, id: 2 }) } as MessageEvent)
+    await second
   })
 
   it('terminates a failed worker and recreates it for the next request', async () => {
