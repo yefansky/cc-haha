@@ -1,5 +1,5 @@
 export type WorkspaceComparisonProfile = 'fast' | 'balanced' | 'precise'
-export type WorkspaceComparisonLanguage = 'text' | 'cpp'
+export type WorkspaceComparisonLanguage = 'text' | 'cpp' | 'python' | 'lua'
 export type WorkspaceComparisonRuleScope =
   | 'line'
   | 'keyword'
@@ -58,12 +58,19 @@ export function simpleWorkspaceCaseFold(value: string): string {
 }
 
 export function createDefaultWorkspaceComparisonSettings(path = ''): WorkspaceComparisonSettings {
+  const language: WorkspaceComparisonLanguage = /\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|m|mm)$/i.test(path)
+    ? 'cpp'
+    : /\.(?:py|pyi|pyw)$/i.test(path)
+      ? 'python'
+      : /\.lua$/i.test(path)
+        ? 'lua'
+        : 'text'
   return {
     schemaVersion: 1,
     profile: 'balanced',
     ignoreWhitespace: false,
     ignoreCase: false,
-    language: /\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|m|mm)$/i.test(path) ? 'cpp' : 'text',
+    language,
     rules: [],
   }
 }

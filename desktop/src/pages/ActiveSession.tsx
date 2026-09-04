@@ -61,6 +61,8 @@ const TASK_POLL_INTERVAL_MS = 1000
 const ACTIVITY_AUTOCLOSE_GRACE_MS = 2000
 const WORKSPACE_RESIZE_STEP = 32
 const TERMINAL_RESIZE_STEP = 24
+const CHAT_COLUMN_WITH_WORKSPACE_MIN_WIDTH = 320
+const WORKSPACE_RESIZE_HANDLE_WIDTH = 1
 const CHAT_COLUMN_WITH_WORKSPACE_CLASS =
   'min-w-[320px] flex-1 bg-[var(--color-surface)]'
 const EMPTY_DISMISSED_BACKGROUND_TASK_KEYS: readonly string[] = []
@@ -829,7 +831,11 @@ export function ActiveSession() {
               className={`flex h-full shrink-0 flex-col bg-[var(--color-surface)]${isVscodeLayout ? ' order-first' : ''}`}
               style={isVscodeLayout
                 ? { width: rightPanelWidth, maxWidth: 'calc(100% - 300px)', minWidth: 'min(420px, 55%)' }
-                : { width: rightPanelWidth, maxWidth: '62%', minWidth: 'min(420px, 54%)' }}
+                : {
+                    width: rightPanelWidth,
+                    maxWidth: `calc(100% - ${CHAT_COLUMN_WITH_WORKSPACE_MIN_WIDTH + WORKSPACE_RESIZE_HANDLE_WIDTH}px)`,
+                    minWidth: 'min(420px, 54%)',
+                  }}
             >
               <WorkbenchPanel sessionId={activeTabId} layout={isVscodeLayout ? 'vscode' : 'standard'} />
             </aside>

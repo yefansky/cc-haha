@@ -38,6 +38,7 @@ import {
   addWorkspaceManualAlignmentAnchor,
   editWorkspaceComparisonSide,
 } from '../components/workspace/workspaceComparisonSession'
+import * as workspacePreviewPersistentCache from '../lib/workspacePreviewPersistentCache'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -749,6 +750,80 @@ describe('workspacePanelStore', () => {
     ])
   })
 
+  it('bounds background preview preloads and queues the remainder', async () => {
+    const first = deferred<{ state: 'ok'; path: string; content: string; language: string; size: number }>()
+    const second = deferred<{ state: 'ok'; path: string; content: string; language: string; size: number }>()
+    const third = deferred<{ state: 'ok'; path: string; content: string; language: string; size: number }>()
+    mocks.getWorkspaceFileMock.mockImplementation((_sessionId: string, path: string) => {
+      if (path === 'src/a.ts') return first.promise
+      if (path === 'src/b.ts') return second.promise
+      return third.promise
+    })
+
+    const preloads = [
+      useWorkspacePanelStore.getState().preloadPreview('session-queue', 'src/a.ts', 'file'),
+      useWorkspacePanelStore.getState().preloadPreview('session-queue', 'src/b.ts', 'file'),
+      useWorkspacePanelStore.getState().preloadPreview('session-queue', 'src/c.ts', 'file'),
+    ]
+
+    expect(mocks.getWorkspaceFileMock).toHaveBeenCalledTimes(2)
+    first.resolve({ state: 'ok', path: 'src/a.ts', content: 'a', language: 'typescript', size: 1 })
+    await first.promise
+    await vi.waitFor(() => expect(mocks.getWorkspaceFileMock).toHaveBeenCalledTimes(3))
+
+    second.resolve({ state: 'ok', path: 'src/b.ts', content: 'b', language: 'typescript', size: 1 })
+    third.resolve({ state: 'ok', path: 'src/c.ts', content: 'c', language: 'typescript', size: 1 })
+    await Promise.all(preloads)
+  })
+
+  it('deduplicates repeated background preloads while the request is queued or running', async () => {
+    const pending = deferred<{ state: 'ok'; path: string; content: string; language: string; size: number }>()
+    mocks.getWorkspaceFileMock.mockReturnValue(pending.promise)
+
+    const preloads = Array.from({ length: 24 }, () => (
+      useWorkspacePanelStore.getState().preloadPreview('session-queue-dedupe', 'src/a.ts', 'file')
+    ))
+
+    expect(mocks.getWorkspaceFileMock).toHaveBeenCalledOnce()
+    pending.resolve({ state: 'ok', path: 'src/a.ts', content: 'a', language: 'typescript', size: 1 })
+    await Promise.all(preloads)
+    expect(mocks.getWorkspaceFileMock).toHaveBeenCalledOnce()
+  })
+
+  it('promotes a clicked file ahead of older background work without duplicating it', async () => {
+    const requests = new Map([
+      ['src/a.ts', deferred<{ state: 'ok'; path: string; content: string; language: string; size: number }>()],
+      ['src/b.ts', deferred<{ state: 'ok'; path: string; content: string; language: string; size: number }>()],
+      ['src/c.ts', deferred<{ state: 'ok'; path: string; content: string; language: string; size: number }>()],
+      ['src/d.ts', deferred<{ state: 'ok'; path: string; content: string; language: string; size: number }>()],
+    ])
+    mocks.getWorkspaceFileMock.mockImplementation((_sessionId: string, path: string) => requests.get(path)!.promise)
+
+    const preloads = [...requests.keys()].map((path) => (
+      useWorkspacePanelStore.getState().preloadPreview('session-priority-queue', path, 'file')
+    ))
+    expect(mocks.getWorkspaceFileMock).toHaveBeenCalledTimes(2)
+
+    const clicked = useWorkspacePanelStore.getState().openPreview(
+      'session-priority-queue',
+      'src/d.ts',
+      'file',
+    )
+    expect(mocks.getWorkspaceFileMock).toHaveBeenCalledTimes(3)
+    expect(mocks.getWorkspaceFileMock.mock.calls[2]?.[1]).toBe('src/d.ts')
+
+    requests.get('src/a.ts')!.resolve({
+      state: 'ok', path: 'src/a.ts', content: 'a', language: 'typescript', size: 1,
+    })
+    await vi.waitFor(() => expect(mocks.getWorkspaceFileMock).toHaveBeenCalledTimes(4))
+
+    for (const path of ['src/b.ts', 'src/c.ts', 'src/d.ts']) {
+      requests.get(path)!.resolve({ state: 'ok', path, content: path, language: 'typescript', size: path.length })
+    }
+    await Promise.all([...preloads, clicked])
+    expect(mocks.getWorkspaceFileMock).toHaveBeenCalledTimes(4)
+  })
+
   it('keeps a completed preload invisible until open consumes it without another request', async () => {
     mocks.getWorkspaceDiffMock.mockResolvedValue({ state: 'ok', path: 'src/a.ts', diff: 'warm' })
 
@@ -767,6 +842,120 @@ describe('workspacePanelStore', () => {
     expect(useWorkspacePanelStore.getState().previewTabsBySession['session-warm-cache']).toEqual([
       expect.objectContaining({ state: 'ok', diff: 'warm' }),
     ])
+  })
+
+  it('hydrates a persisted preview before considering a network request', async () => {
+    vi.spyOn(workspacePreviewPersistentCache, 'canUseWorkspacePreviewPersistentCache').mockReturnValue(true)
+    vi.spyOn(workspacePreviewPersistentCache, 'getWorkspacePreviewPersistentCache').mockResolvedValue({
+      cachedAt: Date.now(),
+      payload: {
+        kind: 'file',
+        result: {
+          state: 'ok',
+          path: 'docs/cached.md',
+          content: 'persisted content',
+          language: 'markdown',
+          size: 17,
+        },
+      },
+    })
+
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-persisted-preview',
+      'docs/cached.md',
+      'file',
+    )
+
+    expect(workspacePreviewPersistentCache.getWorkspacePreviewPersistentCache).toHaveBeenCalledOnce()
+    expect(mocks.getWorkspaceFileMock).not.toHaveBeenCalled()
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-persisted-preview']).toEqual([
+      expect.objectContaining({ state: 'ok', content: 'persisted content' }),
+    ])
+  })
+
+  it('rejects a persisted patch-only workspace diff and upgrades it from the live comparison API', async () => {
+    const comparison = {
+      schemaVersion: 1 as const,
+      left: {
+        source: { kind: 'session_baseline' as const, path: 'docs/cached.md', revision: 'left-1' },
+        exists: true,
+        state: 'ok' as const,
+        content: 'old\n',
+        contentFingerprint: 'left-1',
+        size: 4,
+        requestedEncoding: 'auto' as const,
+        actualEncoding: 'utf8' as const,
+        bom: 'none' as const,
+        lineEnding: 'lf' as const,
+        writable: false,
+      },
+      right: {
+        source: { kind: 'working_tree' as const, path: 'docs/cached.md', revision: 'right-1' },
+        exists: true,
+        state: 'ok' as const,
+        content: 'new\n',
+        contentFingerprint: 'right-1',
+        size: 4,
+        requestedEncoding: 'auto' as const,
+        actualEncoding: 'utf8' as const,
+        bom: 'none' as const,
+        lineEnding: 'lf' as const,
+        writable: true,
+      },
+    }
+    vi.spyOn(workspacePreviewPersistentCache, 'canUseWorkspacePreviewPersistentCache').mockReturnValue(true)
+    vi.spyOn(workspacePreviewPersistentCache, 'getWorkspacePreviewPersistentCache').mockResolvedValue({
+      cachedAt: Date.now(),
+      payload: {
+        kind: 'diff',
+        result: { state: 'ok', path: 'docs/cached.md', diff: '@@ -1 +1 @@\n-old\n+new' },
+      },
+    })
+    const deletePersisted = vi.spyOn(
+      workspacePreviewPersistentCache,
+      'deleteWorkspacePreviewPersistentCache',
+    ).mockResolvedValue()
+    mocks.getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: 'docs/cached.md',
+      diff: '@@ -1 +1 @@\n-old\n+new',
+      comparison,
+    })
+
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-patch-only-upgrade',
+      'docs/cached.md',
+      'diff',
+    )
+
+    expect(deletePersisted).toHaveBeenCalledOnce()
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledOnce()
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-patch-only-upgrade']).toEqual([
+      expect.objectContaining({ state: 'ok', comparison }),
+    ])
+  })
+
+  it('does not persist a live patch-only workspace response', async () => {
+    vi.spyOn(workspacePreviewPersistentCache, 'canUseWorkspacePreviewPersistentCache').mockReturnValue(true)
+    vi.spyOn(workspacePreviewPersistentCache, 'getWorkspacePreviewPersistentCache').mockResolvedValue(null)
+    const persist = vi.spyOn(
+      workspacePreviewPersistentCache,
+      'setWorkspacePreviewPersistentCache',
+    ).mockResolvedValue()
+    mocks.getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: 'docs/legacy.md',
+      diff: '@@ -1 +1 @@\n-old\n+new',
+    })
+
+    await useWorkspacePanelStore.getState().openPreview(
+      'session-patch-only-live',
+      'docs/legacy.md',
+      'diff',
+    )
+
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledOnce()
+    expect(persist).not.toHaveBeenCalled()
   })
 
   it('does not let a stale preload overwrite a newer forced result in the cache', async () => {

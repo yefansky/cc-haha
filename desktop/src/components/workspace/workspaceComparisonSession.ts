@@ -61,7 +61,6 @@ interface WorkspaceComparisonSnapshot {
   left: Pick<WorkspaceComparisonSideBuffer, 'exists' | 'content' | 'actualEncoding' | 'lineEnding'>
   right: Pick<WorkspaceComparisonSideBuffer, 'exists' | 'content' | 'actualEncoding' | 'lineEnding'>
   manualAnchors: WorkspaceManualAlignmentAnchor[]
-  revision: number
 }
 
 export interface WorkspaceComparisonSession {
@@ -74,6 +73,7 @@ export interface WorkspaceComparisonSession {
   settingsRevision: number
   comparisonSettings: WorkspaceComparisonSettings
   undoStack: WorkspaceComparisonSnapshot[]
+  redoStack: WorkspaceComparisonSnapshot[]
 }
 
 export type WorkspaceComparisonSettingsApplyOutcome =
@@ -161,6 +161,7 @@ export function createWorkspaceComparisonSession(
     settingsRevision: 0,
     comparisonSettings: createDefaultWorkspaceComparisonSettings(right.source.path || left.source.path),
     undoStack: [],
+    redoStack: [],
   }
 }
 
@@ -177,6 +178,7 @@ export function applyWorkspaceComparisonSettings(
       comparisonSettings: cloneWorkspaceComparisonSettings(draft),
       settingsRevision: session.settingsRevision + 1,
       revision: session.revision + 1,
+      redoStack: [],
     },
   }
 }
@@ -250,7 +252,6 @@ function snapshot(session: WorkspaceComparisonSession): WorkspaceComparisonSnaps
       left: { ...anchor.left, signature: { ...anchor.left.signature } },
       right: { ...anchor.right, signature: { ...anchor.right.signature } },
     })),
-    revision: session.revision,
   }
 }
 
@@ -269,6 +270,7 @@ function withUndo(
     })),
     revision: session.revision + 1,
     undoStack: [...session.undoStack.slice(-(MAX_UNDO_DEPTH - 1)), snapshot(session)],
+    redoStack: [],
   }
   mutate(next)
   next.left.dirty = sideDirty(next.left)
@@ -308,15 +310,50 @@ export function editWorkspaceComparisonLine(
   expectedRevision: number,
 ): WorkspaceComparisonSession {
   if (expectedRevision !== session.revision) return session
-  if (!Number.isInteger(lineNumber) || lineNumber < 1 || /[\r\n]/.test(text)) return session
+  if (!Number.isInteger(lineNumber) || lineNumber < 1) return session
   if (!getWorkspaceComparisonCapability(session, sourceSide).allowed) return session
   const lines = splitContent(session[sourceSide].content)
   const line = lines[lineNumber - 1]
   if (!line || line.text === text) return session
+  const fallbackSide = sourceSide === 'left' ? session.right : session.left
+  const replacement = text
+    .replace(/\r\n|\r|\n/g, '\n')
+    .replace(/\n/g, preferredEnding(session[sourceSide], fallbackSide))
   const content = lines.map((candidate, index) => (
-    `${index === lineNumber - 1 ? text : candidate.text}${candidate.ending}`
+    `${index === lineNumber - 1 ? replacement : candidate.text}${candidate.ending}`
   )).join('')
   return editWorkspaceComparisonSide(session, sourceSide, content)
+}
+
+export function insertWorkspaceComparisonText(
+  session: WorkspaceComparisonSession,
+  sourceSide: WorkspaceComparisonSourceSide,
+  beforeLineNumber: number,
+  text: string,
+  expectedRevision: number,
+): WorkspaceComparisonSession {
+  if (expectedRevision !== session.revision) return session
+  if (!Number.isInteger(beforeLineNumber) || beforeLineNumber < 1 || text.length === 0) return session
+  if (!getWorkspaceComparisonCapability(session, sourceSide).allowed) return session
+  const side = session[sourceSide]
+  const fallbackSide = sourceSide === 'left' ? session.right : session.left
+  const lines = splitContent(side.content)
+  if (beforeLineNumber > lines.length + 1) return session
+  const ending = preferredEnding(side, fallbackSide)
+  const insertion = text.replace(/\r\n|\r|\n/g, '\n').replace(/\n/g, ending)
+  const offset = lines.slice(0, beforeLineNumber - 1).reduce(
+    (total, line) => total + line.text.length + line.ending.length,
+    0,
+  )
+  const before = side.content.slice(0, offset)
+  const after = side.content.slice(offset)
+  const separatorBefore = before && !/(?:\r\n|\r|\n)$/.test(before) ? ending : ''
+  const separatorAfter = after && !/(?:\r\n|\r|\n)$/.test(insertion) ? ending : ''
+  return editWorkspaceComparisonSide(
+    session,
+    sourceSide,
+    `${before}${separatorBefore}${insertion}${separatorAfter}${after}`,
+  )
 }
 
 export function addWorkspaceManualAlignmentAnchor(
@@ -416,12 +453,125 @@ function sectionRows(model: WorkspaceSideBySideModel, section: WorkspaceSideBySi
   return { file, rows, selected: rows.filter((row) => rowIds.has(row.id)) }
 }
 
+function comparisonRow(model: WorkspaceSideBySideModel, rowId: string) {
+  if (model.kind !== 'comparison') return null
+  for (const file of model.files) {
+    if (!file.complete) continue
+    const rowIndex = file.rows.findIndex((row) => row.id === rowId)
+    if (rowIndex < 0) continue
+    const row = file.rows[rowIndex]!
+    if (row.kind !== 'context' && row.kind !== 'change') return null
+    return { file, row, rowIndex }
+  }
+  return null
+}
+
+function insertionIndexAfterRow(
+  rows: WorkspaceSideBySideRow[],
+  rowIndex: number,
+  targetSide: WorkspaceComparisonSourceSide,
+  targetLineCount: number,
+) {
+  const nextLine = rows
+    .slice(rowIndex + 1)
+    .map((row) => sourceLineNumber(row, targetSide))
+    .find((line): line is number => line !== null)
+  if (nextLine !== undefined) return nextLine - 1
+  const previousLine = rows
+    .slice(0, rowIndex)
+    .reverse()
+    .map((row) => sourceLineNumber(row, targetSide))
+    .find((line): line is number => line !== null)
+  return previousLine ?? targetLineCount
+}
+
+function lineMatchesRow(
+  lines: ContentLine[],
+  row: WorkspaceSideBySideRow,
+  sourceSide: WorkspaceComparisonSourceSide,
+) {
+  const lineNumber = sourceLineNumber(row, sourceSide)
+  if (lineNumber === null) return true
+  const sourceRow = sourceSide === 'left' ? row.left : row.right
+  return Boolean(sourceRow && lines[lineNumber - 1]?.text === sourceRow.text)
+}
+
+export function mergeWorkspaceComparisonRow(
+  session: WorkspaceComparisonSession,
+  model: WorkspaceSideBySideModel,
+  rowId: string,
+  sourceSide: WorkspaceComparisonSourceSide,
+  expectedRevision: number,
+): WorkspaceComparisonSession {
+  if (expectedRevision !== session.revision) return session
+  const targetSide: WorkspaceComparisonSourceSide = sourceSide === 'left' ? 'right' : 'left'
+  if (!getWorkspaceComparisonCapability(session, targetSide).allowed) return session
+  const resolved = comparisonRow(model, rowId)
+  if (!resolved) return session
+
+  const source = session[sourceSide]
+  const target = session[targetSide]
+  const sourceLines = splitContent(source.content)
+  const targetLines = splitContent(target.content)
+  if (
+    !lineMatchesRow(sourceLines, resolved.row, sourceSide)
+    || !lineMatchesRow(targetLines, resolved.row, targetSide)
+  ) return session
+
+  const sourceLineNumberValue = sourceLineNumber(resolved.row, sourceSide)
+  const targetLineNumberValue = sourceLineNumber(resolved.row, targetSide)
+  if (sourceLineNumberValue === null && targetLineNumberValue === null) return session
+  const replacement = sourceLineNumberValue === null
+    ? []
+    : [sourceLines[sourceLineNumberValue - 1]!]
+  const targetStart = targetLineNumberValue === null
+    ? insertionIndexAfterRow(resolved.file.rows, resolved.rowIndex, targetSide, targetLines.length)
+    : targetLineNumberValue - 1
+  const targetDeleteCount = targetLineNumberValue === null ? 0 : 1
+  const ending = preferredEnding(target, source)
+  const inserted = replacement.map((line) => ({ text: line.text, ending }))
+  const nextLines = [...targetLines]
+  nextLines.splice(targetStart, targetDeleteCount, ...inserted)
+  for (let index = 0; index < nextLines.length - 1; index += 1) {
+    if (!nextLines[index]!.ending) nextLines[index]!.ending = ending
+  }
+  if (nextLines.length > 0 && targetStart + inserted.length >= nextLines.length) {
+    const sourceLast = replacement.at(-1)
+    if (sourceLast && !sourceLast.ending) nextLines.at(-1)!.ending = ''
+  }
+  const content = nextLines.map((line) => line.text + line.ending).join('')
+  const removingWholeExistingTarget = !source.exists
+    && targetLineNumberValue !== null
+    && targetLines.length === 1
+    && replacement.length === 0
+  const nextExists = removingWholeExistingTarget ? false : true
+  const nextContent = nextExists ? content : ''
+  if (target.exists === nextExists && target.content === nextContent) return session
+
+  return withUndo(session, (next) => {
+    const nextTarget = next[targetSide]
+    const beforeContent = nextTarget.content
+    nextTarget.exists = nextExists
+    nextTarget.content = nextContent
+    if (!nextTarget.originExists && nextTarget.exists) nextTarget.actualEncoding = 'utf8'
+    nextTarget.lineEnding = nextTarget.exists ? detectLineEnding(nextTarget.content) : 'none'
+    next.manualAnchors = rebaseManualAlignmentAnchors(
+      next.manualAnchors,
+      targetSide,
+      beforeContent,
+      nextTarget.content,
+    )
+  })
+}
+
 export function mergeWorkspaceComparisonSection(
   session: WorkspaceComparisonSession,
   model: WorkspaceSideBySideModel,
   sectionId: string,
   sourceSide: WorkspaceComparisonSourceSide,
+  expectedRevision: number = session.revision,
 ): WorkspaceComparisonSession {
+  if (expectedRevision !== session.revision) return session
   const targetSide: WorkspaceComparisonSourceSide = sourceSide === 'left' ? 'right' : 'left'
   if (!getWorkspaceComparisonCapability(session, targetSide).allowed || model.kind !== 'comparison') return session
   const section = model.sections.find((candidate) => candidate.id === sectionId)
@@ -512,6 +662,20 @@ export function mergeWorkspaceComparisonSection(
 export function undoWorkspaceComparisonSession(session: WorkspaceComparisonSession): WorkspaceComparisonSession {
   const previous = session.undoStack.at(-1)
   if (!previous) return session
+  return restoreWorkspaceComparisonSnapshot(
+    session,
+    previous,
+    session.undoStack.slice(0, -1),
+    [...session.redoStack.slice(-(MAX_UNDO_DEPTH - 1)), snapshot(session)],
+  )
+}
+
+function restoreWorkspaceComparisonSnapshot(
+  session: WorkspaceComparisonSession,
+  target: WorkspaceComparisonSnapshot,
+  undoStack: WorkspaceComparisonSnapshot[],
+  redoStack: WorkspaceComparisonSnapshot[],
+): WorkspaceComparisonSession {
   const restore = (
     side: WorkspaceComparisonSideBuffer,
     value: WorkspaceComparisonSnapshot[WorkspaceComparisonSourceSide],
@@ -522,12 +686,30 @@ export function undoWorkspaceComparisonSession(session: WorkspaceComparisonSessi
   })
   return {
     ...session,
-    left: restore(session.left, previous.left),
-    right: restore(session.right, previous.right),
-    manualAnchors: previous.manualAnchors,
-    revision: previous.revision,
-    undoStack: session.undoStack.slice(0, -1),
+    left: restore(session.left, target.left),
+    right: restore(session.right, target.right),
+    manualAnchors: target.manualAnchors.map((anchor) => ({
+      ...anchor,
+      left: { ...anchor.left, signature: { ...anchor.left.signature } },
+      right: { ...anchor.right, signature: { ...anchor.right.signature } },
+    })),
+    // Revisions are optimistic-concurrency tokens, so history navigation must
+    // never reuse an earlier value after the user creates a new branch.
+    revision: session.revision + 1,
+    undoStack,
+    redoStack,
   }
+}
+
+export function redoWorkspaceComparisonSession(session: WorkspaceComparisonSession): WorkspaceComparisonSession {
+  const next = session.redoStack.at(-1)
+  if (!next) return session
+  return restoreWorkspaceComparisonSnapshot(
+    session,
+    next,
+    [...session.undoStack.slice(-(MAX_UNDO_DEPTH - 1)), snapshot(session)],
+    session.redoStack.slice(0, -1),
+  )
 }
 
 export function discardWorkspaceComparisonSession(session: WorkspaceComparisonSession): WorkspaceComparisonSession {
@@ -554,6 +736,7 @@ export function discardWorkspaceComparisonSession(session: WorkspaceComparisonSe
     manualAnchors: rebaseManualAlignmentAnchors(rebasedLeft, 'right', session.right.content, right.content),
     revision: 0,
     undoStack: [],
+    redoStack: [],
   }
 }
 
@@ -569,6 +752,7 @@ export function acceptWorkspaceComparisonSave(
     right: { ...session.right },
     revision: session.revision + 1,
     undoStack: [] as WorkspaceComparisonSnapshot[],
+    redoStack: [] as WorkspaceComparisonSnapshot[],
   }
   const side = next[sourceSide]
   if (savedContent === null) {

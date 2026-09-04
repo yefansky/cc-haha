@@ -4793,6 +4793,97 @@ describe('Sessions API', () => {
     await expect(fs.stat(omittedExpectationPath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it('POST /api/sessions/:id/workspace/file/write-access grants one external working file', async () => {
+    const workDir = await createWorkspaceApiGitRepo(tmpDir)
+    const externalDir = await createWorkspaceApiGitRepo(tmpDir)
+    const externalPath = path.join(externalDir, 'tracked.txt')
+    const { sessionId } = await service.createSession(workDir)
+
+    const registerRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/roots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: externalDir }),
+    })
+    expect(registerRes.status).toBe(200)
+
+    const beforeRes = await fetch(
+      `${baseUrl}/api/sessions/${sessionId}/workspace/diff?path=${encodeURIComponent(externalPath)}`,
+    )
+    expect(beforeRes.status).toBe(200)
+    expect(await beforeRes.json()).toMatchObject({
+      comparison: { right: { source: { kind: 'working_tree' }, writable: false } },
+    })
+
+    const grantRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/file/write-access`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: externalPath }),
+    })
+    expect(grantRes.status).toBe(200)
+    expect(await grantRes.json()).toMatchObject({ path: expect.stringMatching(/tracked\.txt$/) })
+
+    const afterRes = await fetch(
+      `${baseUrl}/api/sessions/${sessionId}/workspace/diff?path=${encodeURIComponent(externalPath)}`,
+    )
+    expect(afterRes.status).toBe(200)
+    expect(await afterRes.json()).toMatchObject({
+      comparison: { right: { source: { kind: 'working_tree' }, writable: true } },
+    })
+  })
+
+  it('restores an exact checkpoint file grant after restart without a checkpoint-list request', async () => {
+    const sessionId = '99999999-bbbb-cccc-dddd-000000000105'
+    const otherSessionId = '99999999-bbbb-cccc-dddd-000000000106'
+    const workDir = path.join(tmpDir, 'cached-preview-workdir')
+    const otherWorkDir = path.join(tmpDir, 'cached-preview-other-workdir')
+    const externalDir = path.join(tmpDir, 'cached-preview-external')
+    const externalPath = path.join(externalDir, 'changed.txt')
+    const siblingPath = path.join(externalDir, 'sibling.txt')
+    const userId = crypto.randomUUID()
+    await fs.mkdir(workDir, { recursive: true })
+    await fs.mkdir(otherWorkDir, { recursive: true })
+    await fs.mkdir(externalDir, { recursive: true })
+    await fs.writeFile(externalPath, 'after\n')
+    await fs.writeFile(siblingPath, 'sibling\n')
+    await writeSessionFile('-tmp-cached-preview-workdir', sessionId, [
+      makeSessionMetaEntry(workDir),
+      { ...makeUserEntry('edit external file', userId), cwd: workDir, sessionId },
+      makeAssistantToolUseEntry([{
+        id: 'Edit:cached-preview-external',
+        name: 'Edit',
+        input: { file_path: externalPath, old_string: 'before', new_string: 'after' },
+      }], userId),
+      makeToolResultUserEntry('Edit:cached-preview-external', 'Updated.', undefined, undefined, sessionId),
+      makeAssistantEntry('Done.', userId),
+    ])
+    await writeSessionFile('-tmp-cached-preview-other-workdir', otherSessionId, [
+      makeSessionMetaEntry(otherWorkDir),
+    ])
+
+    // Deliberately skip GET /turn-checkpoints: a persisted renderer preview can
+    // satisfy that UI path without touching the freshly restarted server.
+    const grantRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/file/write-access`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: externalPath }),
+    })
+    expect(grantRes.status).toBe(200)
+
+    const siblingRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workspace/file/write-access`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: siblingPath }),
+    })
+    expect(siblingRes.status).toBe(403)
+
+    const otherSessionRes = await fetch(`${baseUrl}/api/sessions/${otherSessionId}/workspace/file/write-access`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: externalPath }),
+    })
+    expect(otherSessionRes.status).toBe(403)
+  })
+
   it('GET diff and PUT file preserve per-side encoding and enforce raw-byte CAS over HTTP', async () => {
     const workDir = await createWorkspaceApiGitRepo(tmpDir)
     const { sessionId } = await service.createSession(workDir)

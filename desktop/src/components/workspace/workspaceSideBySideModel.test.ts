@@ -208,6 +208,59 @@ describe('buildWorkspaceSideBySideModel', () => {
     expect(context.filter((item) => item.kind === 'separator')).toHaveLength(2)
   })
 
+  it('expands one stable context separator without expanding its siblings', () => {
+    const lines = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`)
+    const right = [...lines]
+    right[5] = 'changed 6'
+    right[15] = 'changed 16'
+    const model = buildWorkspaceSideBySideModel(
+      '',
+      comparison(side(`${lines.join('\n')}\n`), side(`${right.join('\n')}\n`)),
+      'src/a.ts',
+    )
+    const file = model.files[0]!
+    const collapsed = projectWorkspaceSideBySideFile(file, 'context')
+    const middleSeparator = collapsed.find((item) => item.kind === 'separator' && item.hiddenCount === 3)
+
+    expect(middleSeparator).toBeDefined()
+    const expanded = projectWorkspaceSideBySideFile(
+      file,
+      'context',
+      3,
+      new Set([middleSeparator!.id]),
+    )
+    const visibleLineNumbers = expanded.flatMap((item) => (
+      item.kind === 'row' ? [item.row.left?.oldLine ?? item.row.right?.newLine] : []
+    ))
+
+    expect(visibleLineNumbers).toEqual(expect.arrayContaining([10, 11, 12]))
+    expect(expanded.filter((item) => item.kind === 'separator').map((item) => item.hiddenCount)).toEqual([2, 1])
+  })
+
+  it('does not invent expandable rows for an unknown patch-only gap', () => {
+    const patch = [
+      '@@ -1,2 +1,2 @@',
+      '-old first',
+      '+new first',
+      ' stable two',
+      '@@ -20,2 +20,2 @@',
+      '-old second',
+      '+new second',
+      ' stable twenty one',
+    ].join('\n')
+    const file = buildWorkspaceSideBySideModel(patch, undefined, 'src/a.ts').files[0]!
+    const collapsed = projectWorkspaceSideBySideFile(file, 'context')
+    const unknownSeparator = collapsed.find((item) => item.kind === 'separator' && item.hiddenCount === null)
+
+    expect(unknownSeparator).toBeDefined()
+    expect(projectWorkspaceSideBySideFile(
+      file,
+      'context',
+      3,
+      new Set([unknownSeparator!.id]),
+    )).toEqual(collapsed)
+  })
+
   it('keeps differences and context available while disabling full modes for patch-only and blocked states', () => {
     const patch = ['@@ -1 +1 @@', '-old', '+new'].join('\n')
     const patchOnly = buildWorkspaceSideBySideModel(patch, undefined, 'src/a.ts')
@@ -346,7 +399,7 @@ describe('buildWorkspaceSideBySideModel', () => {
     settings.ignoreCase = true
     const model = buildWorkspaceSideBySideModel(
       '',
-      comparison(side('const VALUE = 1;\n'), side(' const value=1; \n')),
+      comparison(side('const VALUE = 1;\n'), side('const value = 1;   \n')),
       'src/a.ts',
       [],
       settings,
@@ -356,8 +409,54 @@ describe('buildWorkspaceSideBySideModel', () => {
       kind: 'context',
       equivalenceReason: 'settings',
       left: { text: 'const VALUE = 1;' },
-      right: { text: ' const value=1; ' },
+      right: { text: 'const value = 1;   ' },
     }])
+  })
+
+  it.each([
+    ['src/a.cpp', 'int f(){ return x + ++y; }\n', 'int f(){ return x+++y; }\n'],
+    ['src/a.lua', 'return a - -b\n', 'return a--b\n'],
+    ['src/a.py', 'x < < y\n', 'x << y\n'],
+  ])('keeps token-boundary-sensitive %s changes visible in the projected model', (path, left, right) => {
+    const settings = createDefaultWorkspaceComparisonSettings(path)
+    settings.ignoreWhitespace = true
+    const model = buildWorkspaceSideBySideModel('', comparison(side(left), side(right)), path, [], settings)
+
+    expect(model.sections.length).toBeGreaterThan(0)
+    expect(model.files[0]!.rows.some((row) => row.kind === 'change')).toBe(true)
+  })
+
+  it.each([
+    ['/* lead */ #define F(x) x\n', '/* lead */ #define F (x) x\n'],
+    ['/* lead */ %:define F(x) x\n', '/* lead */ %:define F (x) x\n'],
+    ['#define F(x) \\   \n  x\n', '#define F(x) \\   \n x\n'],
+  ])('keeps protected C++ directive whitespace visible in the projected model', (left, right) => {
+    const path = 'src/a.cpp'
+    const settings = createDefaultWorkspaceComparisonSettings(path)
+    settings.ignoreWhitespace = true
+    const model = buildWorkspaceSideBySideModel('', comparison(side(left), side(right)), path, [], settings)
+
+    expect(model.sections.length).toBeGreaterThan(0)
+    expect(model.files[0]!.rows.some((row) => row.kind === 'change')).toBe(true)
+  })
+
+  it.each(['src/a.cpp', 'src/a.py', 'src/a.lua'])('does not let a number-scope rule hide operators in %s', (path) => {
+    const settings = createDefaultWorkspaceComparisonSettings(path)
+    settings.ignoreWhitespace = true
+    settings.rules = [{
+      id: 'ignore-numbers',
+      name: 'ignore numbers',
+      enabled: true,
+      pattern: '[0-9+]+',
+      caseSensitive: true,
+      scope: 'number',
+      effect: 'ignore',
+      priority: 1,
+    }]
+    const model = buildWorkspaceSideBySideModel('', comparison(side('x=1+2\n'), side('x=3\n')), path, [], settings)
+
+    expect(model.sections.length).toBeGreaterThan(0)
+    expect(model.files[0]!.rows.some((row) => row.kind === 'change')).toBe(true)
   })
 
   it('treats CRLF and LF as equivalent only when whitespace is ignored', () => {

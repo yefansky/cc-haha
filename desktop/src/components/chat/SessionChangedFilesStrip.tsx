@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { ChevronDown, ChevronRight, FileCode2, Files } from 'lucide-react'
 import type { SessionTurnCheckpoint } from '../../api/sessions'
 import { useTranslation } from '../../i18n'
@@ -59,6 +59,7 @@ export function SessionChangedFilesStrip({
 }: SessionChangedFilesStripProps) {
   const t = useTranslation()
   const [expanded, setExpanded] = useState(false)
+  const warmedSignatureBySessionRef = useRef(new Map<string, string>())
   const subscribe = useCallback(
     (listener: () => void) => subscribeSessionTurnCheckpoints(sessionId, listener),
     [sessionId],
@@ -81,32 +82,40 @@ export function SessionChangedFilesStrip({
     if (!enabled) return
     const workspace = useWorkspacePanelStore.getState()
     workspace.registerSessionWorkDir(sessionId, workDir ?? undefined)
-    void loadSessionTurnCheckpoints(sessionId).catch(() => {})
+    let cancelled = false
+    void loadSessionTurnCheckpoints(sessionId)
+      .then((checkpoints) => {
+        if (cancelled) return
+        const filesToWarm = buildSessionChangedFiles(checkpoints, workDir)
+        const signature = filesToWarm.map((file) => (
+          `${pathKey(file.displayPath, workDir)}\0${file.checkpoint.target.targetUserMessageId}\0${file.checkpoint.target.userMessageIndex}`
+        )).join('\n')
+        const previousSignature = warmedSignatureBySessionRef.current.get(sessionId)
+        const force = previousSignature !== undefined && previousSignature !== signature
+        warmedSignatureBySessionRef.current.set(sessionId, signature)
+        for (const file of filesToWarm) {
+          void workspace.preloadPreview(
+            sessionId,
+            file.displayPath,
+            'file',
+            { kind: 'workspace' },
+            'auto',
+            undefined,
+            { force },
+          ).catch(() => {})
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [enabled, refreshNonce, sessionId, workDir])
 
   const openChangedFile = useCallback(async (file: SessionChangedFile) => {
     const workspace = useWorkspacePanelStore.getState()
-    // A file may have been saved, reverted or deleted since the last panel
-    // refresh. The click is user-triggered, so prefer a fresh classification
-    // over the short status cache before choosing live diff vs snapshot.
-    await workspace.loadStatus(sessionId, { force: true, invalidatePreviews: false })
-
-    const currentStatus = useWorkspacePanelStore.getState().statusBySession[sessionId]
-    const currentChangedFile = currentStatus?.changedFiles.find((entry) => {
-      const entryPath = relativizeWorkspacePath(entry.path, currentStatus.workDir || workDir)
-      const oldPath = entry.oldPath
-        ? relativizeWorkspacePath(entry.oldPath, currentStatus.workDir || workDir)
-        : null
-      const targetKey = pathKey(file.displayPath, currentStatus.workDir || workDir)
-      return pathKey(entryPath, currentStatus.workDir || workDir) === targetKey ||
-        (oldPath !== null && pathKey(oldPath, currentStatus.workDir || workDir) === targetKey)
-    })
-
-    if (currentChangedFile) {
-      await workspace.openPreview(sessionId, currentChangedFile.path, 'diff', undefined, undefined, { kind: 'workspace' })
-      return
-    }
-
+    // This strip is the fast, readable view of files touched by the session.
+    // Repository comparison remains an explicit workspace view, so opening a
+    // row must never wait for a full Git/SVN status scan first.
     await workspace.openPreview(sessionId, file.displayPath, 'file')
     const fileTabId = getWorkspacePreviewTabId(file.displayPath, 'file')
     const fileTab = useWorkspacePanelStore.getState().previewTabsBySession[sessionId]
@@ -118,7 +127,7 @@ export function SessionChangedFilesStrip({
       targetUserMessageId: file.checkpoint.target.targetUserMessageId,
       userMessageIndex: file.checkpoint.target.userMessageIndex,
     })
-  }, [sessionId, workDir])
+  }, [sessionId])
 
   if (files.length === 0) return null
 

@@ -156,6 +156,25 @@ describe('sessionsApi', () => {
     })
   })
 
+  it('requests an exact external-file write grant for the current session', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ path: 'G:/outside/tracked.txt' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await sessionsApi.grantWorkspaceFileWriteAccess('session-1', 'G:/outside/tracked.txt')
+
+    expect(result).toEqual({ path: 'G:/outside/tracked.txt' })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:3456/api/sessions/session-1/workspace/file/write-access',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ path: 'G:/outside/tracked.txt' }),
+      }),
+    )
+  })
+
   it('forwards independent comparison encodings and encoded raw-CAS writes', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({

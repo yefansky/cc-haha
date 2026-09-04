@@ -4,12 +4,17 @@ import { execFile as execFileCallback } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
-import { diffLines } from 'diff'
+import { applyPatch, diffLines, parsePatch, reversePatch, type StructuredPatch } from 'diff'
 import iconv from 'iconv-lite'
 import type { MessageEntry } from './sessionService.js'
 import type { FileHistorySnapshot } from '../../utils/fileHistory.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
-import { isWithinRegisteredFilesystemRoot, registerFilesystemAccessRoot } from './filesystemAccessRoots.js'
+import {
+  canonicalizeFilesystemAccessPath,
+  isWithinRegisteredFilesystemRoot,
+  registerChangedFileAccessRoot,
+  registerFilesystemAccessRoot,
+} from './filesystemAccessRoots.js'
 import { collectErroredToolUseIds } from './transcriptToolResults.js'
 import {
   isSameOrInsidePathForPlatform,
@@ -332,6 +337,7 @@ type SvnWorkspaceInfo =
   | { kind: 'error'; message: string }
 
 type WorkspacePathResolution = {
+  sessionId: string
   requestedPath: string
   relativePath: string
   absolutePath: string
@@ -424,6 +430,10 @@ export function parseStatus(code: string): WorkspaceFileStatus {
 
 export class WorkspaceService {
   private readonly statusRequestsInFlight = new Map<string, Promise<WorkspaceStatusResult>>()
+  private readonly externalReadRootsBySession = new Map<string, Set<string>>()
+  private readonly externalReadFilesBySession = new Map<string, Set<string>>()
+  private readonly externalWriteGrantsBySession = new Map<string, Set<string>>()
+  private readonly workspaceWriteQueues = new Map<string, Promise<void>>()
 
   constructor(
     private readonly resolveSessionWorkDir: (
@@ -443,7 +453,7 @@ export class WorkspaceService {
    * This is a user-selected, read-only viewer capability; it does not change
    * an agent session's working directory or grant write permission.
    */
-  async registerExternalRoot(rootPath: string): Promise<string> {
+  async registerExternalRoot(sessionId: string, rootPath: string): Promise<string> {
     const absolutePath = path.resolve(normalizeDriveRootPathForPlatform(rootPath))
     const stat = await this.safeStat(absolutePath)
     if (stat.kind === 'missing' || !stat.stat.isDirectory()) {
@@ -452,7 +462,85 @@ export class WorkspaceService {
 
     if (stat.kind === 'error') throw new Error(stat.message)
     registerFilesystemAccessRoot(absolutePath)
+    await this.registerSessionExternalReadRoot(sessionId, absolutePath)
     return absolutePath
+  }
+
+  private async registerSessionExternalReadRoot(sessionId: string, rootPath: string): Promise<void> {
+    const canonicalRoot = normalizeDriveRootPathForPlatform(await fs.realpath(rootPath))
+    const roots = this.externalReadRootsBySession.get(sessionId) ?? new Set<string>()
+    roots.add(this.workspaceWriteTargetKey(canonicalRoot))
+    this.externalReadRootsBySession.set(sessionId, roots)
+  }
+
+  /**
+   * Restore read access to one exact file named by a server-derived turn
+   * checkpoint. Callers must not pass client-authored paths into this method.
+   * Unlike an explicitly selected viewer root, this capability never includes
+   * the file's containing directory.
+   */
+  async registerTurnCheckpointFileReadAccess(
+    sessionId: string,
+    filePath: string,
+    checkpointWorkDir: string,
+  ): Promise<void> {
+    const normalizedPath = normalizeDriveRootPathForPlatform(filePath)
+    const absolutePath = path.isAbsolute(normalizedPath)
+      ? path.resolve(normalizedPath)
+      : path.resolve(normalizeDriveRootPathForPlatform(checkpointWorkDir), normalizedPath)
+    const sessionWorkDir = await this.requireWorkDir(sessionId)
+    const canonicalTarget = canonicalizeFilesystemAccessPath(absolutePath)
+    const canonicalSessionWorkDir = canonicalizeFilesystemAccessPath(sessionWorkDir)
+    if (this.isWithinRoot(canonicalTarget, canonicalSessionWorkDir)) return
+
+    registerChangedFileAccessRoot(absolutePath, sessionWorkDir)
+    const files = this.externalReadFilesBySession.get(sessionId) ?? new Set<string>()
+    files.add(this.workspaceWriteTargetKey(canonicalTarget))
+    this.externalReadFilesBySession.set(sessionId, files)
+  }
+
+  private hasSessionExternalReadAccess(sessionId: string, canonicalTargetPath: string): boolean {
+    const targetKey = this.workspaceWriteTargetKey(canonicalTargetPath)
+    if (this.externalReadFilesBySession.get(sessionId)?.has(targetKey)) return true
+    for (const rootKey of this.externalReadRootsBySession.get(sessionId) ?? []) {
+      if (this.isWithinRoot(targetKey, rootKey)) return true
+    }
+    return false
+  }
+
+  /**
+   * Grants write access to one already-readable external working file. The
+   * grant is deliberately scoped to the canonical file identity and session;
+   * registering a viewer root remains read-only by default.
+   */
+  async grantExternalFileWriteAccess(sessionId: string, filePath: string): Promise<{ path: string }> {
+    const resolvedPath = await this.resolveWorkspacePath(sessionId, filePath)
+    if (!resolvedPath.isExternalRoot || !isWithinRegisteredFilesystemRoot(resolvedPath.absolutePath)) {
+      throw new Error(`External write access requires a file inside a registered viewer root: ${filePath}`)
+    }
+    if (!this.hasSessionExternalReadAccess(sessionId, resolvedPath.canonicalTargetPath)) {
+      throw new Error(`Path is outside workspace roots registered for this session: ${filePath}`)
+    }
+
+    const stat = await this.safeStat(resolvedPath.absolutePath)
+    if (stat.kind === 'error') throw new Error(stat.message)
+    if (stat.kind === 'missing' || !stat.stat.isFile()) {
+      throw new Error(`External write access requires an existing regular file: ${filePath}`)
+    }
+
+    const canonicalTargetPath = normalizeDriveRootPathForPlatform(await fs.realpath(resolvedPath.absolutePath))
+    if (!isWithinRegisteredFilesystemRoot(canonicalTargetPath)) {
+      throw new Error(`External write target escaped its registered viewer root: ${filePath}`)
+    }
+    try {
+      await this.assertExternalFileWritable(canonicalTargetPath)
+    } catch (error) {
+      throw new Error(this.formatFsError('External workspace file is not writable', canonicalTargetPath, error))
+    }
+    const grants = this.externalWriteGrantsBySession.get(sessionId) ?? new Set<string>()
+    grants.add(this.workspaceWriteTargetKey(canonicalTargetPath))
+    this.externalWriteGrantsBySession.set(sessionId, grants)
+    return { path: resolvedPath.relativePath }
   }
 
   async getStatus(sessionId: string): Promise<WorkspaceStatusResult> {
@@ -781,58 +869,60 @@ export class WorkspaceService {
       }
     }
 
-    if (resolvedPath.isExternalRoot) {
-      return {
-        state: 'error',
-        path: resolvedPath.relativePath,
-        error: 'Registered external roots are read-only.',
-      }
-    }
-
-    if (options?.expectedFingerprint !== undefined) {
-      return await this.writeTextFileWithRawCas(resolvedPath, content, options)
-    }
-
-    const current = await this.readTextFileForWrite(resolvedPath.absolutePath)
-    if (current.kind === 'error') {
-      return { state: 'error', path: resolvedPath.relativePath, error: current.message }
-    }
-    if (current.kind === 'binary') {
-      return { state: 'binary', path: resolvedPath.relativePath }
-    }
-    if (current.content !== expectedContent) {
-      return {
-        state: 'conflict',
-        path: resolvedPath.relativePath,
-        error: 'The file changed after this review was opened. Refresh the diff and try again.',
-      }
-    }
-
-    if (current.content === null && content !== null) {
-      return await this.createTextFileExclusively(resolvedPath, content)
-    }
-
-    try {
-      if (content === null) {
-        if (current.content === null) return { state: 'missing', path: resolvedPath.relativePath }
-        await fs.unlink(resolvedPath.absolutePath)
-        return { state: 'ok', path: resolvedPath.relativePath }
+    return await this.runWithWorkspaceWriteQueue(resolvedPath.canonicalTargetPath, async () => {
+      if (resolvedPath.isExternalRoot && !await this.validateExternalFileWriteAccess(sessionId, resolvedPath)) {
+        return {
+          state: 'error',
+          path: resolvedPath.relativePath,
+          error: 'Registered external roots are read-only.',
+        }
       }
 
-      await fs.writeFile(resolvedPath.absolutePath, content, 'utf8')
-      return {
-        state: 'ok',
-        path: resolvedPath.relativePath,
-        content,
-        size: Buffer.byteLength(content),
+      if (options?.expectedFingerprint !== undefined) {
+        return await this.writeTextFileWithRawCas(resolvedPath, content, options)
       }
-    } catch (error) {
-      return {
-        state: 'error',
-        path: resolvedPath.relativePath,
-        error: this.formatFsError('Failed to write workspace file', resolvedPath.absolutePath, error),
+
+      const current = await this.readTextFileForWrite(resolvedPath.absolutePath)
+      if (current.kind === 'error') {
+        return { state: 'error', path: resolvedPath.relativePath, error: current.message }
       }
-    }
+      if (current.kind === 'binary') {
+        return { state: 'binary', path: resolvedPath.relativePath }
+      }
+      if (current.content !== expectedContent) {
+        return {
+          state: 'conflict',
+          path: resolvedPath.relativePath,
+          error: 'The file changed after this review was opened. Refresh the diff and try again.',
+        }
+      }
+
+      if (current.content === null && content !== null) {
+        return await this.createTextFileExclusively(resolvedPath, content)
+      }
+
+      try {
+        if (content === null) {
+          if (current.content === null) return { state: 'missing', path: resolvedPath.relativePath }
+          await fs.unlink(resolvedPath.absolutePath)
+          return { state: 'ok', path: resolvedPath.relativePath }
+        }
+
+        await fs.writeFile(resolvedPath.absolutePath, content, 'utf8')
+        return {
+          state: 'ok',
+          path: resolvedPath.relativePath,
+          content,
+          size: Buffer.byteLength(content),
+        }
+      } catch (error) {
+        return {
+          state: 'error',
+          path: resolvedPath.relativePath,
+          error: this.formatFsError('Failed to write workspace file', resolvedPath.absolutePath, error),
+        }
+      }
+    })
   }
 
   /** Restores a whole reviewed file to its VCS or session-snapshot baseline. */
@@ -849,6 +939,13 @@ export class WorkspaceService {
         state: 'error',
         path: this.normalizeRequestedPath(filePath),
         error: error instanceof Error ? error.message : String(error),
+      }
+    }
+    if (resolvedPath.isExternalRoot && !await this.validateExternalFileWriteAccess(sessionId, resolvedPath)) {
+      return {
+        state: 'error',
+        path: resolvedPath.relativePath,
+        error: 'Registered external roots are read-only.',
       }
     }
     const current = await this.readTextFileForWrite(resolvedPath.absolutePath)
@@ -967,7 +1064,10 @@ export class WorkspaceService {
         // A directory symlink is an intentional local navigation edge. Add it
         // as a viewer root so following it does not get rejected merely because
         // its target is outside the session's primary working directory.
-        if (isDirectory) registerFilesystemAccessRoot(absoluteEntryPath)
+        if (isDirectory) {
+          registerFilesystemAccessRoot(absoluteEntryPath)
+          await this.registerSessionExternalReadRoot(sessionId, absoluteEntryPath)
+        }
       }
       return { entry, absoluteEntryPath, isDirectory, isSymlink }
     }))
@@ -1031,33 +1131,33 @@ export class WorkspaceService {
           error: svnInfo.message,
         }
       }
-      const storedDiff = await this.getStoredWorkspaceDiff(
+      const stored = await this.getStoredWorkspaceDiffResult(
         sessionId,
-        resolvedPath.workspaceRoot,
-        resolvedPath.relativePath,
+        resolvedPath,
+        leftRequestedEncoding,
+        rightRequestedEncoding,
       )
-      if (storedDiff) {
+      if (stored) {
         return {
           state: 'ok',
           path: resolvedPath.relativePath,
-          diff: storedDiff,
-          ...await this.getFileHistoryComparisonResult(sessionId, resolvedPath, leftRequestedEncoding, rightRequestedEncoding),
+          ...stored,
         }
       }
       return { state: 'not_git_repo', path: resolvedPath.relativePath }
     }
     if (repoInfo.kind === 'error') {
-      const storedDiff = await this.getStoredWorkspaceDiff(
+      const stored = await this.getStoredWorkspaceDiffResult(
         sessionId,
-        resolvedPath.workspaceRoot,
-        resolvedPath.relativePath,
+        resolvedPath,
+        leftRequestedEncoding,
+        rightRequestedEncoding,
       )
-      if (storedDiff) {
+      if (stored) {
         return {
           state: 'ok',
           path: resolvedPath.relativePath,
-          diff: storedDiff,
-          ...await this.getFileHistoryComparisonResult(sessionId, resolvedPath, leftRequestedEncoding, rightRequestedEncoding),
+          ...stored,
         }
       }
       return {
@@ -1069,17 +1169,17 @@ export class WorkspaceService {
 
     const statusEntries = await this.getStatusEntries(repoInfo.repoRoot)
     if (statusEntries.kind === 'error') {
-      const storedDiff = await this.getStoredWorkspaceDiff(
+      const stored = await this.getStoredWorkspaceDiffResult(
         sessionId,
-        resolvedPath.workspaceRoot,
-        resolvedPath.relativePath,
+        resolvedPath,
+        leftRequestedEncoding,
+        rightRequestedEncoding,
       )
-      if (storedDiff) {
+      if (stored) {
         return {
           state: 'ok',
           path: resolvedPath.relativePath,
-          diff: storedDiff,
-          ...await this.getFileHistoryComparisonResult(sessionId, resolvedPath, leftRequestedEncoding, rightRequestedEncoding),
+          ...stored,
         }
       }
       return {
@@ -1105,17 +1205,31 @@ export class WorkspaceService {
     )
 
     if (!statusEntry) {
-      const storedDiff = await this.getStoredWorkspaceDiff(
-        sessionId,
-        resolvedPath.workspaceRoot,
-        resolvedPath.relativePath,
+      const cleanComparison = await this.buildGitComparison(
+        resolvedPath,
+        repoInfo.repoRoot,
+        {
+          repoPath: repoRelativePath,
+          path: resolvedPath.relativePath,
+          status: 'modified',
+          absolutePath: resolvedPath.canonicalTargetPath,
+          canonicalWorkspaceRoot: resolvedPath.canonicalWorkspaceRoot,
+        },
+        leftRequestedEncoding,
+        rightRequestedEncoding,
       )
-      if (storedDiff) {
+      const stored = await this.getStoredWorkspaceDiffResult(
+        sessionId,
+        resolvedPath,
+        leftRequestedEncoding,
+        rightRequestedEncoding,
+        cleanComparison,
+      )
+      if (stored) {
         return {
           state: 'ok',
           path: resolvedPath.relativePath,
-          diff: storedDiff,
-          ...await this.getFileHistoryComparisonResult(sessionId, resolvedPath, leftRequestedEncoding, rightRequestedEncoding),
+          ...stored,
         }
       }
       return { state: 'missing', path: resolvedPath.relativePath }
@@ -1852,6 +1966,10 @@ export class WorkspaceService {
     await fs.access(directoryPath, fsConstants.W_OK)
   }
 
+  private async assertExternalFileWritable(filePath: string): Promise<void> {
+    await fs.access(filePath, fsConstants.W_OK)
+  }
+
   private async writePreparedCreateFile(
     handle: Awaited<ReturnType<typeof fs.open>>,
     content: string | Uint8Array,
@@ -1955,7 +2073,10 @@ export class WorkspaceService {
   private async resolveWorkingSideWritable(
     resolvedPath: WorkspacePathResolution,
   ): Promise<{ writable: boolean; readOnlyReason?: string }> {
-    if (resolvedPath.isExternalRoot) {
+    if (
+      resolvedPath.isExternalRoot
+      && !this.hasExternalFileWriteAccess(resolvedPath.sessionId, resolvedPath)
+    ) {
       return { writable: false, readOnlyReason: 'Registered external roots are read-only.' }
     }
     try {
@@ -1976,6 +2097,54 @@ export class WorkspaceService {
     }
   }
 
+  private hasExternalFileWriteAccess(
+    sessionId: string,
+    resolvedPath: WorkspacePathResolution,
+  ): boolean {
+    if (!resolvedPath.isExternalRoot) return true
+    return this.externalWriteGrantsBySession.get(sessionId)
+      ?.has(this.workspaceWriteTargetKey(resolvedPath.canonicalTargetPath)) === true
+  }
+
+  private async validateExternalFileWriteAccess(
+    sessionId: string,
+    resolvedPath: WorkspacePathResolution,
+  ): Promise<boolean> {
+    if (!this.hasExternalFileWriteAccess(sessionId, resolvedPath)) return false
+    try {
+      const currentCanonicalPath = normalizeDriveRootPathForPlatform(await fs.realpath(resolvedPath.absolutePath))
+      return this.workspaceWriteTargetKey(currentCanonicalPath)
+          === this.workspaceWriteTargetKey(resolvedPath.canonicalTargetPath)
+        && isWithinRegisteredFilesystemRoot(currentCanonicalPath)
+    } catch {
+      return false
+    }
+  }
+
+  private workspaceWriteTargetKey(targetPath: string): string {
+    const normalized = path.normalize(normalizeDriveRootPathForPlatform(targetPath))
+    return process.platform === 'win32' ? normalized.toLocaleLowerCase('en-US') : normalized
+  }
+
+  private async runWithWorkspaceWriteQueue<T>(
+    targetPath: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const key = this.workspaceWriteTargetKey(targetPath)
+    const previous = this.workspaceWriteQueues.get(key) ?? Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const tail = previous.catch(() => undefined).then(() => gate)
+    this.workspaceWriteQueues.set(key, tail)
+    await previous.catch(() => undefined)
+    try {
+      return await operation()
+    } finally {
+      release()
+      if (this.workspaceWriteQueues.get(key) === tail) this.workspaceWriteQueues.delete(key)
+    }
+  }
+
   private async getStoredWorkspaceDiff(
     sessionId: string,
     workspaceRoot: string,
@@ -1992,6 +2161,204 @@ export class WorkspaceService {
     if (fileHistoryDiff) return fileHistoryDiff
 
     return await this.getSessionDiff(sessionId, relativePath)
+  }
+
+  private async getStoredWorkspaceDiffResult(
+    sessionId: string,
+    resolvedPath: WorkspacePathResolution,
+    leftRequestedEncoding: WorkspaceTextEncoding,
+    rightRequestedEncoding: WorkspaceTextEncoding,
+    preferredComparison?: WorkspaceComparison,
+  ): Promise<{ diff: string; comparison?: WorkspaceComparison } | null> {
+    const diff = await this.getStoredWorkspaceDiff(
+      sessionId,
+      resolvedPath.workspaceRoot,
+      resolvedPath.relativePath,
+    )
+    if (!diff) return null
+
+    if (preferredComparison && this.isCompleteWorkspaceComparison(preferredComparison)) {
+      return {
+        diff: this.buildDiffFromCompleteComparison(resolvedPath.relativePath, preferredComparison),
+        comparison: preferredComparison,
+      }
+    }
+
+    const historyComparison = await this.getFileHistoryComparisonResult(
+      sessionId,
+      resolvedPath,
+      leftRequestedEncoding,
+      rightRequestedEncoding,
+    )
+    if (historyComparison.comparison) return { diff, comparison: historyComparison.comparison }
+
+    const reconstructed = await this.reconstructSessionComparisonFromPatch(
+      resolvedPath,
+      diff,
+      leftRequestedEncoding,
+      rightRequestedEncoding,
+    )
+    return reconstructed ? { diff, comparison: reconstructed } : { diff }
+  }
+
+  private isCompleteWorkspaceComparison(comparison: WorkspaceComparison): boolean {
+    return [comparison.left, comparison.right].every((side) => (
+      side.state === 'missing'
+        ? !side.exists
+        : side.state === 'ok' && side.exists && typeof side.content === 'string'
+    ))
+  }
+
+  private buildDiffFromCompleteComparison(
+    relativePath: string,
+    comparison: WorkspaceComparison,
+  ): string {
+    const leftContent = comparison.left.state === 'ok' ? comparison.left.content ?? '' : ''
+    const rightContent = comparison.right.state === 'ok' ? comparison.right.content ?? '' : ''
+    if (
+      comparison.left.exists === comparison.right.exists
+      && leftContent === rightContent
+    ) {
+      return ''
+    }
+
+    return this.buildSyntheticDiff(
+      comparison.left.exists ? relativePath : '/dev/null',
+      comparison.right.exists ? relativePath : '/dev/null',
+      leftContent,
+      rightContent,
+    )
+  }
+
+  private async reconstructSessionComparisonFromPatch(
+    resolvedPath: WorkspacePathResolution,
+    diff: string,
+    leftRequestedEncoding: WorkspaceTextEncoding,
+    rightRequestedEncoding: WorkspaceTextEncoding,
+  ): Promise<WorkspaceComparison | null> {
+    // Session transcripts sometimes outlive the VCS dirty state (for example
+    // after a commit) and older clients only received the recorded patch. The
+    // working file still gives us the complete right side. Reverse the exact
+    // recorded patches to recover the complete session baseline, then replay
+    // them forwards and require a byte-for-byte text match before exposing the
+    // result as an editable full-file comparison.
+    if (Buffer.byteLength(diff, 'utf8') > MAX_GIT_BUFFER_BYTES * 2) return null
+
+    const right = await this.readWorkingComparisonSide(resolvedPath, rightRequestedEncoding)
+    if (right.state !== 'ok' && right.state !== 'missing') return null
+    const currentContent = right.state === 'ok' ? right.content : ''
+    if (currentContent === undefined) return null
+
+    let patches: StructuredPatch[]
+    try {
+      patches = parsePatch(diff)
+    } catch {
+      return null
+    }
+    if (patches.length === 0 || patches.some((patch) => patch.hunks.length === 0)) return null
+
+    let baselineContent = currentContent
+    for (const patch of [...patches].reverse()) {
+      if (!this.isReversePatchUnambiguous(baselineContent, patch)) return null
+      const previous = applyPatch(baselineContent, reversePatch(patch), {
+        fuzzFactor: 0,
+        autoConvertLineEndings: true,
+      })
+      if (previous === false) return null
+      baselineContent = previous
+    }
+
+    let replayedContent = baselineContent
+    for (const patch of patches) {
+      const next = applyPatch(replayedContent, patch, {
+        fuzzFactor: 0,
+        autoConvertLineEndings: true,
+      })
+      if (next === false) return null
+      replayedContent = next
+    }
+    if (replayedContent !== currentContent) return null
+
+    const baselineWasMissing = patches[0]?.oldFileName === '/dev/null'
+    if (baselineWasMissing && baselineContent !== '') return null
+    const left = baselineWasMissing
+      ? this.buildMissingComparisonSide(
+          'empty',
+          resolvedPath.relativePath,
+          leftRequestedEncoding,
+          false,
+          'Session baseline side does not exist.',
+        )
+      : this.buildReconstructedSessionBaselineSide(
+          baselineContent,
+          right,
+          resolvedPath.relativePath,
+          leftRequestedEncoding,
+        )
+
+    return { schemaVersion: 1, left, right }
+  }
+
+  private isReversePatchUnambiguous(content: string, patch: StructuredPatch): boolean {
+    const sourceLines = content.replace(/\r\n|\r/g, '\n').split('\n')
+    for (const hunk of patch.hunks) {
+      const newSideLines = hunk.lines.flatMap((line) => (
+        line.startsWith(' ') || line.startsWith('+') ? [line.slice(1)] : []
+      ))
+      if (newSideLines.length === 0) {
+        // A real whole-file deletion carries an explicit /dev/null identity.
+        // Empty replacement fragments have no location evidence and cannot be
+        // reversed safely when file-history metadata is absent.
+        if (patch.newFileName !== '/dev/null' || content !== '') return false
+        continue
+      }
+
+      let matches = 0
+      for (let start = 0; start + newSideLines.length <= sourceLines.length; start += 1) {
+        if (newSideLines.every((line, offset) => sourceLines[start + offset] === line)) {
+          matches += 1
+          if (matches > 1) return false
+        }
+      }
+      if (matches !== 1) return false
+    }
+    return true
+  }
+
+  private buildReconstructedSessionBaselineSide(
+    content: string,
+    right: WorkspaceComparisonSide,
+    sourcePath: string,
+    requestedEncoding: WorkspaceTextEncoding,
+  ): WorkspaceComparisonSide {
+    const encoding = requestedEncoding === 'auto'
+      ? right.actualEncoding ?? 'utf8'
+      : requestedEncoding
+    const body = encoding === 'gbk'
+      ? iconv.encode(content, 'gbk')
+      : Buffer.from(content, 'utf8')
+    const roundTrip = encoding === 'gbk'
+      ? iconv.decode(body, 'gbk')
+      : body.toString('utf8')
+    if (roundTrip !== content) {
+      return this.buildUnavailableComparisonSide(
+        'session_baseline',
+        sourcePath,
+        requestedEncoding,
+        `Reconstructed session baseline cannot be represented losslessly as ${encoding}.`,
+      )
+    }
+    const bytes = encoding === 'utf8' && right.bom === 'utf8'
+      ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), body])
+      : body
+    return this.buildComparisonSideFromBuffer(
+      bytes,
+      'session_baseline',
+      sourcePath,
+      requestedEncoding,
+      false,
+      'Reconstructed session baselines are read-only.',
+    )
   }
 
   private async getSessionDiff(
@@ -2443,8 +2810,15 @@ export class WorkspaceService {
       // registered as access roots when the turn checkpoint is built. Preview
       // those by absolute path — they have no workspace-relative form — instead
       // of rejecting them as out-of-sandbox.
-      if (this.isAbsoluteRequestPath(requestedPath) && isWithinRegisteredFilesystemRoot(absolutePath)) {
-        return this.resolveOutsideWorkspacePath(absolutePath, requestedPath)
+      if (
+        this.isAbsoluteRequestPath(requestedPath)
+        && isWithinRegisteredFilesystemRoot(absolutePath)
+        && this.hasSessionExternalReadAccess(
+          sessionId,
+          canonicalizeFilesystemAccessPath(absolutePath),
+        )
+      ) {
+        return this.resolveOutsideWorkspacePath(absolutePath, requestedPath, sessionId)
       }
       throw new Error(`Path is outside workspace: ${requestedPath}`)
     }
@@ -2460,24 +2834,31 @@ export class WorkspaceService {
       // A directory symlink is an intentional local navigation edge. Resolve it
       // here as well as while listing trees so direct requests do not depend on
       // an earlier parent-tree request registering the link.
-      if (
-        await this.isDirectorySymlinkInsideWorkspace(
-          workspaceRoot.workspaceRoot,
-          absolutePath,
-        )
-      ) {
+      const directorySymlink = await this.findDirectorySymlinkInsideWorkspace(
+        workspaceRoot.workspaceRoot,
+        absolutePath,
+      )
+      if (directorySymlink) {
         registerFilesystemAccessRoot(absolutePath)
-        return this.resolveOutsideWorkspacePath(absolutePath, requestedPath)
+        await this.registerSessionExternalReadRoot(sessionId, directorySymlink)
+        return this.resolveOutsideWorkspacePath(absolutePath, requestedPath, sessionId)
       }
       // Explicit user-selected viewer roots may also sit outside the primary
       // session working directory.
-      if (isWithinRegisteredFilesystemRoot(absolutePath)) {
-        return this.resolveOutsideWorkspacePath(absolutePath, requestedPath)
+      if (
+        isWithinRegisteredFilesystemRoot(absolutePath)
+        && this.hasSessionExternalReadAccess(
+          sessionId,
+          canonicalizeFilesystemAccessPath(absolutePath),
+        )
+      ) {
+        return this.resolveOutsideWorkspacePath(absolutePath, requestedPath, sessionId)
       }
       throw error
     }
 
     return {
+      sessionId,
       absolutePath,
       requestedPath,
       workspaceRoot: workspaceRoot.workspaceRoot,
@@ -2500,6 +2881,7 @@ export class WorkspaceService {
   private async resolveOutsideWorkspacePath(
     absolutePath: string,
     requestedPath: string,
+    sessionId: string,
   ): Promise<WorkspacePathResolution> {
     let canonicalTargetPath = absolutePath
     try {
@@ -2508,6 +2890,7 @@ export class WorkspaceService {
       // File may not exist yet, or realpath is unavailable — keep the raw path.
     }
     return {
+      sessionId,
       absolutePath,
       requestedPath,
       workspaceRoot: path.dirname(absolutePath),
@@ -2590,13 +2973,13 @@ export class WorkspaceService {
     }
   }
 
-  private async isDirectorySymlinkInsideWorkspace(
+  private async findDirectorySymlinkInsideWorkspace(
     workspaceRoot: string,
     targetPath: string,
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     const relativePath = path.relative(workspaceRoot, targetPath)
     if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`)) {
-      return false
+      return null
     }
 
     let currentPath = workspaceRoot
@@ -2606,14 +2989,14 @@ export class WorkspaceService {
         const stat = await fs.lstat(currentPath)
         if (stat.isSymbolicLink()) {
           const targetStat = await this.safeStat(currentPath)
-          return targetStat.kind === 'ok' && targetStat.stat.isDirectory()
+          return targetStat.kind === 'ok' && targetStat.stat.isDirectory() ? currentPath : null
         }
       } catch {
-        return false
+        return null
       }
     }
 
-    return false
+    return null
   }
 
   private isWithinRoot(targetPath: string, rootPath: string): boolean {
@@ -3016,18 +3399,31 @@ export class WorkspaceService {
     const repoPath = this.toRepoRelativePath(svnRoot, resolvedPath.canonicalTargetPath)
     const entry = scopedEntries.find((candidate) => candidate.repoPath === repoPath)
     if (!entry) {
-      const storedDiff = await this.getStoredWorkspaceDiff(sessionId, resolvedPath.workspaceRoot, resolvedPath.relativePath)
-      return storedDiff
+      const cleanComparison = await this.buildSvnComparison(
+        resolvedPath,
+        svnRoot,
+        {
+          repoPath,
+          path: resolvedPath.relativePath,
+          status: 'modified',
+          absolutePath: resolvedPath.canonicalTargetPath,
+          canonicalWorkspaceRoot: resolvedPath.canonicalWorkspaceRoot,
+        },
+        leftRequestedEncoding,
+        rightRequestedEncoding,
+      )
+      const stored = await this.getStoredWorkspaceDiffResult(
+        sessionId,
+        resolvedPath,
+        leftRequestedEncoding,
+        rightRequestedEncoding,
+        cleanComparison,
+      )
+      return stored
         ? {
             state: 'ok',
             path: resolvedPath.relativePath,
-            diff: storedDiff,
-            ...await this.getFileHistoryComparisonResult(
-              sessionId,
-              resolvedPath,
-              leftRequestedEncoding,
-              rightRequestedEncoding,
-            ),
+            ...stored,
           }
         : { state: 'missing', path: resolvedPath.relativePath }
     }

@@ -36,6 +36,7 @@ type WorkspaceApiMocks = {
   getWorkspaceDiffMock: ReturnType<typeof vi.fn>
   getTurnCheckpointDiffMock: ReturnType<typeof vi.fn>
   writeWorkspaceFileMock: ReturnType<typeof vi.fn>
+  grantWorkspaceFileWriteAccessMock: ReturnType<typeof vi.fn>
   registerWorkspaceRootMock: ReturnType<typeof vi.fn>
 }
 
@@ -268,6 +269,7 @@ vi.mock('../../api/sessions', () => ({
         getWorkspaceDiffMock: vi.fn(),
         getTurnCheckpointDiffMock: vi.fn(),
         writeWorkspaceFileMock: vi.fn(),
+        grantWorkspaceFileWriteAccessMock: vi.fn(),
         registerWorkspaceRootMock: vi.fn(),
       }
     }
@@ -280,6 +282,7 @@ vi.mock('../../api/sessions', () => ({
       getWorkspaceDiff: mocks.getWorkspaceDiffMock,
       getTurnCheckpointDiff: mocks.getTurnCheckpointDiffMock,
       writeWorkspaceFile: mocks.writeWorkspaceFileMock,
+      grantWorkspaceFileWriteAccess: mocks.grantWorkspaceFileWriteAccessMock,
       registerWorkspaceRoot: mocks.registerWorkspaceRootMock,
     }
   })(),
@@ -384,6 +387,7 @@ describe('WorkspacePanel', () => {
       },
     )
     getMocks().registerWorkspaceRootMock.mockImplementation(async (_sessionId: string, path: string) => ({ path }))
+    getMocks().grantWorkspaceFileWriteAccessMock.mockImplementation(async (_sessionId: string, path: string) => ({ path }))
   })
 
   afterEach(async () => {
@@ -539,7 +543,9 @@ describe('WorkspacePanel', () => {
       expect(view.getByTestId('workspace-code').textContent).toContain('console.log("new")')
     })
     expect(view.getByTestId('workspace-side-by-side-diff-scroll')).toBeTruthy()
-    const replacementRow = view.getByText('console.log("new")').closest('[data-side-by-side-row]')
+    const replacementRow = view.getAllByText('console.log("new")')
+      .map((node) => node.closest('[data-side-by-side-row]'))
+      .find(Boolean)
     expect(replacementRow?.querySelector('[data-diff-cell][data-side="old"]')?.textContent).toContain('console.log("old")')
     expect(replacementRow?.querySelector('[data-diff-cell][data-side="new"]')?.textContent).toContain('console.log("new")')
     expect(useWorkspacePanelStore.getState().previewTabsBySession['session-changed']?.find((tab) => (
@@ -558,7 +564,7 @@ describe('WorkspacePanel', () => {
     expect(previewHeader.textContent).not.toContain('DIFF')
     expect(view.getByRole('tab', { name: 'File tree' }).getAttribute('aria-selected')).toBe('false')
     expect(view.getByRole('tab', { name: /View files/ }).getAttribute('aria-selected')).toBe('false')
-    expect(view.getByRole('tab', { name: 'Workspace comparison' }).getAttribute('aria-selected')).toBe('true')
+    expect(view.getByRole('tab', { name: 'Side-by-side comparison' }).getAttribute('aria-selected')).toBe('true')
     expect(view.getByTestId('workspace-file-navigator').className).toContain('hidden')
     expect(view.getByTestId('workspace-file-navigator-header')).toBeTruthy()
     expect(view.queryByText('1 file')).toBeNull()
@@ -614,7 +620,7 @@ describe('WorkspacePanel', () => {
     await waitFor(() => {
       expect(view.getByRole('tab', { name: /View files/ }).getAttribute('aria-selected')).toBe('true')
     })
-    expect(view.getByRole('tab', { name: 'Workspace comparison' }).getAttribute('aria-selected')).toBe('false')
+    expect(view.getByRole('tab', { name: 'Side-by-side comparison' }).getAttribute('aria-selected')).toBe('false')
     expect(getMocks().getTurnCheckpointDiffMock).toHaveBeenCalledWith(sessionId, 'message-1', checkpointPath, 2)
     expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalled()
     expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession[sessionId])
@@ -622,7 +628,7 @@ describe('WorkspacePanel', () => {
     expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId])
       .not.toContainEqual(expect.objectContaining({ id: `diff:${path}` }))
 
-    await clickElement(view.getByRole('tab', { name: 'Workspace comparison' }))
+    await clickElement(view.getByRole('tab', { name: 'Side-by-side comparison' }))
 
     await waitFor(() => {
       expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith(sessionId, path)
@@ -637,7 +643,7 @@ describe('WorkspacePanel', () => {
         right: { writable: true },
       },
     })
-    expect(view.getByRole('tab', { name: 'Workspace comparison' }).getAttribute('aria-selected')).toBe('true')
+    expect(view.getByRole('tab', { name: 'Side-by-side comparison' }).getAttribute('aria-selected')).toBe('true')
     expect(view.getByRole('tab', { name: /View files/ }).getAttribute('aria-selected')).toBe('false')
   })
 
@@ -690,7 +696,7 @@ describe('WorkspacePanel', () => {
     expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId])
       .not.toContainEqual(expect.objectContaining({ id: `diff:${path}` }))
 
-    await clickElement(view.getByRole('tab', { name: 'Workspace comparison' }))
+    await clickElement(view.getByRole('tab', { name: 'Side-by-side comparison' }))
 
     await waitFor(() => {
       expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession[sessionId]).toBe(`diff:${path}`)
@@ -721,7 +727,7 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel(sessionId)
 
-    expect((view.getByRole('tab', { name: 'Workspace comparison' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((view.getByRole('tab', { name: 'Side-by-side comparison' }) as HTMLButtonElement).disabled).toBe(true)
     expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalled()
   })
 
@@ -2178,7 +2184,7 @@ describe('WorkspacePanel', () => {
     expect(view.getByRole('button', { name: 'Collapse preview' })).toBeTruthy()
   })
 
-  it('keeps diff rows intrinsically wide so H5 users can scroll sideways', async () => {
+  it('keeps both diff panes visible while long H5 lines scroll inside their pane', async () => {
     const longDiffLine = '+const label = "this is a very long generated line that should not be compressed into the phone viewport";'
 
     await setWorkspaceState((state) => ({
@@ -2224,9 +2230,21 @@ describe('WorkspacePanel', () => {
     const diffContent = view.getByTestId('workspace-side-by-side-diff-content')
     const firstCell = diffSurface.querySelector('[data-diff-cell]')
 
-    expect(diffContent.className).toContain('w-max')
-    expect(diffContent.className).toContain('min-w-full')
-    expect((firstCell as HTMLElement | null)?.style.gridTemplateColumns).toBe('6ch minmax(max-content, 1fr)')
+    expect(diffContent.className).toContain('w-full')
+    expect(diffContent.className).toContain('min-w-0')
+    expect(diffContent.className).not.toContain('w-max')
+    expect((firstCell as HTMLElement | null)?.style.gridTemplateColumns).toBe('6ch minmax(0, 1fr)')
+    expect(firstCell?.className).toContain('min-w-0')
+    expect(firstCell?.className).toContain('overflow-hidden')
+    const rowText = firstCell?.querySelector('[data-row-text]')
+    const naturalContent = rowText?.querySelector('[data-diff-pane-natural-content]')
+    expect(rowText?.className).toContain('min-w-0')
+    expect(rowText?.className).toContain('overflow-x-auto')
+    expect(rowText?.className).toContain('[scrollbar-width:none]')
+    expect(naturalContent?.className).toContain('whitespace-pre')
+    expect(naturalContent?.className).toContain('w-max')
+    expect(diffSurface.querySelector('[data-visual-pane="old"]')).toBeTruthy()
+    expect(diffSurface.querySelector('[data-visual-pane="new"]')).toBeTruthy()
     expect(firstCell?.querySelector('[data-diff-line-number]')).toBeTruthy()
     expect(diffSurface.textContent).toContain(longDiffLine.slice(1))
   })
@@ -4095,5 +4113,90 @@ describe('WorkspacePanel', () => {
     await clickElement(within(dialog).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId] ?? []).toEqual([]))
     expect(getMocks().writeWorkspaceFileMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('grants an external working side write access and force reloads its comparison', async () => {
+    const sessionId = 'session-external-write-access'
+    const comparisonPath = 'legacy-svn/tracked.ts'
+    const comparison = editableComparison(comparisonPath)
+    const readOnlyComparison: WorkspaceComparison = {
+      ...comparison,
+      right: {
+        ...comparison.right,
+        writable: false,
+        readOnlyReason: 'Registered external roots are read-only.',
+      },
+    }
+    const writableComparison: WorkspaceComparison = {
+      ...comparison,
+      right: { ...comparison.right, writable: true, readOnlyReason: undefined },
+    }
+    getMocks().getWorkspaceDiffMock.mockResolvedValue({
+      state: 'ok',
+      path: comparisonPath,
+      diff: '@@ -1 +1 @@\n-old\n+new',
+      comparison: writableComparison,
+    })
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: { ...state.panelBySession, [sessionId]: { isOpen: true, activeView: 'changed' } },
+      statusBySession: {
+        ...state.statusBySession,
+        [sessionId]: {
+          state: 'ok',
+          workDir: '/repo',
+          repoName: 'repo',
+          branch: 'main',
+          isGitRepo: true,
+          changedFiles: [{
+            path: comparisonPath,
+            status: 'modified',
+            additions: 1,
+            deletions: 1,
+          }],
+        },
+      },
+      previewTabsBySession: {
+        ...state.previewTabsBySession,
+        [sessionId]: [{
+          id: `diff:${comparisonPath}`,
+          path: comparisonPath,
+          kind: 'diff',
+          title: 'tracked.ts',
+          state: 'ok',
+          diff: '@@ -1 +1 @@\n-old\n+new',
+          diffSource: { kind: 'workspace' },
+          comparison: readOnlyComparison,
+          comparisonSession: createWorkspaceComparisonSession(readOnlyComparison)!,
+        }],
+      },
+      activePreviewTabIdBySession: {
+        ...state.activePreviewTabIdBySession,
+        [sessionId]: `diff:${comparisonPath}`,
+      },
+    }))
+
+    const view = await renderPanel(sessionId)
+    getMocks().getWorkspaceDiffMock.mockClear()
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession?.right).toMatchObject({
+      source: { kind: 'working_tree', path: comparisonPath },
+      writable: false,
+      readOnlyReason: 'Registered external roots are read-only.',
+    })
+    await clickElement(view.getByRole('button', { name: 'Allow editing this file' }))
+
+    await waitFor(() => expect(getMocks().grantWorkspaceFileWriteAccessMock).toHaveBeenCalledWith(
+      sessionId,
+      comparisonPath,
+    ))
+    await waitFor(() => expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith(
+      sessionId,
+      comparisonPath,
+      'auto',
+      { left: 'auto', right: 'auto' },
+    ))
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession).toMatchObject({
+      right: { writable: true },
+    })
   })
 })

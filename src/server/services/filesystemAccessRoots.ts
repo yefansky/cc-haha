@@ -6,6 +6,7 @@ import {
 } from './windowsDrivePath.js'
 
 const registeredRoots = new Set<string>()
+const registeredFiles = new Set<string>()
 
 function isWithinRoot(targetPath: string, rootPath: string): boolean {
   return isSameOrInsidePathForPlatform(targetPath, rootPath)
@@ -41,13 +42,14 @@ export function registerFilesystemAccessRoot(rootPath: string | null | undefined
 }
 
 /**
- * Register the directory of a file this session actually changed so it becomes
+ * Register one exact file this session actually changed so it becomes
  * previewable, even when the user pointed the model at an absolute path outside
  * the session workdir (a different folder, or a different drive on Windows).
  *
  * Writing the file was already authorized via the permission system, so reading
- * it back for a preview is consistent. Files inside the workdir need nothing —
- * they are previewable already — so those are skipped to keep the root set tight.
+ * it back for a preview is consistent. This intentionally does not authorize the
+ * containing directory: sibling files were not evidenced by the checkpoint.
+ * Files inside the workdir need nothing, so those are skipped.
  */
 export function registerChangedFileAccessRoot(
   absoluteFilePath: string | null | undefined,
@@ -59,11 +61,12 @@ export function registerChangedFileAccessRoot(
     const root = canonicalizeFilesystemAccessPath(workDir)
     if (isWithinRoot(resolved, root)) return
   }
-  registeredRoots.add(path.dirname(resolved))
+  registeredFiles.add(resolved)
 }
 
 export function isWithinRegisteredFilesystemRoot(targetPath: string): boolean {
   const canonicalTarget = canonicalizeFilesystemAccessPath(targetPath)
+  if (registeredFiles.has(canonicalTarget)) return true
   for (const rootPath of registeredRoots) {
     if (isWithinRoot(canonicalTarget, rootPath)) return true
   }
@@ -72,4 +75,5 @@ export function isWithinRegisteredFilesystemRoot(targetPath: string): boolean {
 
 export function clearFilesystemAccessRootsForTests(): void {
   registeredRoots.clear()
+  registeredFiles.clear()
 }

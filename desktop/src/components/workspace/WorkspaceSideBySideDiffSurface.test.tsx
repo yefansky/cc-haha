@@ -7,6 +7,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { WorkspaceSideBySideDiffSurface } from './WorkspaceSideBySideDiffSurface'
 import {
   createWorkspaceComparisonSession,
+  editWorkspaceComparisonSide,
   saveWorkspaceComparisonSession,
 } from './workspaceComparisonSession'
 import { computeWorkspaceComparisonModel, type WorkspaceComparisonRuntimeRequest } from './workspaceComparisonRuntime'
@@ -72,6 +73,14 @@ function comparison(left: WorkspaceComparisonSide, right: WorkspaceComparisonSid
   return { schemaVersion: 1, left, right }
 }
 
+function diffCellForText(text: string, side: 'old' | 'new') {
+  const cell = screen.getAllByText(text)
+    .map((node) => node.closest<HTMLElement>('[data-diff-cell]'))
+    .find((candidate) => candidate?.dataset.side === side)
+  if (!cell) throw new Error(`Missing ${side} diff cell for ${text}`)
+  return cell
+}
+
 const fullComparison = comparison(
   side('one\ntwo\nold three\nfour\nfive\nsix\nseven\nold eight\nnine\n'),
   side('one\ntwo\nnew three\nfour\nfive\nsix\nseven\nnew eight\nnine\n'),
@@ -90,6 +99,22 @@ function EditableHarness({ value }: { value: WorkspaceComparison }) {
   )
 }
 
+function HistoryHarness({ value }: { value: WorkspaceComparison }) {
+  const [session, setSession] = useState(() => createWorkspaceComparisonSession(value)!)
+  return (
+    <>
+      <WorkspaceSideBySideDiffSurface
+        value=""
+        comparison={value}
+        comparisonSession={session}
+        onComparisonSessionChange={setSession}
+        path="src/a.ts"
+      />
+      <output data-testid="history-right-content">{session.right.content}</output>
+    </>
+  )
+}
+
 function InlineSaveHarness({
   value,
   writer,
@@ -104,8 +129,8 @@ function InlineSaveHarness({
       comparison={value}
       comparisonSession={session}
       onComparisonSessionChange={setSession}
-      onSave={async () => {
-        const outcome = await saveWorkspaceComparisonSession(session, writer)
+      onSave={async (exactSession) => {
+        const outcome = await saveWorkspaceComparisonSession(exactSession, writer)
         setSession(outcome.session)
       }}
       path="src/a.ts"
@@ -165,7 +190,7 @@ describe('WorkspaceSideBySideDiffSurface', () => {
 
     const scroll = screen.getByTestId('workspace-side-by-side-diff-scroll')
     expect(scroll).toHaveClass('overflow-auto')
-    expect(screen.getByTestId('workspace-side-by-side-diff-content')).toHaveClass('w-max')
+    expect(screen.getByTestId('workspace-side-by-side-diff-content')).toHaveClass('w-full', 'min-w-0')
     expect(screen.getByRole('grid', { name: 'src/a.ts diff' })).toBeInTheDocument()
     expect(screen.getByText(/^old ·/)).toBeInTheDocument()
     expect(screen.getByText(/^new ·/)).toBeInTheDocument()
@@ -210,8 +235,9 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     fireEvent(window, createEvent.pointerUp(window))
 
     expect(separator).toHaveAttribute('aria-valuenow', '70')
-    expect(content.style.getPropertyValue('--workspace-diff-left-pane')).toBe('70%')
-    expect(content.style.getPropertyValue('--workspace-diff-right-pane')).toBe('30%')
+    expect(content.querySelector('[data-side-by-side-row]')).toHaveStyle({
+      gridTemplateColumns: 'minmax(0, 70%) minmax(0, 30%)',
+    })
 
     fireEvent.keyDown(separator, { key: 'Home' })
     fireEvent.keyDown(separator, { key: 'ArrowLeft' })
@@ -259,13 +285,118 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(screen.queryByText('-', { selector: '[data-diff-cell] *' })).not.toBeInTheDocument()
   })
 
-  it('keeps long code intrinsically wide for horizontal reading', () => {
+  it('keeps both panes inside the viewport while long lines scroll within their pane', () => {
     const longLine = 'const label = "this line stays readable without wrapping or shrinking into the viewport"'
     render(<WorkspaceSideBySideDiffSurface value={`@@ -1 +1 @@\n-${longLine}\n+${longLine} changed`} path="src/a.ts" />)
 
     const content = screen.getByTestId('workspace-side-by-side-diff-content')
-    expect(content).toHaveClass('min-w-full', 'w-max')
-    expect(screen.getByText(longLine)).toHaveClass('whitespace-pre')
+    expect(content).toHaveClass('w-full', 'min-w-0')
+    expect(content).not.toHaveClass('w-max')
+    const oldCell = screen.getByText(longLine).closest('[data-diff-cell]')
+    const newCell = screen.getByText(`${longLine} changed`).closest('[data-diff-cell]')
+    expect(oldCell).toHaveClass('min-w-0', 'overflow-hidden')
+    expect(newCell).toHaveClass('min-w-0', 'overflow-hidden')
+    expect(screen.getByText(longLine).closest('[data-diff-pane-scroll-content]')).toHaveClass('min-w-0', 'overflow-x-auto', '[scrollbar-width:none]')
+    expect(screen.getByText(`${longLine} changed`).closest('[data-diff-pane-scroll-content]')).toHaveClass('min-w-0', 'overflow-x-auto', '[scrollbar-width:none]')
+  })
+
+  it('provides independent bottom scrollbars that move every row in their own pane', () => {
+    const originalScrollWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth')
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (!this.hasAttribute('data-diff-pane-natural-content')) return 0
+        return this.dataset.side === 'old' ? 960 : 720
+      },
+    })
+
+    try {
+      render(<WorkspaceSideBySideDiffSurface value="" comparison={fullComparison} path="src/a.ts" />)
+
+      const oldScrollbar = screen.getByTestId('workspace-diff-pane-scrollbar-old')
+      const newScrollbar = screen.getByTestId('workspace-diff-pane-scrollbar-new')
+      const oldRows = [...document.querySelectorAll<HTMLElement>('[data-diff-pane-scroll-content][data-side="old"]')]
+      const newRows = [...document.querySelectorAll<HTMLElement>('[data-diff-pane-scroll-content][data-side="new"]')]
+
+      expect(oldScrollbar).toHaveAccessibleName('Scroll old code horizontally')
+      expect(newScrollbar).toHaveAccessibleName('Scroll new code horizontally')
+      expect(oldScrollbar).toHaveClass('overflow-x-scroll')
+      expect(newScrollbar).toHaveClass('overflow-x-scroll')
+      expect(oldScrollbar.firstElementChild).toHaveStyle({ width: '960px' })
+      expect(newScrollbar.firstElementChild).toHaveStyle({ width: '720px' })
+
+      oldScrollbar.scrollLeft = 120
+      fireEvent.scroll(oldScrollbar)
+      expect(oldRows.every((row) => row.scrollLeft === 120)).toBe(true)
+      expect(newRows.every((row) => row.scrollLeft === 0)).toBe(true)
+      expect(newScrollbar.scrollLeft).toBe(0)
+
+      newScrollbar.scrollLeft = 72
+      fireEvent.scroll(newScrollbar)
+      expect(newRows.every((row) => row.scrollLeft === 72)).toBe(true)
+      expect(oldRows.every((row) => row.scrollLeft === 120)).toBe(true)
+      expect(oldScrollbar.scrollLeft).toBe(120)
+
+      oldRows[0]!.scrollLeft = 48
+      fireEvent.scroll(oldRows[0]!)
+      expect(oldScrollbar.scrollLeft).toBe(48)
+      expect(oldRows.every((row) => row.scrollLeft === 48)).toBe(true)
+      expect(newScrollbar.scrollLeft).toBe(72)
+    } finally {
+      if (originalScrollWidth) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollWidth', originalScrollWidth)
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollWidth')
+      }
+    }
+  })
+
+  it('keeps a mixed-width pane at offset 600 when the short row emits its programmatic scroll event', () => {
+    const originalScrollWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth')
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (!this.hasAttribute('data-diff-pane-natural-content')) return 0
+        const isLongRow = this.textContent?.includes('eight') ?? false
+        if (this.dataset.side === 'new') return isLongRow ? 3137 : 87
+        return isLongRow ? 1400 : 64
+      },
+    })
+
+    try {
+      render(<WorkspaceSideBySideDiffSurface value="" comparison={fullComparison} path="src/a.ts" />)
+
+      const oldScrollbar = screen.getByTestId('workspace-diff-pane-scrollbar-old')
+      const newScrollbar = screen.getByTestId('workspace-diff-pane-scrollbar-new')
+      const oldRows = [...document.querySelectorAll<HTMLElement>('[data-diff-pane-scroll-content][data-side="old"]')]
+      const newRows = [...document.querySelectorAll<HTMLElement>('[data-diff-pane-scroll-content][data-side="new"]')]
+      const oldTracks = [...document.querySelectorAll<HTMLElement>('[data-diff-pane-scroll-content][data-side="old"] [data-diff-pane-scroll-track]')]
+      const newTracks = [...document.querySelectorAll<HTMLElement>('[data-diff-pane-scroll-content][data-side="new"] [data-diff-pane-scroll-track]')]
+
+      expect(oldTracks.every((track) => track.style.minWidth === '1400px')).toBe(true)
+      expect(newTracks.every((track) => track.style.minWidth === '3137px')).toBe(true)
+
+      newScrollbar.scrollLeft = 600
+      fireEvent.scroll(newScrollbar)
+      expect(newRows.every((row) => row.scrollLeft === 600)).toBe(true)
+
+      fireEvent.scroll(newRows[0]!)
+      expect(newScrollbar.scrollLeft).toBe(600)
+      expect(newRows.every((row) => row.scrollLeft === 600)).toBe(true)
+      expect(oldRows.every((row) => row.scrollLeft === 0)).toBe(true)
+
+      oldScrollbar.scrollLeft = 250
+      fireEvent.scroll(oldScrollbar)
+      expect(oldRows.every((row) => row.scrollLeft === 250)).toBe(true)
+      expect(newRows.every((row) => row.scrollLeft === 600)).toBe(true)
+      expect(newScrollbar.scrollLeft).toBe(600)
+    } finally {
+      if (originalScrollWidth) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollWidth', originalScrollWidth)
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollWidth')
+      }
+    }
   })
 
   it('submits a side-aware review comment without making either source editable', () => {
@@ -316,10 +447,21 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Same' }))
     expect(screen.getAllByText('four')).toHaveLength(2)
     expect(screen.queryByText('new three')).not.toBeInTheDocument()
+    const sameRow = screen.getAllByText('four')[0]?.closest('[data-side-by-side-row]')
+    expect(sameRow).toHaveClass('w-full', 'min-w-0')
+    expect(sameRow?.querySelector('[data-visual-pane="old"]')).toBeInTheDocument()
+    expect(sameRow?.querySelector('[data-visual-pane="new"]')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('radio', { name: 'All' }))
     expect(screen.getByText('new three')).toBeInTheDocument()
     expect(screen.getAllByText('four')).toHaveLength(2)
+    const changedRow = screen.getByText('new three').closest('[data-side-by-side-row]')
+    expect(changedRow).toHaveClass('w-full', 'min-w-0')
+    expect(changedRow?.querySelector('[data-visual-pane="old"]')).toHaveTextContent('old three')
+    expect(changedRow?.querySelector('[data-visual-pane="new"]')).toHaveTextContent('new three')
+    expect(changedRow).toHaveStyle({
+      gridTemplateColumns: 'minmax(0, 50%) minmax(0, 50%)',
+    })
 
     fireEvent.click(screen.getByRole('radio', { name: 'Context' }))
     expect(screen.getByText('new eight')).toBeInTheDocument()
@@ -388,6 +530,100 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(activeRows()).toHaveLength(1)
     expect(activeRows()[0]).toHaveTextContent('old eight')
     expect(activeRows()[0]).toHaveTextContent('new eight')
+  })
+
+  it('scrolls every consecutive difference navigation target into view', () => {
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+    const scrolledElements: HTMLElement[] = []
+    const scrollIntoView = vi.fn(function (this: HTMLElement) {
+      scrolledElements.push(this)
+    })
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+
+    try {
+      render(<WorkspaceSideBySideDiffSurface value="" comparison={fullComparison} path="src/a.ts" lineLimit={1} />)
+      const next = screen.getByRole('button', { name: 'Next difference' })
+      const previous = screen.getByRole('button', { name: 'Previous difference' })
+
+      fireEvent.click(next)
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      expect(scrolledElements.at(-1)).toHaveAttribute('data-active-diff-section')
+      expect(scrolledElements.at(-1)).toHaveTextContent('new three')
+
+      fireEvent.click(next)
+      expect(scrollIntoView).toHaveBeenCalledTimes(2)
+      expect(scrolledElements.at(-1)).toHaveAttribute('data-active-diff-section')
+      expect(scrolledElements.at(-1)).toHaveTextContent('new eight')
+
+      fireEvent.click(previous)
+      expect(scrollIntoView).toHaveBeenCalledTimes(3)
+      expect(scrolledElements.at(-1)).toHaveAttribute('data-active-diff-section')
+      expect(scrolledElements.at(-1)).toHaveTextContent('new three')
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'center', inline: 'nearest' })
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+          configurable: true,
+          value: originalScrollIntoView,
+        })
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+      }
+    }
+  })
+
+  it('expands one complete-file context gap while leaving other gaps collapsed', () => {
+    const lines = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`)
+    const right = [...lines]
+    right[5] = 'changed 6'
+    right[15] = 'changed 16'
+    const value = comparison(side(`${lines.join('\n')}\n`), side(`${right.join('\n')}\n`))
+
+    render(<WorkspaceSideBySideDiffSurface value="" comparison={value} path="src/a.ts" />)
+
+    expect(screen.queryByText('line 10')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Expand all 3 hidden unchanged lines in this section' }))
+    expect(screen.getAllByText('line 10')).toHaveLength(2)
+    expect(screen.getAllByText('line 11')).toHaveLength(2)
+    expect(screen.getAllByText('line 12')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Expand all 2 hidden unchanged lines in this section' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Expand all 1 hidden unchanged line in this section' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Expand all 3 hidden unchanged lines in this section' })).not.toBeInTheDocument()
+  })
+
+  it('clears context gap expansion when the comparison source revision changes', () => {
+    const lines = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`)
+    const right = [...lines]
+    right[5] = 'changed 6'
+    right[15] = 'changed 16'
+    const source = (revision: string) => comparison(
+      side(`${lines.join('\n')}\n`, {
+        source: { kind: 'git_head', path: 'src/a.ts', revision },
+      }),
+      side(`${right.join('\n')}\n`, {
+        source: { kind: 'working_tree', path: 'src/a.ts', revision },
+      }),
+    )
+    const { rerender } = render(
+      <WorkspaceSideBySideDiffSurface value="" comparison={source('revision-1')} path="src/a.ts" />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand all 3 hidden unchanged lines in this section' }))
+    expect(screen.getAllByText('line 10')).toHaveLength(2)
+
+    rerender(<WorkspaceSideBySideDiffSurface value="" comparison={source('revision-2')} path="src/a.ts" />)
+    expect(screen.queryByText('line 10')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Expand all 3 hidden unchanged lines in this section' })).toBeEnabled()
+  })
+
+  it('does not offer context expansion when patch-only omitted rows are unavailable', () => {
+    render(<WorkspaceSideBySideDiffSurface value={twoHunkPatch} path="src/a.ts" />)
+
+    expect(screen.getByText('Unchanged lines hidden')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Expand all .* hidden unchanged/ })).not.toBeInTheDocument()
   })
 
   it('highlights the active patch section across Next and Previous navigation without wrapping', () => {
@@ -468,21 +704,113 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(screen.getAllByText(/^(old|new) ·/)[0]).toHaveTextContent(/^new ·/)
   })
 
-  it('edits full multiline content in memory, recomputes rows, and supports undo', () => {
-    render(<EditableHarness value={comparison(side('one\nold\nthree\n'), side('one\nnew\nthree\n'))} />)
+  it('edits the final version directly in the comparison rows, realigns multiline input, and supports undo', () => {
+    render(<HistoryHarness value={comparison(side('one\nold\nthree\n'), side('one\nnew\nthree\n'))} />)
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1]!)
-    const editor = screen.getByRole('textbox', { name: 'Full text editor for the new side' })
-    fireEvent.change(editor, { target: { value: 'one\ninserted\nchanged last' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Apply in memory' }))
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-diff-editor')).not.toBeInTheDocument()
+    const editor = screen.getByRole('textbox', { name: 'Edit final version line 2' })
+    fireEvent.focus(editor)
+    fireEvent.change(editor, { target: { value: 'inserted\nchanged last' } })
+    fireEvent.blur(editor)
 
-    expect(screen.getByText('inserted')).toBeInTheDocument()
-    expect(screen.getByText('changed last')).toBeInTheDocument()
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('one inserted changed last three')
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Undo last comparison action' }))
-    expect(screen.getByText('new')).toBeInTheDocument()
-    expect(screen.queryByText('changed last')).not.toBeInTheDocument()
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('one new three')
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('types directly into a final-side alignment gap and inserts the text before the neighboring line', () => {
+    render(<HistoryHarness value={comparison(
+      side('head\nremoved\ntail\n'),
+      side('head\ntail\n'),
+    )} />)
+
+    const editor = screen.getByRole('textbox', { name: 'Insert final version text before line 2' })
+    expect(editor).toHaveValue('')
+    fireEvent.focus(editor)
+    fireEvent.change(editor, { target: { value: 'restored\nextra' } })
+    fireEvent.blur(editor)
+
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('head restored extra tail')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    expect(screen.getByText('1 of 1 differences')).toBeInTheDocument()
+  })
+
+  it('undoes and redoes comparison actions from toolbar buttons and Ctrl shortcuts without hijacking text editing', () => {
+    render(<>
+      <input aria-label="Chat input" />
+      <HistoryHarness value={comparison(side('one\nold\nthree\n'), side('one\nnew\nthree\n'))} />
+    </>)
+
+    const undo = screen.getByRole('button', { name: 'Undo last comparison action' })
+    const redo = screen.getByRole('button', { name: 'Redo last undone comparison action' })
+    expect(undo).toBeDisabled()
+    expect(redo).toBeDisabled()
+    expect(undo).toHaveAttribute('aria-keyshortcuts', 'Control+Z Meta+Z')
+    expect(redo).toHaveAttribute('aria-keyshortcuts', 'Control+Y Meta+Y Control+Shift+Z Meta+Shift+Z')
+
+    const editor = screen.getByRole('textbox', { name: 'Edit final version line 2' })
+    fireEvent.focus(editor)
+    fireEvent.change(editor, { target: { value: 'changed' } })
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true })
+    fireEvent.keyDown(editor, { key: 'y', ctrlKey: true })
+    expect(editor).toHaveValue('changed')
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('one new three')
+    expect(undo).toBeEnabled()
+    expect(redo).toBeDisabled()
+
+    fireEvent.blur(editor)
+    const surface = screen.getByTestId('workspace-side-by-side-diff-scroll')
+    surface.focus()
+    expect(screen.getByRole('button', { name: 'Undo last comparison action' })).toBeEnabled()
+    fireEvent.keyDown(surface, {
+      key: 'z',
+      ctrlKey: true,
+    })
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('one new three')
+    expect(screen.getByRole('button', { name: 'Redo last undone comparison action' })).toBeEnabled()
+
+    fireEvent.keyDown(surface, {
+      key: 'y',
+      ctrlKey: true,
+    })
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('one changed three')
+
+    const chatInput = screen.getByRole('textbox', { name: 'Chat input' })
+    chatInput.focus()
+    fireEvent.keyDown(chatInput, { key: 'z', ctrlKey: true })
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('one changed three')
+  })
+
+  it('keeps direct text history native while focused and comparison history available after commit', () => {
+    const first = render(<HistoryHarness value={comparison(
+      side('head\nsame\ntail\n'),
+      side('head\nwrong\ntail\n'),
+    )} />)
+
+    const inlineEditor = screen.getByRole('textbox', { name: 'Edit final version line 2' })
+    fireEvent.focus(inlineEditor)
+    fireEvent.change(inlineEditor, { target: { value: 'same' } })
+    fireEvent.blur(inlineEditor)
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('head same tail')
+    const surface = screen.getByTestId('workspace-side-by-side-diff-scroll')
+    surface.focus()
+    fireEvent.keyDown(surface, { key: 'z', ctrlKey: true })
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('head wrong tail')
+    first.unmount()
+
+    render(<HistoryHarness value={comparison(
+      side('head\nleft\ntail\n'),
+      side('head\nright\ntail\n'),
+    )} />)
+    fireEvent.contextMenu(diffCellForText('left', 'old'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy this line to new' }))
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('head left tail')
+    expect(screen.getByTestId('workspace-side-by-side-diff-scroll')).toContainElement(document.activeElement as HTMLElement)
+    fireEvent.keyDown(document.activeElement!, { key: 'z', ctrlKey: true })
+    expect(screen.getByTestId('history-right-content')).toHaveTextContent('head right tail')
   })
 
   it('edits the writable new line in place after swap and stays automatically aligned after save', async () => {
@@ -506,16 +834,11 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Swap left and right views' }))
     expect(screen.getAllByText(/^(old|new) ·/)[0]).toHaveTextContent(/^new ·/)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit new line 2 directly' }))
-    const inlineEditor = screen.getByRole('textbox', { name: 'Direct editor for new line 2' })
+    const inlineEditor = screen.getByRole('textbox', { name: 'Edit final version line 2' })
+    fireEvent.focus(inlineEditor)
     fireEvent.change(inlineEditor, { target: { value: 'same' } })
-    fireEvent.keyDown(inlineEditor, { key: 'Enter' })
-
-    expect(screen.getByText('0 of 0 differences')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Undo last comparison action' })).toBeEnabled()
-    const editHighlightKeys = highlightRequestSpy.mock.calls.map(([request]) => request.cacheKey)
-    expect(new Set(editHighlightKeys).size).toBeGreaterThan(1)
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -527,6 +850,8 @@ describe('WorkspaceSideBySideDiffSurface', () => {
       content: 'one\r\nsame\r\nthree\r\n',
     }))
     expect(screen.getByText('0 of 0 differences')).toBeInTheDocument()
+    const editHighlightKeys = highlightRequestSpy.mock.calls.map(([request]) => request.cacheKey)
+    expect(new Set(editHighlightKeys).size).toBeGreaterThan(1)
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Undo last comparison action' })).toBeDisabled()
   })
@@ -549,8 +874,8 @@ describe('WorkspaceSideBySideDiffSurface', () => {
 
     expect(screen.getByText('0 of 0 differences')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('radio', { name: 'All' }))
-    expect(screen.getAllByText('left')).toHaveLength(2)
-    expect(screen.queryByText('right')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Edit final version line 2' })).toHaveValue('left')
+    expect(diffCellForText('left', 'old')).toHaveTextContent('left')
   })
 
   it('keeps GBK working sources editable while preserving read-only source protection', () => {
@@ -562,10 +887,9 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     const gbkRight = side('工作\n', { actualEncoding: 'gbk' })
     render(<EditableHarness value={comparison(readonlyLeft, gbkRight)} />)
 
-    const editButtons = screen.getAllByRole('button', { name: 'Edit' })
-    expect(editButtons[0]).toBeDisabled()
-    expect(editButtons[0]).toHaveAttribute('title', 'This source is read-only.')
-    expect(editButtons[1]).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Edit final version line 1' })).toHaveValue('工作')
+    expect(diffCellForText('base', 'old').querySelector('textarea')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'old → new' })).toBeEnabled()
     const disabledMerge = screen.getByRole('button', { name: 'new → old' })
     expect(disabledMerge).toBeDisabled()
@@ -645,33 +969,41 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(screen.getByText('0 of 0 differences')).toBeInTheDocument()
   })
 
-  it('arms source-side manual alignment, confirms after swap, and supports delete, clear, and shared undo', () => {
+  it('starts manual alignment from a right-side context menu after swap and completes on the opposite line', () => {
     render(<EditableHarness value={comparison(
       side('head\nsame\nvoid Render(){ DrawTargetOld(); }\nsame\nvoid Render(){ DrawOther(); }\nsame\ntail\n'),
       side('head\nsame\nvoid Render(){ DrawOther(); }\nsame\nvoid Render(){ DrawTargetNew(); }\nsame\ntail\n'),
     )} />)
 
-    const autoLeftRow = screen.getByText('void Render(){ DrawTargetOld(); }').closest('[data-side-by-side-row]')
-    const autoRightRow = screen.getByText('void Render(){ DrawTargetNew(); }').closest('[data-side-by-side-row]')
+    const autoLeftRow = diffCellForText('void Render(){ DrawTargetOld(); }', 'old').closest('[data-side-by-side-row]')
+    const autoRightRow = diffCellForText('void Render(){ DrawTargetNew(); }', 'new').closest('[data-side-by-side-row]')
     expect(autoLeftRow).not.toBe(autoRightRow)
     expect(autoLeftRow).not.toHaveTextContent('DrawTargetNew')
     expect(autoLeftRow?.querySelector('[data-diff-placeholder][data-side="new"]')).toBeInTheDocument()
     expect(autoRightRow?.querySelector('[data-diff-placeholder][data-side="old"]')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Swap left and right views' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Align lines manually' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Select old line 3 as the left alignment anchor' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Select new line 5 as the right alignment anchor' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm alignment' }))
+    expect(screen.queryByRole('button', { name: 'Align lines manually' })).not.toBeInTheDocument()
+    fireEvent.contextMenu(diffCellForText('void Render(){ DrawTargetNew(); }', 'new'), { clientX: 80, clientY: 90 })
+    expect(screen.getByRole('menu', { name: 'Line actions' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Align to this line' }))
+    expect(screen.getByText('new line 5 selected. Select a line from old.')).toBeInTheDocument()
+    const targetCell = diffCellForText('void Render(){ DrawTargetOld(); }', 'old')
+    fireEvent.click(targetCell)
 
     expect(screen.getByText('L3 ↔ R5')).toBeInTheDocument()
     const anchorRow = screen.getByTestId('workspace-manual-anchor-row-manual-anchor-1')
     expect(anchorRow).toHaveTextContent('DrawTargetOld')
     expect(anchorRow).toHaveTextContent('DrawTargetNew')
     expect(anchorRow.querySelector('[data-diff-placeholder]')).not.toBeInTheDocument()
+    expect(diffCellForText('void Render(){ DrawTargetOld(); }', 'old')).toHaveFocus()
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete alignment L3 ↔ R5' }))
+    expect(screen.queryByText('L3 ↔ R5')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Undo last comparison action' }))
+    expect(screen.getByText('L3 ↔ R5')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Redo last undone comparison action' }))
     expect(screen.queryByText('L3 ↔ R5')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Undo last comparison action' }))
     expect(screen.getByText('L3 ↔ R5')).toBeInTheDocument()
@@ -679,33 +1011,226 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(screen.queryByText('L3 ↔ R5')).not.toBeInTheDocument()
   })
 
-  it('shows stale anchors after an endpoint edit and disables alignment for patch-only and zero-line sides', () => {
+  it('cancels armed alignment with Escape or its context menu and ignores same-side line clicks', () => {
+    render(<EditableHarness value={comparison(side('head\nleft\ntail\n'), side('head\nright\ntail\n'))} />)
+
+    const sourceCell = diffCellForText('right', 'new')
+    sourceCell.focus()
+    fireEvent.keyDown(sourceCell, { key: 'F10', shiftKey: true })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Align to this line' }))
+    fireEvent.click(diffCellForText('head', 'new'))
+    expect(screen.getByText('new line 2 selected. Select a line from old.')).toBeInTheDocument()
+    expect(screen.queryByText(/L\d+ ↔ R\d+/)).not.toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByText('new line 2 selected. Select a line from old.')).not.toBeInTheDocument()
+    expect(sourceCell).toHaveFocus()
+
+    fireEvent.contextMenu(diffCellForText('left', 'old'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Align to this line' }))
+    fireEvent.contextMenu(diffCellForText('right', 'new'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Cancel manual alignment' }))
+    expect(screen.queryByText('old line 2 selected. Select a line from new.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/L\d+ ↔ R\d+/)).not.toBeInTheDocument()
+  })
+
+  it('opens the line menu from the keyboard and reports duplicate and crossing alignment errors', () => {
+    render(<EditableHarness value={comparison(
+      side('head\nleft two\nleft three\nleft four\ntail\n'),
+      side('head\nright two\nright three\nright four\ntail\n'),
+    )} />)
+
+    const oldTwo = diffCellForText('left two', 'old')
+    oldTwo.focus()
+    fireEvent.keyDown(oldTwo, { key: 'F10', shiftKey: true })
+    const alignItem = screen.getByRole('menuitem', { name: 'Align to this line' })
+    expect(alignItem).toHaveFocus()
+    fireEvent.click(alignItem)
+    fireEvent.click(diffCellForText('right three', 'new'))
+    expect(screen.getByText('L2 ↔ R3')).toBeInTheDocument()
+
+    fireEvent.contextMenu(diffCellForText('left two', 'old'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Align to this line' }))
+    fireEvent.click(diffCellForText('right four', 'new'))
+    expect(screen.getByRole('alert')).toHaveTextContent('That line is already used by another alignment.')
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    fireEvent.contextMenu(diffCellForText('left four', 'old'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Align to this line' }))
+    fireEvent.click(diffCellForText('right two', 'new'))
+    expect(screen.getByRole('alert')).toHaveTextContent('Alignment anchors cannot cross.')
+  })
+
+  it('keeps a pointer-opened line menu inside the viewport and dismisses it on scrolling', () => {
+    vi.stubGlobal('innerWidth', 1000)
+    vi.stubGlobal('innerHeight', 800)
+    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute('role') === 'menu') {
+        return {
+          x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 100,
+          width: 200, height: 100, toJSON: () => ({}),
+        }
+      }
+      return {
+        x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0,
+        width: 0, height: 0, toJSON: () => ({}),
+      }
+    })
+    render(<EditableHarness value={comparison(side('left\n'), side('right\n'))} />)
+
+    fireEvent.contextMenu(diffCellForText('left', 'old'), { clientX: 995, clientY: 795 })
+    const menu = screen.getByRole('menu', { name: 'Line actions' })
+    expect(Number.parseFloat(menu.style.left) + 200).toBeLessThanOrEqual(992)
+    expect(Number.parseFloat(menu.style.top) + 100).toBeLessThanOrEqual(792)
+    expect(menu.style.visibility).toBe('visible')
+
+    fireEvent.scroll(window)
+    expect(screen.queryByRole('menu', { name: 'Line actions' })).not.toBeInTheDocument()
+    bounds.mockRestore()
+  })
+
+  it('focuses the menu itself when a placeholder has no enabled line action', () => {
+    const left = side('head\nremoved\ntail\n', {
+      source: { kind: 'git_head', path: 'src/a.ts', revision: 'abc' },
+      writable: false,
+      readOnlyReason: 'Git HEAD is read-only.',
+    })
+    render(<EditableHarness value={comparison(left, side('head\ntail\n'))} />)
+    const removedRow = diffCellForText('removed', 'old').closest('[data-side-by-side-row]')
+    const placeholder = removedRow?.querySelector<HTMLElement>('[data-diff-placeholder][data-side="new"]')
+    placeholder?.focus()
+    fireEvent.keyDown(placeholder!, { key: 'F10', shiftKey: true })
+
+    const menu = screen.getByRole('menu', { name: 'Line actions' })
+    expect(screen.getByRole('menuitem', { name: 'Copy this line to old' })).toBeDisabled()
+    expect(menu).toHaveFocus()
+  })
+
+  it('keeps code text in the gridcell accessible name and exposes the menu shortcut as a description', () => {
+    render(<EditableHarness value={comparison(side('readable old\n'), side('readable new\n'))} />)
+    const cell = diffCellForText('readable old', 'old')
+
+    expect(cell).not.toHaveAttribute('aria-label')
+    expect(cell).toHaveAttribute('aria-keyshortcuts', 'Shift+F10')
+    expect(cell).toHaveAccessibleDescription('Open line actions with Shift+F10 or the Menu key.')
+    expect(cell).toHaveTextContent('readable old')
+  })
+
+  it('copies one replacement or insertion row from its context menu and disables a read-only target', () => {
+    const replacement = comparison(side('head\nleft\ntail\n'), side('head\nright\ntail\n'))
+    const replacementSession = createWorkspaceComparisonSession(replacement)!
+    const replacementChange = vi.fn()
+    const first = render(<WorkspaceSideBySideDiffSurface
+      value=""
+      comparison={replacement}
+      comparisonSession={replacementSession}
+      onComparisonSessionChange={replacementChange}
+      path="src/a.ts"
+    />)
+    fireEvent.contextMenu(diffCellForText('left', 'old'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy this line to new' }))
+    expect(replacementChange.mock.calls[0]?.[0].right.content).toBe('head\nleft\ntail\n')
+    first.unmount()
+
+    const insertion = comparison(side('head\ninserted\ntail\n'), side('head\ntail\n'))
+    const insertionSession = createWorkspaceComparisonSession(insertion)!
+    const insertionChange = vi.fn()
+    const second = render(<WorkspaceSideBySideDiffSurface
+      value=""
+      comparison={insertion}
+      comparisonSession={insertionSession}
+      onComparisonSessionChange={insertionChange}
+      path="src/a.ts"
+    />)
+    fireEvent.contextMenu(diffCellForText('inserted', 'old'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy this line to new' }))
+    expect(insertionChange.mock.calls[0]?.[0].right.content).toBe('head\ninserted\ntail\n')
+    second.unmount()
+
+    const deletion = comparison(side('head\ntail\n'), side('head\nremoved\ntail\n'))
+    const deletionSession = createWorkspaceComparisonSession(deletion)!
+    const deletionChange = vi.fn()
+    const third = render(<WorkspaceSideBySideDiffSurface
+      value=""
+      comparison={deletion}
+      comparisonSession={deletionSession}
+      onComparisonSessionChange={deletionChange}
+      path="src/a.ts"
+    />)
+    const removedRow = diffCellForText('removed', 'new').closest('[data-side-by-side-row]')
+    const oldPlaceholder = removedRow?.querySelector<HTMLElement>('[data-diff-placeholder][data-side="old"]')
+    expect(oldPlaceholder).toBeInTheDocument()
+    fireEvent.contextMenu(oldPlaceholder!)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy this line to new' }))
+    expect(deletionChange.mock.calls[0]?.[0].right.content).toBe('head\ntail\n')
+    third.unmount()
+
+    render(<EditableHarness value={comparison(
+      side('left\n'),
+      side('right\n', {
+        source: { kind: 'git_head', path: 'src/a.ts', revision: 'abc' },
+        writable: false,
+        readOnlyReason: 'Git HEAD is read-only.',
+      }),
+    )} />)
+    fireEvent.contextMenu(diffCellForText('left', 'old'))
+    const disabledCopy = screen.getByRole('menuitem', { name: 'Copy this line to new' })
+    expect(disabledCopy).toBeDisabled()
+    expect(disabledCopy).toHaveAccessibleDescription('This source is read-only.')
+    expect(screen.queryByRole('button', { name: 'Allow editing this file' })).not.toBeInTheDocument()
+  })
+
+  it('offers write access only for a read-only external working-tree target', () => {
+    const external = comparison(
+      side('left\n'),
+      side('right\n', {
+        source: { kind: 'working_tree', path: 'D:/external/a.ts', revision: 'working-tree' },
+        writable: false,
+        readOnlyReason: 'Registered external roots are read-only.',
+      }),
+    )
+    const session = createWorkspaceComparisonSession(external)!
+    const requestWriteAccess = vi.fn()
+    const { rerender } = render(<WorkspaceSideBySideDiffSurface
+      value=""
+      comparison={external}
+      comparisonSession={session}
+      onComparisonSessionChange={() => {}}
+      onRequestWriteAccess={requestWriteAccess}
+      path="D:/external/a.ts"
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow editing this file' }))
+    expect(requestWriteAccess).toHaveBeenCalledWith('right')
+    rerender(<WorkspaceSideBySideDiffSurface
+      value=""
+      comparison={external}
+      comparisonSession={session}
+      onComparisonSessionChange={() => {}}
+      onRequestWriteAccess={requestWriteAccess}
+      writeAccessChangingSide="right"
+      path="D:/external/a.ts"
+    />)
+    expect(screen.getByRole('button', { name: 'Allowing edit…' })).toBeDisabled()
+  })
+
+  it('shows stale anchors after an endpoint edit and omits alignment actions for patch-only and zero-line sides', () => {
     const value = comparison(side('head\nleft anchor\ntail\n'), side('head\nright anchor\ntail\n'))
     const { rerender } = render(<EditableHarness value={value} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Align lines manually' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Select old line 2 as the left alignment anchor' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Select new line 2 as the right alignment anchor' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm alignment' }))
-    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0]!)
-    fireEvent.change(screen.getByRole('textbox', { name: 'Full text editor for the old side' }), {
-      target: { value: 'head\nchanged\ntail\n' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Apply in memory' }))
+    fireEvent.contextMenu(diffCellForText('left anchor', 'old'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Align to this line' }))
+    fireEvent.click(diffCellForText('right anchor', 'new'))
+    const editor = screen.getByRole('textbox', { name: 'Edit final version line 2' })
+    fireEvent.focus(editor)
+    fireEvent.change(editor, { target: { value: 'changed' } })
+    fireEvent.blur(editor)
     expect(screen.getByText('Stale alignment')).toBeInTheDocument()
 
     rerender(<WorkspaceSideBySideDiffSurface value={diff} path="src/a.ts" />)
-    expect(screen.getByRole('button', { name: 'Align lines manually' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Align lines manually' })).toHaveAttribute(
-      'title',
-      'Manual alignment requires complete content for both sides.',
-    )
+    fireEvent.contextMenu(diffCellForText('const answer = 41', 'old'))
+    expect(screen.queryByRole('menuitem', { name: 'Align to this line' })).not.toBeInTheDocument()
 
     rerender(<EditableHarness value={comparison(side(''), side(''))} />)
-    expect(screen.getByRole('button', { name: 'Align lines manually' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Align lines manually' })).toHaveAttribute(
-      'title',
-      'Both sides need at least one real text line.',
-    )
+    expect(screen.queryByRole('menuitem', { name: 'Align to this line' })).not.toBeInTheDocument()
   })
 
   it('opens atomic comparison settings, applies equivalence without dirtying files, and keeps raw text visible', () => {
@@ -717,9 +1242,43 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }))
 
     expect(screen.getByText('0 of 0 differences')).toBeInTheDocument()
-    expect(screen.getByText('VALUE')).toBeInTheDocument()
-    expect(screen.getByText('value')).toBeInTheDocument()
+    expect(diffCellForText('VALUE', 'old')).toHaveTextContent('VALUE')
+    expect(diffCellForText('value', 'new')).toHaveTextContent('value')
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('toggles whitespace approximation from the toolbar without dirtying file buffers', () => {
+    const value = comparison(side('one\n'), side(' one\n'))
+    const session = createWorkspaceComparisonSession(value)!
+    const onChange = vi.fn()
+    const { rerender } = render(<WorkspaceSideBySideDiffSurface
+      value=""
+      comparison={value}
+      comparisonSession={session}
+      onComparisonSessionChange={onChange}
+      path="src/a.ts"
+    />)
+
+    const approximate = screen.getByRole('button', { name: 'Minor' })
+    expect(approximate).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(approximate)
+    const next = onChange.mock.calls[0]?.[0]
+    expect(next).toMatchObject({
+      revision: session.revision + 1,
+      settingsRevision: session.settingsRevision + 1,
+      comparisonSettings: { ignoreWhitespace: true },
+      left: { dirty: false },
+      right: { dirty: false },
+    })
+
+    rerender(<WorkspaceSideBySideDiffSurface
+      value=""
+      comparison={value}
+      comparisonSession={next}
+      onComparisonSessionChange={onChange}
+      path="src/a.ts"
+    />)
+    expect(screen.getByRole('button', { name: 'Minor' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('keeps settings visible but fail-closed for patch-only input', () => {
@@ -739,7 +1298,13 @@ describe('WorkspaceSideBySideDiffSurface', () => {
       constructor() { instances.push(this) }
     }
     vi.stubGlobal('Worker', FakeWorker)
-    const session = createWorkspaceComparisonSession(fullComparison)!
+    const initialSession = createWorkspaceComparisonSession(fullComparison)!
+    const session = editWorkspaceComparisonSide(
+      initialSession,
+      'right',
+      fullComparison.right.content!.replace('new three', 'edited three'),
+    )
+    const onComparisonSessionChange = vi.fn()
     expect(session.comparisonSettings.profile).toBe('balanced')
 
     const { rerender } = render(
@@ -747,6 +1312,7 @@ describe('WorkspaceSideBySideDiffSurface', () => {
         value={diff}
         comparison={fullComparison}
         comparisonSession={session}
+        onComparisonSessionChange={onComparisonSessionChange}
         path="src/a.ts"
         onAddComment={vi.fn()}
         renderHunkAction={(hunkId) => <span data-testid="worker-patch-action" data-hunk-id={hunkId} />}
@@ -756,6 +1322,13 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(instances).toHaveLength(1)
     expect(modelBuildSpy.mock.calls.some(([, currentComparison]) => currentComparison !== undefined)).toBe(false)
     expect(screen.getByRole('status')).toHaveTextContent('Recomputing comparison')
+    const undo = screen.getByRole('button', { name: 'Undo last comparison action' })
+    expect(undo).toBeEnabled()
+    fireEvent.click(undo)
+    expect(onComparisonSessionChange).toHaveBeenCalledWith(expect.objectContaining({
+      right: expect.objectContaining({ content: fullComparison.right.content }),
+      redoStack: [expect.any(Object)],
+    }))
     expect(screen.getByRole('radio', { name: 'All' })).toBeDisabled()
     expect(screen.getByRole('radio', { name: 'Same' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Comment on src/a.ts new line 11' })).toBeInTheDocument()
@@ -780,7 +1353,7 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     )
     expect(modelBuildSpy.mock.calls.some(([, currentComparison]) => currentComparison !== undefined)).toBe(false)
     expect(screen.getByRole('status')).toHaveTextContent('Recomputing comparison')
-    expect(screen.getByText('new three')).toBeInTheDocument()
+    expect(screen.getByText('edited three')).toBeInTheDocument()
 
     await act(async () => {
       instances[0]!.onerror?.({ message: 'stop test worker' } as ErrorEvent)

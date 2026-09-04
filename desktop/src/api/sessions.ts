@@ -601,6 +601,10 @@ export const sessionsApi = {
     return api.put<WorkspaceWriteResult>(`/api/sessions/${sessionId}/workspace/file`, body)
   },
 
+  grantWorkspaceFileWriteAccess(sessionId: string, path: string) {
+    return api.post<{ path: string }>(`/api/sessions/${sessionId}/workspace/file/write-access`, { path })
+  },
+
   revertWorkspaceFile(sessionId: string, body: { path: string; expectedContent: string | null }) {
     return api.post<WorkspaceWriteResult>(`/api/sessions/${sessionId}/workspace/file/revert`, body)
   },

@@ -42,6 +42,14 @@ describe('useTranslation', () => {
     expect(translate('kr', 'common.save')).toBe('저장')
   })
 
+  it('names the horizontal comparison view consistently in every locale', () => {
+    expect(translate('zh', 'workspace.compareWorkspace')).toBe('横向对比视图')
+    expect(translate('zh-TW', 'workspace.compareWorkspace')).toBe('橫向對比檢視')
+    expect(translate('en', 'workspace.compareWorkspace')).toBe('Side-by-side comparison')
+    expect(translate('jp', 'workspace.compareWorkspace')).toBe('左右比較ビュー')
+    expect(translate('kr', 'workspace.compareWorkspace')).toBe('나란히 비교 보기')
+  })
+
   it('interpolates params across the new locales', () => {
     expect(translate('jp', 'session.timeMinutes', { n: 5 })).toBe('5 分前')
     expect(translate('kr', 'session.timeMinutes', { n: 5 })).toBe('5분 전')

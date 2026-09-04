@@ -1539,6 +1539,7 @@ describe('ActiveSession task polling', () => {
     expect(chatColumn).not.toHaveClass('shrink-0')
     expect(chatColumn).not.toHaveClass('border-r')
     expect(workbenchPanel).not.toHaveClass('border-l')
+    expect(workbenchPanel).toHaveStyle({ maxWidth: 'calc(100% - 321px)' })
     expect(resizeHandle).toHaveClass('w-px', 'bg-[var(--color-border)]')
     expect(resizeHandle.firstElementChild).toHaveClass('-inset-x-1')
     expect(contentRow.children[0]).toBe(chatColumn)

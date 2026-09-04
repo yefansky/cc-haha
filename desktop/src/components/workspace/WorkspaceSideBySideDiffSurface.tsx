@@ -1,10 +1,14 @@
 import {
   memo,
+  useCallback,
   useEffect,
+  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react'
 import {
@@ -14,18 +18,18 @@ import {
   ChevronUp,
   CornerDownLeft,
   FileCode2,
-  Link2,
   MessageSquare,
-  Pencil,
   Plus,
+  Redo2,
   Save,
   SlidersHorizontal,
   Undo2,
-  X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
+import { useDismissable } from '@/hooks/useDismissable'
+import { useAnchoredPosition } from '@/hooks/useAnchoredPosition'
 import type { WorkspaceComparison, WorkspaceTextEncoding } from '@/api/sessions'
 import { useTranslation } from '../../i18n'
 import {
@@ -58,15 +62,17 @@ import {
 } from './workspaceSideBySideModel'
 import type { WorkspaceComparisonTextPair } from './workspaceComparisonInput'
 import {
-  editWorkspaceComparisonSide,
   applyWorkspaceComparisonSettings,
   addWorkspaceManualAlignmentAnchor,
   clearWorkspaceManualAlignmentAnchors,
   editWorkspaceComparisonLine,
   getWorkspaceComparisonCapability,
+  insertWorkspaceComparisonText,
   isWorkspaceComparisonSessionDirty,
   mergeWorkspaceComparisonSection,
+  mergeWorkspaceComparisonRow,
   removeWorkspaceManualAlignmentAnchor,
+  redoWorkspaceComparisonSession,
   undoWorkspaceComparisonSession,
   workspaceComparisonSessionToComparison,
   type WorkspaceComparisonSession,
@@ -76,6 +82,8 @@ import { countWorkspaceManualAlignmentLines } from './workspaceManualAlignment'
 import { createDefaultWorkspaceComparisonSettings } from './workspaceComparisonSettings'
 import { WorkspaceComparisonSettingsPanel } from './WorkspaceComparisonSettingsPanel'
 import { requestWorkspaceComparisonModel } from './workspaceComparisonRuntime'
+
+const EMPTY_EXPANDED_CONTEXT_SEPARATOR_IDS: ReadonlySet<string> = new Set()
 
 export interface WorkspaceSideBySideDiffSurfaceProps {
   value: string
@@ -88,7 +96,7 @@ export interface WorkspaceSideBySideDiffSurfaceProps {
   renderHunkAction?: (hunkId: string) => ReactNode
   comparisonSession?: WorkspaceComparisonSession | null
   onComparisonSessionChange?: (session: WorkspaceComparisonSession) => void
-  onSave?: () => void | Promise<void>
+  onSave?: (session: WorkspaceComparisonSession) => void | Promise<void>
   saving?: boolean
   saveError?: string | null
   onEncodingChange?: (
@@ -96,6 +104,8 @@ export interface WorkspaceSideBySideDiffSurfaceProps {
     encoding: WorkspaceTextEncoding,
   ) => void | Promise<void>
   encodingChangingSide?: WorkspaceComparisonSourceSide | null
+  onRequestWriteAccess?: (sourceSide: WorkspaceComparisonSourceSide) => void | Promise<void>
+  writeAccessChangingSide?: WorkspaceComparisonSourceSide | null
   fullOnlyDisabledReason?: string
   textPair?: WorkspaceComparisonTextPair
   modelOverride?: WorkspaceSideBySideModel
@@ -209,6 +219,63 @@ const HighlightedLine = memo(function HighlightedLine({
   )
 })
 
+const DirectEditableLine = memo(function DirectEditableLine({
+  value,
+  display,
+  active,
+  ariaLabel,
+  difference,
+  onFocus,
+  onChange,
+  onBlur,
+}: {
+  value: string
+  display: ReactNode
+  active: boolean
+  ariaLabel: string
+  difference: boolean
+  onFocus: () => void
+  onChange: (value: string) => void
+  onBlur: () => void
+}) {
+  return (
+    <span
+      data-diff-pane-natural-content=""
+      data-side="new"
+      className="relative grid w-max min-w-full items-stretch whitespace-pre"
+    >
+      <span aria-hidden="true" className="invisible col-start-1 row-start-1 px-3 whitespace-pre">
+        {value || ' '}
+      </span>
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none col-start-1 row-start-1 px-3 whitespace-pre ${active ? 'invisible' : ''}`}
+      >
+        {display}
+      </span>
+      <textarea
+        data-testid="workspace-diff-direct-editor"
+        aria-label={ariaLabel}
+        aria-multiline="true"
+        value={value}
+        rows={Math.max(1, value.split('\n').length)}
+        wrap="off"
+        spellCheck={false}
+        onFocus={onFocus}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={onBlur}
+        className={`absolute inset-0 m-0 h-full w-full cursor-text resize-none overflow-hidden border-0 bg-transparent px-3 py-0 font-mono text-[13px] leading-5 outline-none caret-[var(--color-code-fg)] ${
+          active
+            ? difference
+              ? 'text-[var(--color-diff-removed-text)]'
+              : 'text-[var(--color-code-fg)]'
+            : 'text-transparent'
+        }`}
+      />
+    </span>
+  )
+})
+
 function cellTone(row: WorkspaceDiffRow | null) {
   if (!row) return 'bg-[var(--color-code-bg)]'
   if (row.kind === 'addition' || row.kind === 'deletion') {
@@ -232,17 +299,35 @@ interface CommentDraft {
   note: string
 }
 
-interface InlineEditDraft {
+interface DirectEditDraft {
   sourceSide: WorkspaceComparisonSourceSide
   lineNumber: number
   revision: number
+  mode: 'replace' | 'insert'
+  originalText: string
   text: string
 }
 
-type ManualAlignmentDraft =
-  | { phase: 'left'; revision: number; previousViewMode: WorkspaceSideBySideViewMode; previousShowAllRows: boolean }
-  | { phase: 'right'; revision: number; leftLine: number; previousViewMode: WorkspaceSideBySideViewMode; previousShowAllRows: boolean }
-  | { phase: 'ready'; revision: number; leftLine: number; rightLine: number; previousViewMode: WorkspaceSideBySideViewMode; previousShowAllRows: boolean }
+interface ManualAlignmentDraft {
+  revision: number
+  sourceSide: WorkspaceComparisonSourceSide
+  lineNumber: number
+  previousViewMode: WorkspaceSideBySideViewMode
+  previousShowAllRows: boolean
+}
+
+function isNativeTextHistoryTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false
+  return Boolean(target.closest('textarea, input, [contenteditable]:not([contenteditable="false"]), [role="textbox"]'))
+}
+
+interface DiffLineContextMenu {
+  rowId: string
+  sourceSide: WorkspaceComparisonSourceSide
+  lineNumber: number | null
+  x: number
+  y: number
+}
 
 export function WorkspaceSideBySideDiffSurface({
   value,
@@ -260,6 +345,8 @@ export function WorkspaceSideBySideDiffSurface({
   saveError,
   onEncodingChange,
   encodingChangingSide,
+  onRequestWriteAccess,
+  writeAccessChangingSide,
   fullOnlyDisabledReason,
   textPair,
   modelOverride,
@@ -281,6 +368,7 @@ export function WorkspaceSideBySideDiffSurface({
       || comparisonSettings.rules.some((rule) => rule.enabled)
     )
   const sourceIdentity = comparisonSourceIdentity(effectiveComparison, path)
+  const projectionIdentity = `${sourceIdentity}|${comparisonSession?.revision ?? 0}|${comparisonSession?.settingsRevision ?? 0}`
   const [runtimeModel, setRuntimeModel] = useState<{
     sourceIdentity: string
     comparisonReference: WorkspaceComparison | undefined
@@ -367,21 +455,75 @@ export function WorkspaceSideBySideDiffSurface({
   const [leftPanePercent, setLeftPanePercent] = useState(50)
   const [resizingPanes, setResizingPanes] = useState(false)
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null)
-  const [editingSide, setEditingSide] = useState<WorkspaceComparisonSourceSide | null>(null)
-  const [editDraft, setEditDraft] = useState('')
-  const [inlineEditDraft, setInlineEditDraft] = useState<InlineEditDraft | null>(null)
+  const [pendingScrollTarget, setPendingScrollTarget] = useState<{
+    projectionIdentity: string
+    sectionId: string
+  } | null>(null)
+  const [contextExpansion, setContextExpansion] = useState<{
+    projectionIdentity: string
+    separatorIds: ReadonlySet<string>
+  }>(() => ({ projectionIdentity, separatorIds: EMPTY_EXPANDED_CONTEXT_SEPARATOR_IDS }))
+  const [directEditDraft, setDirectEditDraft] = useState<DirectEditDraft | null>(null)
+  const directEditChanged = Boolean(
+    directEditDraft && directEditDraft.text !== directEditDraft.originalText,
+  )
   const [manualAlignmentDraft, setManualAlignmentDraft] = useState<ManualAlignmentDraft | null>(null)
   const [manualAlignmentError, setManualAlignmentError] = useState<string | null>(null)
+  const [lineContextMenu, setLineContextMenu] = useState<DiffLineContextMenu | null>(null)
   const [showComparisonSettings, setShowComparisonSettings] = useState(false)
   const pendingActiveSectionIndexRef = useRef<number | null>(null)
   const lastMutationSectionIndexRef = useRef<number | null>(null)
-  const pendingScrollSectionIdRef = useRef<string | null>(null)
   const rowElementsRef = useRef(new Map<string, HTMLDivElement>())
+  const lineContextMenuRef = useRef<HTMLDivElement>(null)
+  const lineContextTriggerRef = useRef<HTMLElement | null>(null)
+  const comparisonSurfaceRef = useRef<HTMLDivElement>(null)
+  const pendingSurfaceFocusRevisionRef = useRef<number | null>(null)
+  const pendingLineFocusRef = useRef<{
+    sourceSide: WorkspaceComparisonSourceSide
+    lineNumber: number
+    minimumRevision?: number
+    fallbackToSurface?: boolean
+  } | null>(null)
+  const lineActionsDescriptionId = useId()
+  const lineContextAnchorRect = useMemo(() => {
+    const viewportWidth = typeof window === 'undefined' ? 0 : window.innerWidth
+    const viewportHeight = typeof window === 'undefined' ? 0 : window.innerHeight
+    const x = Math.max(8, Math.min(lineContextMenu?.x ?? 0, Math.max(8, viewportWidth - 8)))
+    const y = Math.max(8, Math.min(lineContextMenu?.y ?? 0, Math.max(8, viewportHeight - 8)))
+    return { top: y, right: x, bottom: y, left: x }
+  }, [lineContextMenu?.x, lineContextMenu?.y])
+  const { style: lineContextMenuPositionStyle } = useAnchoredPosition({
+    open: lineContextMenu !== null,
+    anchorRect: lineContextAnchorRect,
+    floatingRef: lineContextMenuRef,
+    offset: 0,
+    viewportMargin: 8,
+  })
+  const expandedContextSeparatorIds = contextExpansion.projectionIdentity === projectionIdentity
+    ? contextExpansion.separatorIds
+    : EMPTY_EXPANDED_CONTEXT_SEPARATOR_IDS
   const projectedFiles = useMemo(() => files.map((file) => ({
     file,
-    items: projectWorkspaceSideBySideFile(file, viewMode),
-  })), [files, viewMode])
+    items: projectWorkspaceSideBySideFile(file, viewMode, 3, expandedContextSeparatorIds),
+  })), [expandedContextSeparatorIds, files, viewMode])
   const sourceFiles = useMemo(() => files.map((file) => file.source), [files])
+  const placeholderInsertionLines = useMemo(() => {
+    const result = new Map<string, number>()
+    files.forEach((file) => {
+      file.rows.forEach((pair, index) => {
+        if (pair.right) return
+        const nextLine = file.rows.slice(index + 1)
+          .find((candidate) => candidate.right?.newLine !== null && candidate.right?.newLine !== undefined)
+          ?.right?.newLine
+        const previousLine = [...file.rows.slice(0, index)]
+          .reverse()
+          .find((candidate) => candidate.right?.newLine !== null && candidate.right?.newLine !== undefined)
+          ?.right?.newLine
+        result.set(pair.id, nextLine ?? ((previousLine ?? 0) + 1))
+      })
+    })
+    return result
+  }, [files])
   const displayRows = useMemo(() => projectedFiles.flatMap(({ items }) => items.flatMap((item) => (
     item.kind === 'row' ? [item.row] : []
   ))), [projectedFiles])
@@ -416,6 +558,66 @@ export function WorkspaceSideBySideDiffSurface({
   const [commentDraft, setCommentDraft] = useState<CommentDraft | null>(null)
   const editorRef = useRef<HTMLTextAreaElement>(null)
   const comparisonContentRef = useRef<HTMLDivElement>(null)
+  const paneScrollbarRefs = useRef<Record<'old' | 'new', HTMLDivElement | null>>({ old: null, new: null })
+  const programmaticPaneScrollTargetsRef = useRef(new WeakMap<HTMLElement, number>())
+  const [paneScrollWidths, setPaneScrollWidths] = useState<Record<'old' | 'new', number>>({ old: 1, new: 1 })
+
+  const syncPaneScroll = useCallback((side: 'old' | 'new', scrollLeft: number, source: HTMLElement) => {
+    const updateScrollLeft = (element: HTMLElement | null, suppressFeedback: boolean) => {
+      if (!element || element === source || element.scrollLeft === scrollLeft) return
+      if (suppressFeedback) programmaticPaneScrollTargetsRef.current.set(element, scrollLeft)
+      element.scrollLeft = scrollLeft
+      if (!suppressFeedback) return
+      requestAnimationFrame(() => {
+        if (programmaticPaneScrollTargetsRef.current.get(element) === scrollLeft) {
+          programmaticPaneScrollTargetsRef.current.delete(element)
+        }
+      })
+    }
+    const scrollbar = paneScrollbarRefs.current[side]
+    updateScrollLeft(scrollbar, false)
+    comparisonContentRef.current
+      ?.querySelectorAll<HTMLElement>(`[data-diff-pane-scroll-content][data-side="${side}"]`)
+      .forEach((element) => {
+        updateScrollLeft(element, true)
+      })
+  }, [])
+
+  const handlePaneScroll = useCallback((side: 'old' | 'new', source: HTMLElement) => {
+    const programmaticTarget = programmaticPaneScrollTargetsRef.current.get(source)
+    if (programmaticTarget !== undefined) {
+      programmaticPaneScrollTargetsRef.current.delete(source)
+      if (source.scrollLeft === programmaticTarget) return
+    }
+    syncPaneScroll(side, source.scrollLeft, source)
+  }, [syncPaneScroll])
+
+  const measurePaneScrollWidths = useCallback(() => {
+    const root = comparisonContentRef.current
+    if (!root) return
+    const next = { old: 1, new: 1 }
+    for (const side of ['old', 'new'] as const) {
+      root.querySelectorAll<HTMLElement>(`[data-diff-pane-natural-content][data-side="${side}"]`)
+        .forEach((element) => {
+          next[side] = Math.max(next[side], element.scrollWidth)
+        })
+    }
+    setPaneScrollWidths((current) => (
+      current.old === next.old && current.new === next.new ? current : next
+    ))
+  }, [])
+
+  useLayoutEffect(() => {
+    const root = comparisonContentRef.current
+    if (!root) return
+    measurePaneScrollWidths()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measurePaneScrollWidths)
+    observer.observe(root)
+    root.querySelectorAll<HTMLElement>('[data-diff-pane-natural-content]')
+      .forEach((element) => observer.observe(element))
+    return () => observer.disconnect()
+  }, [leftPanePercent, measurePaneScrollWidths, projectedFiles, showAllRows, swapped, visibleRowIds])
 
   const updatePaneSplit = (clientX: number) => {
     const bounds = comparisonContentRef.current?.getBoundingClientRect()
@@ -445,7 +647,7 @@ export function WorkspaceSideBySideDiffSurface({
   }, [resizingPanes])
 
   const paneGridStyle: CSSProperties = {
-    gridTemplateColumns: 'minmax(28rem, var(--workspace-diff-left-pane)) minmax(28rem, var(--workspace-diff-right-pane))',
+    gridTemplateColumns: `minmax(0, ${leftPanePercent}%) minmax(0, ${100 - leftPanePercent}%)`,
   }
 
   const modeItems = useMemo(() => {
@@ -529,25 +731,21 @@ export function WorkspaceSideBySideDiffSurface({
   }, [activeSectionId, model.sections])
 
   useEffect(() => {
-    const sectionId = pendingScrollSectionIdRef.current
-    if (!sectionId) return
-    const section = model.sections.find((candidate) => candidate.id === sectionId)
+    if (!pendingScrollTarget) return
+    if (pendingScrollTarget.projectionIdentity !== projectionIdentity) {
+      setPendingScrollTarget(null)
+      return
+    }
+    const section = model.sections.find((candidate) => candidate.id === pendingScrollTarget.sectionId)
     const target = section?.rowIds.find((rowId) => rowElementsRef.current.has(rowId))
     if (!target) return
-    rowElementsRef.current.get(target)?.scrollIntoView?.({ block: 'center' })
-    pendingScrollSectionIdRef.current = null
-  }, [model.sections, projectedFiles, showAllRows, viewMode])
+    rowElementsRef.current.get(target)?.scrollIntoView?.({ block: 'center', inline: 'nearest' })
+    setPendingScrollTarget(null)
+  }, [model.sections, pendingScrollTarget, projectedFiles, projectionIdentity, showAllRows, viewMode])
 
   useEffect(() => {
     if (commentDraft) editorRef.current?.focus()
   }, [commentDraft])
-
-  useEffect(() => {
-    if (
-      inlineEditDraft
-      && (!comparisonSession || inlineEditDraft.revision !== comparisonSession.revision)
-    ) setInlineEditDraft(null)
-  }, [comparisonSession?.revision, inlineEditDraft])
 
   const sideLabel = (side: 'old' | 'new') => t(`workspace.diffReview.side.${side}`)
   const sourceSideLabel = (side: WorkspaceComparisonSourceSide) => (
@@ -558,8 +756,19 @@ export function WorkspaceSideBySideDiffSurface({
     if (capability.allowed) return null
     return t(`workspace.diffEdit.disabled.${capability.reason ?? 'unavailable'}`)
   }
+  const canRequestSideWriteAccess = (side: WorkspaceComparisonSourceSide) => {
+    const capability = getWorkspaceComparisonCapability(comparisonSession, side)
+    return Boolean(
+      onRequestWriteAccess
+      && comparisonSession
+      && capability.reason === 'not_writable'
+      && comparisonSession[side].source.kind === 'working_tree'
+      && comparisonSession[side].readOnlyReason === 'Registered external roots are read-only.',
+    )
+  }
 
   const manualAlignmentDisabledReason = (() => {
+    if (recomputing) return t('workspace.comparisonSettings.recomputing')
     if (fullOnlyDisabledReason) return fullOnlyDisabledReason
     if (!comparisonSession || model.kind !== 'comparison') {
       return t('workspace.manualAlignment.disabled.incomplete')
@@ -573,42 +782,52 @@ export function WorkspaceSideBySideDiffSurface({
     return null
   })()
 
-  const selectManualAlignmentLine = (
-    sourceSide: WorkspaceComparisonSourceSide,
-    lineNumber: number,
-  ) => {
-    if (!manualAlignmentDraft) return
-    if (manualAlignmentDraft.phase === 'left' && sourceSide === 'left') {
-      setManualAlignmentDraft({
-        ...manualAlignmentDraft,
-        phase: 'right',
-        leftLine: lineNumber,
-      })
-      return
-    }
-    if (manualAlignmentDraft.phase === 'right' && sourceSide === 'right') {
-      setManualAlignmentDraft({
-        ...manualAlignmentDraft,
-        phase: 'ready',
-        rightLine: lineNumber,
-      })
-    }
-  }
-
-  const closeManualAlignmentDraft = () => {
+  const closeManualAlignmentDraft = useCallback(() => {
     if (manualAlignmentDraft) {
+      pendingLineFocusRef.current = {
+        sourceSide: manualAlignmentDraft.sourceSide,
+        lineNumber: manualAlignmentDraft.lineNumber,
+      }
       setViewMode(manualAlignmentDraft.previousViewMode)
       setShowAllRows(manualAlignmentDraft.previousShowAllRows)
     }
     setManualAlignmentDraft(null)
+    setLineContextMenu(null)
+  }, [manualAlignmentDraft])
+
+  const startManualAlignment = (
+    sourceSide: WorkspaceComparisonSourceSide,
+    lineNumber: number,
+  ) => {
+    if (!comparisonSession || manualAlignmentDisabledReason) return
+    setManualAlignmentDraft({
+      revision: comparisonSession.revision,
+      sourceSide,
+      lineNumber,
+      previousViewMode: viewMode,
+      previousShowAllRows: showAllRows,
+    })
+    setManualAlignmentError(null)
+    setLineContextMenu(null)
+    setViewMode('all')
+    setShowAllRows(true)
   }
 
-  const confirmManualAlignment = () => {
-    if (!comparisonSession || manualAlignmentDraft?.phase !== 'ready') return
+  const selectManualAlignmentTarget = (
+    sourceSide: WorkspaceComparisonSourceSide,
+    lineNumber: number,
+  ) => {
+    if (!comparisonSession || !manualAlignmentDraft || sourceSide === manualAlignmentDraft.sourceSide) return
+    const leftLine = manualAlignmentDraft.sourceSide === 'left'
+      ? manualAlignmentDraft.lineNumber
+      : lineNumber
+    const rightLine = manualAlignmentDraft.sourceSide === 'right'
+      ? manualAlignmentDraft.lineNumber
+      : lineNumber
     const outcome = addWorkspaceManualAlignmentAnchor(
       comparisonSession,
-      manualAlignmentDraft.leftLine,
-      manualAlignmentDraft.rightLine,
+      leftLine,
+      rightLine,
       manualAlignmentDraft.revision,
     )
     if (outcome.state === 'error') {
@@ -616,30 +835,83 @@ export function WorkspaceSideBySideDiffSurface({
       return
     }
     closeManualAlignmentDraft()
+    pendingLineFocusRef.current = {
+      sourceSide,
+      lineNumber,
+      minimumRevision: outcome.session.revision,
+      fallbackToSurface: true,
+    }
     setManualAlignmentError(null)
     onComparisonSessionChange?.(outcome.session)
   }
 
-  const beginEdit = (side: WorkspaceComparisonSourceSide) => {
-    if (!comparisonSession || !getWorkspaceComparisonCapability(comparisonSession, side).allowed) return
-    setEditingSide(side)
-    setEditDraft(comparisonSession[side].content)
-  }
-
-  const applyEdit = () => {
-    if (!comparisonSession || !editingSide) return
-    const next = editWorkspaceComparisonSide(comparisonSession, editingSide, editDraft)
-    if (next !== comparisonSession) {
-      pendingActiveSectionIndexRef.current = Math.max(0, activeSectionIndex)
-      onComparisonSessionChange?.(next)
+  useEffect(() => {
+    if (!manualAlignmentDraft) return
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      closeManualAlignmentDraft()
     }
-    setEditingSide(null)
-  }
+    document.addEventListener('keydown', handleEscape, true)
+    return () => document.removeEventListener('keydown', handleEscape, true)
+  }, [closeManualAlignmentDraft, manualAlignmentDraft])
 
-  const beginInlineEdit = (
+  const dismissLineContextMenu = useCallback((reason: 'outside' | 'escape' | 'scroll' | 'resize') => {
+    setLineContextMenu(null)
+    if (reason === 'escape') lineContextTriggerRef.current?.focus()
+  }, [])
+
+  useDismissable({
+    open: lineContextMenu !== null,
+    refs: [lineContextMenuRef],
+    triggerRef: lineContextTriggerRef,
+    onDismiss: dismissLineContextMenu,
+    closeOnEscape: !manualAlignmentDraft,
+    stopEscapePropagation: true,
+    closeOnViewportChange: true,
+  })
+
+  useEffect(() => {
+    if (!lineContextMenu) return
+    const menu = lineContextMenuRef.current
+    const firstItem = menu?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')
+    if (firstItem) firstItem.focus()
+    else menu?.focus()
+  }, [lineContextMenu])
+
+  useEffect(() => {
+    const pending = pendingLineFocusRef.current
+    if (!pending) return
+    if (
+      pending.minimumRevision !== undefined
+      && (comparisonSession?.revision ?? -1) < pending.minimumRevision
+    ) return
+    const cell = comparisonContentRef.current?.querySelector<HTMLElement>(
+      `[data-diff-cell][data-source-side="${pending.sourceSide}"][data-source-line="${pending.lineNumber}"]`,
+    )
+    if (cell) {
+      cell.focus()
+      pendingLineFocusRef.current = null
+    } else if (pending.fallbackToSurface) {
+      comparisonSurfaceRef.current?.focus({ preventScroll: true })
+      pendingLineFocusRef.current = null
+    }
+  }, [comparisonSession?.revision, manualAlignmentDraft, projectionIdentity, showAllRows, viewMode])
+
+  useEffect(() => {
+    const minimumRevision = pendingSurfaceFocusRevisionRef.current
+    if (minimumRevision === null || (comparisonSession?.revision ?? -1) < minimumRevision) return
+    comparisonSurfaceRef.current?.focus({ preventScroll: true })
+    pendingSurfaceFocusRevisionRef.current = null
+  }, [comparisonSession?.revision, projectionIdentity])
+
+  const beginDirectEdit = (
     sourceSide: WorkspaceComparisonSourceSide,
     lineNumber: number,
     text: string,
+    mode: DirectEditDraft['mode'] = 'replace',
   ) => {
     if (
       !comparisonSession
@@ -647,42 +919,132 @@ export function WorkspaceSideBySideDiffSurface({
       || !getWorkspaceComparisonCapability(comparisonSession, sourceSide).allowed
     ) return
     setCommentDraft(null)
-    setInlineEditDraft({
+    setDirectEditDraft({
       sourceSide,
       lineNumber,
       revision: comparisonSession.revision,
+      mode,
+      originalText: text,
       text,
     })
   }
 
-  const applyInlineEdit = () => {
-    if (!comparisonSession || !inlineEditDraft) return
-    if (comparisonSession.revision !== inlineEditDraft.revision) {
-      setInlineEditDraft(null)
-      return
-    }
-    const next = editWorkspaceComparisonLine(
-      comparisonSession,
-      inlineEditDraft.sourceSide,
-      inlineEditDraft.lineNumber,
-      inlineEditDraft.text,
-      inlineEditDraft.revision,
-    )
-    if (next !== comparisonSession) {
+  const sessionWithDirectEdit = () => {
+    if (!comparisonSession || !directEditDraft) return comparisonSession
+    if (directEditDraft.text === directEditDraft.originalText) return comparisonSession
+    return directEditDraft.mode === 'insert'
+      ? insertWorkspaceComparisonText(
+          comparisonSession,
+          directEditDraft.sourceSide,
+          directEditDraft.lineNumber,
+          directEditDraft.text,
+          directEditDraft.revision,
+        )
+      : editWorkspaceComparisonLine(
+          comparisonSession,
+          directEditDraft.sourceSide,
+          directEditDraft.lineNumber,
+          directEditDraft.text,
+          directEditDraft.revision,
+        )
+  }
+
+  const commitDirectEdit = () => {
+    const next = sessionWithDirectEdit()
+    setDirectEditDraft(null)
+    if (next && next !== comparisonSession) {
       pendingActiveSectionIndexRef.current = Math.max(0, activeSectionIndex)
+      lastMutationSectionIndexRef.current = Math.max(0, activeSectionIndex)
       onComparisonSessionChange?.(next)
     }
-    setInlineEditDraft(null)
+    return next
   }
 
   const mergeSection = (sectionId: string, sourceSide: WorkspaceComparisonSourceSide) => {
-    if (!comparisonSession) return
+    if (!comparisonSession || recomputing) return
     const sectionIndex = model.sections.findIndex((section) => section.id === sectionId)
-    const next = mergeWorkspaceComparisonSection(comparisonSession, model, sectionId, sourceSide)
+    const next = mergeWorkspaceComparisonSection(
+      comparisonSession,
+      model,
+      sectionId,
+      sourceSide,
+      comparisonSession.revision,
+    )
     if (next === comparisonSession) return
     pendingActiveSectionIndexRef.current = Math.max(0, sectionIndex)
     lastMutationSectionIndexRef.current = Math.max(0, sectionIndex)
+    pendingSurfaceFocusRevisionRef.current = next.revision
     onComparisonSessionChange?.(next)
+  }
+
+  const mergeRow = (rowId: string, sourceSide: WorkspaceComparisonSourceSide) => {
+    if (!comparisonSession || recomputing) return
+    const sectionIndex = model.sections.findIndex((section) => section.rowIds.includes(rowId))
+    const next = mergeWorkspaceComparisonRow(
+      comparisonSession,
+      model,
+      rowId,
+      sourceSide,
+      comparisonSession.revision,
+    )
+    setLineContextMenu(null)
+    if (next === comparisonSession) return
+    pendingActiveSectionIndexRef.current = Math.max(0, sectionIndex)
+    lastMutationSectionIndexRef.current = Math.max(0, sectionIndex)
+    const sourceRow = model.files.flatMap((file) => file.rows).find((row) => row.id === rowId)
+    const sourceLineNumber = sourceSide === 'left'
+      ? sourceRow?.left?.oldLine
+      : sourceRow?.right?.newLine
+    if (sourceLineNumber !== null && sourceLineNumber !== undefined) {
+      pendingLineFocusRef.current = {
+        sourceSide,
+        lineNumber: sourceLineNumber,
+        minimumRevision: next.revision,
+        fallbackToSurface: true,
+      }
+    } else {
+      pendingSurfaceFocusRevisionRef.current = next.revision
+    }
+    onComparisonSessionChange?.(next)
+  }
+
+  const toggleApproximateComparison = () => {
+    if (!comparisonSession || recomputing) return
+    const outcome = applyWorkspaceComparisonSettings(comparisonSession, {
+      ...comparisonSession.comparisonSettings,
+      ignoreWhitespace: !comparisonSession.comparisonSettings.ignoreWhitespace,
+    })
+    if (outcome.state !== 'ok') return
+    onComparisonSessionChange?.(outcome.session)
+  }
+
+  const navigateComparisonHistory = (direction: 'undo' | 'redo') => {
+    if (!comparisonSession) return
+    const base = sessionWithDirectEdit() ?? comparisonSession
+    const next = direction === 'undo'
+      ? undoWorkspaceComparisonSession(base)
+      : redoWorkspaceComparisonSession(base)
+    setDirectEditDraft(null)
+    if (next === comparisonSession) return
+    if (lastMutationSectionIndexRef.current !== null) {
+      pendingActiveSectionIndexRef.current = lastMutationSectionIndexRef.current
+    }
+    setLineContextMenu(null)
+    onComparisonSessionChange?.(next)
+  }
+
+  const handleHistoryKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || isNativeTextHistoryTarget(event.target)) return
+    const key = event.key.toLowerCase()
+    const direction = key === 'y' || (key === 'z' && event.shiftKey)
+      ? 'redo'
+      : key === 'z'
+        ? 'undo'
+        : null
+    if (!direction || !comparisonSession) return
+    event.preventDefault()
+    event.stopPropagation()
+    navigateComparisonHistory(direction)
   }
 
   const navigateToSection = (direction: 'previous' | 'next') => {
@@ -694,7 +1056,20 @@ export function WorkspaceSideBySideDiffSurface({
     if (viewMode === 'same') setViewMode('context')
     setShowAllRows(true)
     setActiveSectionId(target.id)
-    pendingScrollSectionIdRef.current = target.id
+    setPendingScrollTarget({ projectionIdentity, sectionId: target.id })
+  }
+
+  const expandContextSeparator = (separatorId: string) => {
+    setContextExpansion((current) => {
+      const separatorIds = current.projectionIdentity === projectionIdentity
+        ? current.separatorIds
+        : EMPTY_EXPANDED_CONTEXT_SEPARATOR_IDS
+      return {
+        projectionIdentity,
+        separatorIds: new Set([...separatorIds, separatorId]),
+      }
+    })
+    setShowAllRows(true)
   }
 
   const submitComment = () => {
@@ -725,75 +1100,151 @@ export function WorkspaceSideBySideDiffSurface({
   }
 
   const renderCell = (
+    pairId: string,
     row: WorkspaceDiffRow | null,
     side: 'old' | 'new',
     lineEndingDifference?: { left: string; right: string },
   ) => {
     if (!row) {
+      const sourceSide: WorkspaceComparisonSourceSide = side === 'old' ? 'left' : 'right'
+      const hasLineActions = Boolean(comparisonSession && model.kind === 'comparison')
+      const insertionLine = placeholderInsertionLines.get(pairId)
+      const directEditing = directEditDraft?.mode === 'insert'
+        && directEditDraft.sourceSide === sourceSide
+        && directEditDraft.lineNumber === insertionLine
+      const canDirectInsert = Boolean(
+        sourceSide === 'right'
+        && insertionLine
+        && comparisonSession
+        && onComparisonSessionChange
+        && !manualAlignmentDraft
+        && getWorkspaceComparisonCapability(comparisonSession, sourceSide).allowed,
+      )
+      const openPlaceholderMenu = (trigger: HTMLElement, x: number, y: number) => {
+        if (!hasLineActions) return
+        lineContextTriggerRef.current = trigger
+        setLineContextMenu({ rowId: pairId, sourceSide, lineNumber: null, x, y })
+      }
       return (
         <div
-          aria-hidden="true"
           data-diff-placeholder=""
           data-diff-tone="placeholder"
           data-side={side}
-          className="grid min-h-5 border-r border-[var(--color-border)]"
-          style={{ gridTemplateColumns: `${gutterWidth} minmax(max-content, 1fr)` }}
+          data-source-side={sourceSide}
+          role={hasLineActions ? 'gridcell' : undefined}
+          tabIndex={hasLineActions && !canDirectInsert ? 0 : undefined}
+          aria-hidden={hasLineActions ? undefined : true}
+          aria-keyshortcuts={hasLineActions ? 'Shift+F10' : undefined}
+          aria-describedby={hasLineActions ? lineActionsDescriptionId : undefined}
+          aria-label={hasLineActions ? t('workspace.diffEdit.placeholderActionsLabel', {
+            side: sourceSideLabel(sourceSide),
+          }) : undefined}
+          onContextMenu={(event) => {
+            if (!hasLineActions) return
+            event.preventDefault()
+            openPlaceholderMenu(event.currentTarget, event.clientX, event.clientY)
+          }}
+          onKeyDown={(event) => {
+            if (!hasLineActions || (!(event.shiftKey && event.key === 'F10') && event.key !== 'ContextMenu')) return
+            event.preventDefault()
+            const bounds = event.currentTarget.getBoundingClientRect()
+            openPlaceholderMenu(event.currentTarget, bounds.left + 12, bounds.top + 12)
+          }}
+          className="grid min-h-5 min-w-0 overflow-hidden border-r border-[var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-border-focus)]"
+          style={{ gridTemplateColumns: `${gutterWidth} minmax(0, 1fr)` }}
         >
           <span aria-hidden="true" className="bg-[var(--color-code-bg)]" />
           <span
-            aria-hidden="true"
+            aria-hidden={canDirectInsert ? undefined : true}
             data-diff-placeholder-fill=""
-            className="bg-[var(--color-surface-container-high)]"
+            className="min-w-0 bg-[var(--color-surface-container-high)] focus-within:bg-[var(--color-code-bg)]"
             style={{
               backgroundImage: 'repeating-linear-gradient(135deg, transparent 0, transparent 5px, var(--color-border) 5px, var(--color-border) 6px)',
             }}
-          />
+          >
+            {canDirectInsert && (
+              <DirectEditableLine
+                value={directEditing ? directEditDraft!.text : ''}
+                display=" "
+                active={directEditing}
+                ariaLabel={t('workspace.diffEdit.directInsertLabel', { line: insertionLine ?? '' })}
+                difference
+                onFocus={() => {
+                  if (!directEditing) beginDirectEdit(sourceSide, insertionLine!, '', 'insert')
+                }}
+                onChange={(text) => setDirectEditDraft((current) => current
+                  && current.mode === 'insert'
+                  && current.sourceSide === sourceSide
+                  && current.lineNumber === insertionLine
+                    ? { ...current, text }
+                    : {
+                        sourceSide,
+                        lineNumber: insertionLine!,
+                        revision: comparisonSession!.revision,
+                        mode: 'insert',
+                        originalText: '',
+                        text,
+                      })}
+                onBlur={commitDirectEdit}
+              />
+            )}
+          </span>
         </div>
       )
     }
     const line = rowLine(row, side)
-    const canComment = Boolean(onAddComment && row.selectable && row.side === side && line !== null)
+    const canComment = Boolean(onAddComment && row.selectable && row.side === side && line !== null && !manualAlignmentDraft)
     const selected = commentDraft?.selection.rowIds.includes(row.id) ?? false
     const sourceSide: WorkspaceComparisonSourceSide = side === 'old' ? 'left' : 'right'
-    const inlineEditing = inlineEditDraft?.sourceSide === sourceSide
-      && inlineEditDraft.lineNumber === line
-    const canInlineEdit = Boolean(
-      line !== null
+    const directEditing = directEditDraft?.mode === 'replace'
+      && directEditDraft.sourceSide === sourceSide
+      && directEditDraft.lineNumber === line
+    const canDirectEdit = Boolean(
+      sourceSide === 'right'
+      && line !== null
       && row.selectable
       && comparisonSession
       && onComparisonSessionChange
       && !manualAlignmentDraft
       && getWorkspaceComparisonCapability(comparisonSession, sourceSide).allowed,
     )
-    const selectableForManualAlignment = line !== null && (
-      (manualAlignmentDraft?.phase === 'left' && sourceSide === 'left')
-      || (manualAlignmentDraft?.phase === 'right' && sourceSide === 'right')
-    )
+    const hasLineActions = Boolean(line !== null && row.selectable && comparisonSession && model.kind === 'comparison')
+    const openLineContextMenu = (trigger: HTMLElement, x: number, y: number) => {
+      if (!hasLineActions || line === null) return
+      lineContextTriggerRef.current = trigger
+      setLineContextMenu({ rowId: pairId, sourceSide, lineNumber: line, x, y })
+    }
     return (
       <div
         data-diff-cell=""
         data-diff-tone={isDifferenceRow(row) ? 'difference' : 'normal'}
         data-side={side}
-        className={`group grid min-h-5 border-r border-[var(--color-border)] ${cellTone(row)}`}
-        style={{ gridTemplateColumns: `${gutterWidth} minmax(max-content, 1fr)` }}
+        data-source-side={sourceSide}
+        data-source-line={line ?? undefined}
+        data-manual-alignment-target={manualAlignmentDraft && sourceSide !== manualAlignmentDraft.sourceSide ? '' : undefined}
+        role={hasLineActions ? 'gridcell' : undefined}
+        tabIndex={hasLineActions ? 0 : undefined}
+        aria-keyshortcuts={hasLineActions ? 'Shift+F10' : undefined}
+        aria-describedby={hasLineActions ? lineActionsDescriptionId : undefined}
+        onClick={() => {
+          if (manualAlignmentDraft && line !== null) selectManualAlignmentTarget(sourceSide, line)
+        }}
+        onContextMenu={(event) => {
+          if (!hasLineActions) return
+          event.preventDefault()
+          openLineContextMenu(event.currentTarget, event.clientX, event.clientY)
+        }}
+        onKeyDown={(event) => {
+          if (!hasLineActions || (!(event.shiftKey && event.key === 'F10') && event.key !== 'ContextMenu')) return
+          event.preventDefault()
+          const bounds = event.currentTarget.getBoundingClientRect()
+          openLineContextMenu(event.currentTarget, bounds.left + 12, bounds.top + 12)
+        }}
+        className={`group grid min-h-5 min-w-0 overflow-hidden border-r border-[var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-border-focus)] ${manualAlignmentDraft && sourceSide !== manualAlignmentDraft.sourceSide ? 'cursor-crosshair' : ''} ${cellTone(row)}`}
+        style={{ gridTemplateColumns: `${gutterWidth} minmax(0, 1fr)` }}
       >
         <span className="relative flex select-none items-center justify-end bg-[var(--color-code-bg)] pl-[2ch] pr-[1ch] text-[11px] tabular-nums text-[var(--color-text-tertiary)] group-hover:bg-[var(--color-surface-hover)]">
-          {selectableForManualAlignment ? (
-            <button
-              type="button"
-              data-diff-line-number=""
-              data-side={side}
-              aria-label={t('workspace.manualAlignment.selectLine', {
-                side: sourceSideLabel(sourceSide),
-                line: line ?? '',
-                source: sourceSide,
-              })}
-              onClick={() => selectManualAlignmentLine(sourceSide, line!)}
-              className="rounded px-1 hover:bg-[var(--color-info)] hover:text-[var(--color-surface)]"
-            >
-              {line ?? ''}
-            </button>
-          ) : <span data-diff-line-number="" data-side={side}>{line ?? ''}</span>}
+          <span data-diff-line-number="" data-side={side}>{line ?? ''}</span>
           {canComment && (
             <button
               type="button"
@@ -812,52 +1263,57 @@ export function WorkspaceSideBySideDiffSurface({
         </span>
         <span
           data-row-text={row.text}
-          data-inline-editing={inlineEditing ? '' : undefined}
-          onDoubleClick={() => {
-            if (canInlineEdit) beginInlineEdit(sourceSide, line!, row.text)
-          }}
-          className="flex min-w-max items-center px-3 whitespace-pre"
-        >
-          {inlineEditing && inlineEditDraft ? (
-            <span className="flex min-w-[28rem] flex-1 items-center gap-1.5 py-0.5">
-              <input
-                autoFocus
-                aria-label={t('workspace.diffEdit.inlineEditorLabel', {
-                  side: sourceSideLabel(sourceSide),
-                  line,
-                })}
-                value={inlineEditDraft.text}
-                onChange={(event) => setInlineEditDraft((current) => current
-                  ? { ...current, text: event.target.value }
-                  : null)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-                    event.preventDefault()
-                    applyInlineEdit()
-                  }
-                  if (event.key === 'Escape') {
-                    event.preventDefault()
-                    setInlineEditDraft(null)
-                  }
+          data-diff-pane-scroll-content=""
+          data-side={side}
+        data-direct-editing={directEditing ? '' : undefined}
+        onScroll={(event) => handlePaneScroll(side, event.currentTarget)}
+        className="min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+          <span
+            data-diff-pane-scroll-track=""
+            className="flex w-max min-w-full items-center whitespace-pre"
+            style={{ minWidth: `${paneScrollWidths[side]}px` }}
+          >
+            {canDirectEdit ? (
+              <DirectEditableLine
+                value={directEditing ? directEditDraft!.text : row.text}
+                display={row.selectable && row.text && highlightResult.tokensByRowId[row.id]
+                  ? (
+                      <HighlightedLine
+                        row={row}
+                        tokens={highlightResult.tokensByRowId[row.id]!}
+                        wordRanges={highlightResult.wordRangesByRowId[row.id] ?? []}
+                        emphasizeWholeLine={!lineEndingDifference}
+                      />
+                    )
+                  : row.text || ' '}
+                active={directEditing}
+                ariaLabel={t('workspace.diffEdit.directEditorLabel', { line: line ?? '' })}
+                difference={isDifferenceRow(row)}
+                onFocus={() => {
+                  if (!directEditing) beginDirectEdit(sourceSide, line!, row.text)
                 }}
-                spellCheck={false}
-                className="h-7 min-w-0 flex-1 rounded border border-[var(--color-border-focus)] bg-[var(--color-surface-container-lowest)] px-2 font-mono text-[13px] text-[var(--color-code-fg)] outline-none"
+                onChange={(text) => setDirectEditDraft((current) => current
+                  && current.mode === 'replace'
+                  && current.sourceSide === sourceSide
+                  && current.lineNumber === line
+                    ? { ...current, text }
+                    : {
+                        sourceSide,
+                        lineNumber: line!,
+                        revision: comparisonSession!.revision,
+                        mode: 'replace',
+                        originalText: row.text,
+                        text,
+                      })}
+                onBlur={commitDirectEdit}
               />
-              <IconButton
-                icon={<CornerDownLeft aria-hidden="true" />}
-                label={t('workspace.diffEdit.inlineApply', { line })}
-                size="sm"
-                onClick={applyInlineEdit}
-              />
-              <IconButton
-                icon={<X aria-hidden="true" />}
-                label={t('common.cancel')}
-                size="sm"
-                onClick={() => setInlineEditDraft(null)}
-              />
-            </span>
-          ) : (
-            <>
+            ) : (
+              <span
+                data-diff-pane-natural-content=""
+                data-side={side}
+                className="flex w-max items-center px-3 whitespace-pre"
+              >
               <span className={`whitespace-pre ${isDifferenceRow(row) ? 'text-[var(--color-diff-removed-text)]' : ''} ${row.kind === 'metadata' ? 'font-semibold text-[var(--color-text-secondary)]' : ''} ${row.kind === 'hunk' ? 'font-semibold text-[var(--color-warning)]' : ''}`}>
                 {row.selectable && row.text && highlightResult.tokensByRowId[row.id]
                   ? (
@@ -878,21 +1334,9 @@ export function WorkspaceSideBySideDiffSurface({
                   {t('workspace.comparisonInput.noFinalNewline')}
                 </span>
               )}
-              {canInlineEdit && (
-                <button
-                  type="button"
-                  aria-label={t('workspace.diffEdit.inlineEdit', {
-                    side: sourceSideLabel(sourceSide),
-                    line: line ?? '',
-                  })}
-                  onClick={() => beginInlineEdit(sourceSide, line!, row.text)}
-                  className="ml-2 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--color-text-tertiary)] opacity-0 hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] group-hover:opacity-100 focus:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-info)]"
-                >
-                  <Pencil aria-hidden="true" size={12} />
-                </button>
-              )}
-            </>
-          )}
+              </span>
+            )}
+          </span>
         </span>
       </div>
     )
@@ -905,8 +1349,8 @@ export function WorkspaceSideBySideDiffSurface({
         data-testid={`workspace-diff-existence-${sourceSide}`}
         data-source-exists={String(exists)}
         data-side={visualSide}
-        className="grid min-h-5 border-r border-[var(--color-border)] bg-[var(--color-diff-highlight-bg)] text-[var(--color-text-secondary)]"
-        style={{ gridTemplateColumns: `${gutterWidth} minmax(max-content, 1fr)` }}
+        className="grid min-h-5 min-w-0 overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-diff-highlight-bg)] text-[var(--color-text-secondary)]"
+        style={{ gridTemplateColumns: `${gutterWidth} minmax(0, 1fr)` }}
       >
         <span aria-hidden="true" className="bg-[var(--color-code-bg)]" />
         <span className="flex min-w-max items-center px-3 italic">
@@ -963,17 +1407,32 @@ export function WorkspaceSideBySideDiffSurface({
 
   const renderProjectedItem = (item: WorkspaceSideBySideViewItem) => {
     if (item.kind === 'separator') {
+      const expandable = viewMode === 'context' && item.hiddenCount !== null && item.hiddenCount > 0
       return (
         <div
           key={item.id}
           data-diff-separator=""
-          className="grid min-w-full border-y border-[var(--color-border)] bg-[var(--color-surface-container)] text-center text-[11px] text-[var(--color-text-tertiary)]"
+          className="grid w-full min-w-0 border-y border-[var(--color-border)] bg-[var(--color-surface-container)] text-center text-[11px] text-[var(--color-text-tertiary)]"
           style={paneGridStyle}
         >
-          <span className="col-span-2 py-0.5">
-            {item.hiddenCount === null
-              ? t('workspace.diffView.hiddenUnknown')
-              : t('workspace.diffView.hiddenLines', { count: item.hiddenCount })}
+          <span className="col-span-2 flex min-h-6 items-center justify-center gap-1.5 py-0.5">
+            {expandable && item.hiddenCount !== null && (
+              <IconButton
+                icon={<Plus aria-hidden="true" />}
+                label={t(item.hiddenCount === 1
+                  ? 'workspace.diffView.expandHiddenLine'
+                  : 'workspace.diffView.expandHiddenLines', { count: item.hiddenCount })}
+                size="2xs"
+                tone="muted"
+                bordered
+                onClick={() => expandContextSeparator(item.id)}
+              />
+            )}
+            <span>
+              {item.hiddenCount === null
+                ? t('workspace.diffView.hiddenUnknown')
+                : t('workspace.diffView.hiddenLines', { count: item.hiddenCount })}
+            </span>
           </span>
         </div>
       )
@@ -998,7 +1457,7 @@ export function WorkspaceSideBySideDiffSurface({
             : undefined}
         data-active-diff-section={active ? '' : undefined}
         role="row"
-        className={`grid min-w-full ${active ? 'outline outline-1 outline-offset-[-1px] outline-[var(--color-info)]' : ''}`}
+        className={`grid w-full min-w-0 ${active ? 'outline outline-1 outline-offset-[-1px] outline-[var(--color-info)]' : ''}`}
         style={paneGridStyle}
       >
         {isSectionFirstRow && section && comparisonSession && (
@@ -1008,7 +1467,9 @@ export function WorkspaceSideBySideDiffSurface({
           >
             {(['left', 'right'] as const).map((sourceSide) => {
               const targetSide = sourceSide === 'left' ? 'right' : 'left'
-              const reason = capabilityMessage(targetSide)
+              const reason = recomputing
+                ? t('workspace.comparisonSettings.recomputing')
+                : capabilityMessage(targetSide)
               const sourceVisualPane = sourceSide === 'left' ? 'old' : 'new'
               const pointsRight = visualSides[0] === sourceVisualPane
               const label = t('workspace.diffEdit.merge', {
@@ -1050,7 +1511,7 @@ export function WorkspaceSideBySideDiffSurface({
           <div key={side} data-visual-pane={side} className="contents">
             {pair.kind === 'existence'
               ? renderExistenceCell(side === 'old' ? 'left' : 'right', side)
-              : renderCell(side === 'old' ? pair.left : pair.right, side, pair.lineEndingDifference)}
+              : renderCell(pair.id, side === 'old' ? pair.left : pair.right, side, pair.lineEndingDifference)}
           </div>
         ))}
         {commentDraft && (pair.left?.id === commentDraft.selection.endId || pair.right?.id === commentDraft.selection.endId)
@@ -1062,7 +1523,16 @@ export function WorkspaceSideBySideDiffSurface({
   }
 
   return (
-    <div data-testid="workspace-side-by-side-diff-scroll" className={className}>
+    <div
+      ref={comparisonSurfaceRef}
+      data-testid="workspace-side-by-side-diff-scroll"
+      className={className}
+      tabIndex={-1}
+      onKeyDown={handleHistoryKeyDown}
+    >
+      <span id={lineActionsDescriptionId} className="sr-only">
+        {t('workspace.diffEdit.lineActionsShortcutHint')}
+      </span>
       <div className="sticky top-0 left-0 z-[var(--z-sticky)] flex min-w-max items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-glass)] px-3 py-1.5 backdrop-blur">
         <SegmentedControl
           items={modeItems}
@@ -1099,6 +1569,17 @@ export function WorkspaceSideBySideDiffSurface({
           pressed={swapped}
           onClick={() => setSwapped((current) => !current)}
         />
+        <Button
+          variant={comparisonSettings.ignoreWhitespace ? 'tonal' : 'ghost'}
+          size="sm"
+          aria-pressed={comparisonSettings.ignoreWhitespace}
+          title={t('workspace.comparisonSettings.approximateDescription')}
+          disabled={!comparisonSession || recomputing}
+          onClick={toggleApproximateComparison}
+          icon={<span aria-hidden="true">≈</span>}
+        >
+          {t('workspace.comparisonSettings.approximate')}
+        </Button>
         <IconButton
           icon={<SlidersHorizontal aria-hidden="true" />}
           label={fullOnlyDisabledReason
@@ -1112,47 +1593,33 @@ export function WorkspaceSideBySideDiffSurface({
             setShowComparisonSettings((current) => !current)
           }}
         />
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={Boolean(manualAlignmentDisabledReason) || Boolean(manualAlignmentDraft)}
-          title={manualAlignmentDisabledReason ?? undefined}
-          onClick={() => {
-            if (!comparisonSession || manualAlignmentDisabledReason) return
-            setManualAlignmentDraft({
-              phase: 'left',
-              revision: comparisonSession.revision,
-              previousViewMode: viewMode,
-              previousShowAllRows: showAllRows,
-            })
-            setManualAlignmentError(null)
-            setViewMode('all')
-            setShowAllRows(true)
-          }}
-          icon={<Link2 aria-hidden="true" size={13} />}
-        >
-          {t('workspace.manualAlignment.arm')}
-        </Button>
         {comparisonSession && (
           <>
             <IconButton
               icon={<Undo2 aria-hidden="true" />}
               label={t('workspace.diffEdit.undo')}
               size="sm"
-              disabled={comparisonSession.undoStack.length === 0}
-              onClick={() => {
-                if (lastMutationSectionIndexRef.current !== null) {
-                  pendingActiveSectionIndexRef.current = lastMutationSectionIndexRef.current
-                }
-                onComparisonSessionChange?.(undoWorkspaceComparisonSession(comparisonSession))
-              }}
+              aria-keyshortcuts="Control+Z Meta+Z"
+              disabled={comparisonSession.undoStack.length === 0 && !directEditChanged}
+              onClick={() => navigateComparisonHistory('undo')}
+            />
+            <IconButton
+              icon={<Redo2 aria-hidden="true" />}
+              label={t('workspace.diffEdit.redo')}
+              size="sm"
+              aria-keyshortcuts="Control+Y Meta+Y Control+Shift+Z Meta+Shift+Z"
+              disabled={comparisonSession.redoStack.length === 0 || directEditChanged}
+              onClick={() => navigateComparisonHistory('redo')}
             />
             <Button
               variant="primary"
               size="sm"
-              disabled={!isWorkspaceComparisonSessionDirty(comparisonSession)}
+              disabled={!isWorkspaceComparisonSessionDirty(comparisonSession) && !directEditChanged}
               loading={saving}
-              onClick={() => void onSave?.()}
+              onClick={() => {
+                const exactSession = commitDirectEdit()
+                if (exactSession) void onSave?.(exactSession)
+              }}
               icon={<Save aria-hidden="true" size={13} />}
             >
               {t('workspace.diffEdit.save')}
@@ -1194,20 +1661,12 @@ export function WorkspaceSideBySideDiffSurface({
       {manualAlignmentDraft && (
         <div className="sticky left-0 flex min-w-max items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-info-container)] px-3 py-1.5 text-[11px] text-[var(--color-text-primary)]">
           <span>
-            {manualAlignmentDraft.phase === 'left'
-              ? t('workspace.manualAlignment.prompt.left')
-              : manualAlignmentDraft.phase === 'right'
-                ? t('workspace.manualAlignment.prompt.right', { line: manualAlignmentDraft.leftLine })
-                : t('workspace.manualAlignment.prompt.ready', {
-                    left: manualAlignmentDraft.leftLine,
-                    right: manualAlignmentDraft.rightLine,
-                  })}
+            {t('workspace.manualAlignment.prompt.target', {
+              side: sourceSideLabel(manualAlignmentDraft.sourceSide),
+              line: manualAlignmentDraft.lineNumber,
+              target: sourceSideLabel(manualAlignmentDraft.sourceSide === 'left' ? 'right' : 'left'),
+            })}
           </span>
-          {manualAlignmentDraft.phase === 'ready' && (
-            <Button variant="primary" size="sm" onClick={confirmManualAlignment}>
-              {t('workspace.manualAlignment.confirm')}
-            </Button>
-          )}
           <Button variant="ghost" size="sm" onClick={closeManualAlignmentDraft}>
             {t('common.cancel')}
           </Button>
@@ -1226,9 +1685,12 @@ export function WorkspaceSideBySideDiffSurface({
                   left: anchor.left.lineNumber,
                   right: anchor.right.lineNumber,
                 })}
-                onClick={() => onComparisonSessionChange?.(
-                  removeWorkspaceManualAlignmentAnchor(comparisonSession, anchor.id),
-                )}
+                onClick={() => {
+                  const next = removeWorkspaceManualAlignmentAnchor(comparisonSession, anchor.id)
+                  if (next === comparisonSession) return
+                  pendingSurfaceFocusRevisionRef.current = next.revision
+                  onComparisonSessionChange?.(next)
+                }}
                 className="rounded px-1 hover:bg-[var(--color-surface-hover)]"
               >×</button>
             </span>
@@ -1236,9 +1698,12 @@ export function WorkspaceSideBySideDiffSurface({
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => onComparisonSessionChange?.(
-              clearWorkspaceManualAlignmentAnchors(comparisonSession),
-            )}
+            onClick={() => {
+              const next = clearWorkspaceManualAlignmentAnchors(comparisonSession)
+              if (next === comparisonSession) return
+              pendingSurfaceFocusRevisionRef.current = next.revision
+              onComparisonSessionChange?.(next)
+            }}
           >
             {t('workspace.manualAlignment.clear')}
           </Button>
@@ -1263,34 +1728,10 @@ export function WorkspaceSideBySideDiffSurface({
           {t('workspace.diffView.patchNotice', { reason: unavailableMessage })}
         </div>
       )}
-      {editingSide && comparisonSession ? (
-        <div data-testid="workspace-diff-editor" className="sticky left-0 flex min-h-[24rem] min-w-full flex-col gap-2 bg-[var(--color-code-bg)] p-3">
-          <div className="flex items-center gap-2 text-[12px] text-[var(--color-text-secondary)]">
-            <Pencil aria-hidden="true" size={14} />
-            <strong>{t('workspace.diffEdit.editorTitle', { side: sourceSideLabel(editingSide) })}</strong>
-            <span className="ml-auto">{t('workspace.diffEdit.inMemoryNotice')}</span>
-          </div>
-          <textarea
-            autoFocus
-            aria-label={t('workspace.diffEdit.editorLabel', { side: sourceSideLabel(editingSide) })}
-            value={editDraft}
-            onChange={(event) => setEditDraft(event.target.value)}
-            spellCheck={false}
-            className="min-h-[20rem] w-full flex-1 resize-y rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-3 font-mono text-[13px] leading-5 text-[var(--color-code-fg)] outline-none focus:border-[var(--color-border-focus)]"
-          />
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setEditingSide(null)}>{t('common.cancel')}</Button>
-            <Button variant="primary" size="sm" onClick={applyEdit}>{t('workspace.diffEdit.apply')}</Button>
-          </div>
-        </div>
-      ) : <div
+      <div
         ref={comparisonContentRef}
         data-testid="workspace-side-by-side-diff-content"
-        className="relative min-w-full w-max pb-3"
-        style={{
-          '--workspace-diff-left-pane': `${leftPanePercent}%`,
-          '--workspace-diff-right-pane': `${100 - leftPanePercent}%`,
-        } as CSSProperties}
+        className="relative w-full min-w-0 pb-3"
       >
         <div
           data-workspace-code=""
@@ -1298,7 +1739,7 @@ export function WorkspaceSideBySideDiffSurface({
           data-highlight-engine={highlightResult.engine}
           role="grid"
           aria-label={`${path} diff`}
-          className="m-0 min-w-full font-mono text-[13px] leading-5 text-[var(--color-code-fg)]"
+          className="m-0 w-full min-w-0 font-mono text-[13px] leading-5 text-[var(--color-code-fg)]"
         >
           {projectedFiles.map(({ file, items }) => {
             if (!items.some((item) => item.kind === 'row' && visibleRowIds.has(item.row.id))) return null
@@ -1315,15 +1756,19 @@ export function WorkspaceSideBySideDiffSurface({
                   </div>
                 )}
                 <div
-                  className="sticky top-10 z-[var(--z-raised)] grid min-w-full border-b border-[var(--color-border)] bg-[var(--color-surface-glass)] text-[11px] font-semibold text-[var(--color-text-secondary)] backdrop-blur"
+                  className="sticky top-10 z-[var(--z-raised)] grid w-full min-w-0 border-b border-[var(--color-border)] bg-[var(--color-surface-glass)] text-[11px] font-semibold text-[var(--color-text-secondary)] backdrop-blur"
                   style={paneGridStyle}
                 >
                   {visualSides.map((side) => (
-                    <div key={side} data-visual-header={side} className="flex min-w-[28rem] items-center gap-2 border-r border-[var(--color-border)] px-3 py-1.5">
-                      <span>{sideLabel(side)} · {side === 'old' ? file.oldPath ?? '/dev/null' : file.newPath ?? '/dev/null'}</span>
+                    <div key={side} data-visual-header={side} className="flex min-w-0 items-center gap-2 overflow-hidden border-r border-[var(--color-border)] px-3 py-1.5">
+                      <span
+                        className="min-w-0 flex-1 truncate"
+                        title={`${sideLabel(side)} · ${side === 'old' ? file.oldPath ?? '/dev/null' : file.newPath ?? '/dev/null'}`}
+                      >
+                        {sideLabel(side)} · {side === 'old' ? file.oldPath ?? '/dev/null' : file.newPath ?? '/dev/null'}
+                      </span>
                       {comparisonSession && (() => {
                         const sourceSide = side === 'old' ? 'left' : 'right'
-                        const reason = capabilityMessage(sourceSide)
                         return (
                           <>
                             <select
@@ -1342,16 +1787,18 @@ export function WorkspaceSideBySideDiffSurface({
                               <option value="utf8">UTF-8</option>
                               <option value="gbk">GBK</option>
                             </select>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              disabled={Boolean(reason)}
-                              title={reason ?? undefined}
-                              onClick={() => beginEdit(sourceSide)}
-                              icon={<Pencil aria-hidden="true" size={12} />}
-                            >
-                              {t('workspace.diffEdit.edit')}
-                            </Button>
+                            {canRequestSideWriteAccess(sourceSide) && (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                loading={writeAccessChangingSide === sourceSide}
+                                onClick={() => void onRequestWriteAccess?.(sourceSide)}
+                              >
+                                {writeAccessChangingSide === sourceSide
+                                  ? t('workspace.diffEdit.writeAccessLoading')
+                                  : t('workspace.diffEdit.requestWriteAccess')}
+                              </Button>
+                            )}
                           </>
                         )
                       })()}
@@ -1404,19 +1851,112 @@ export function WorkspaceSideBySideDiffSurface({
         >
           <span className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--color-border)] transition-colors group-hover:bg-[var(--color-border-focus)]" />
         </div>
-        {displayRows.length > lineLimit && (
-          <div className="sticky bottom-0 left-0 flex items-center gap-3 border-t border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
-            <span>
-              {showAllRows
-                ? t('workspace.previewAllLines', { total: displayRows.length })
-                : t('workspace.previewLineLimit', { count: visibleRowIds.size, total: displayRows.length })}
-            </span>
-            <Button variant="ghost" size="sm" onClick={() => setShowAllRows((current) => !current)} className="ml-auto">
-              {showAllRows ? t('workspace.collapsePreview') : t('workspace.showAllLoadedLines')}
-            </Button>
+        <div className="sticky bottom-0 left-0 z-[var(--z-raised)] w-full min-w-0 bg-[var(--color-surface-container-lowest)]">
+          {displayRows.length > lineLimit && (
+            <div className="flex items-center gap-3 border-t border-[var(--color-border)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
+              <span>
+                {showAllRows
+                  ? t('workspace.previewAllLines', { total: displayRows.length })
+                  : t('workspace.previewLineLimit', { count: visibleRowIds.size, total: displayRows.length })}
+              </span>
+              <Button variant="ghost" size="sm" onClick={() => setShowAllRows((current) => !current)} className="ml-auto">
+                {showAllRows ? t('workspace.collapsePreview') : t('workspace.showAllLoadedLines')}
+              </Button>
+            </div>
+          )}
+          <div
+            data-testid="workspace-diff-pane-scrollbars"
+            className="grid w-full min-w-0 border-t border-[var(--color-border)]"
+            style={paneGridStyle}
+          >
+            {visualSides.map((side) => (
+              <div
+                key={side}
+                className="grid min-w-0 border-r border-[var(--color-border)]"
+                style={{ gridTemplateColumns: `${gutterWidth} minmax(0, 1fr)` }}
+              >
+                <span aria-hidden="true" className="bg-[var(--color-code-bg)]" />
+                <div
+                  ref={(element) => {
+                    paneScrollbarRefs.current[side] = element
+                  }}
+                  data-testid={`workspace-diff-pane-scrollbar-${side}`}
+                  data-side={side}
+                  tabIndex={0}
+                  aria-label={t('workspace.diffView.scrollPane', { side: sideLabel(side) })}
+                  onScroll={(event) => handlePaneScroll(side, event.currentTarget)}
+                  className="h-5 min-w-0 overflow-x-scroll overflow-y-hidden bg-[var(--color-code-bg)] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]"
+                >
+                  <div
+                    aria-hidden="true"
+                    className="h-px min-w-full"
+                    style={{ width: `${paneScrollWidths[side]}px` }}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
-        )}
-      </div>}
+        </div>
+      </div>
+      {lineContextMenu && (() => {
+        const targetSide = lineContextMenu.sourceSide === 'left' ? 'right' : 'left'
+        const copyReason = recomputing
+          ? t('workspace.comparisonSettings.recomputing')
+          : capabilityMessage(targetSide)
+        const copyReasonId = copyReason ? 'workspace-diff-line-copy-disabled-reason' : undefined
+        return (
+          <div
+            ref={lineContextMenuRef}
+            role="menu"
+            tabIndex={-1}
+            aria-label={t('workspace.diffEdit.lineMenu')}
+            className="fixed z-[var(--z-dropdown)] min-w-48 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-1 shadow-[var(--shadow-card)]"
+            style={lineContextMenuPositionStyle}
+            onKeyDown={(event) => {
+              if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+              event.preventDefault()
+              const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])')]
+              const index = items.indexOf(document.activeElement as HTMLElement)
+              const offset = event.key === 'ArrowDown' ? 1 : -1
+              items[(index + offset + items.length) % items.length]?.focus()
+            }}
+          >
+            {manualAlignmentDraft ? (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={closeManualAlignmentDraft}
+                className="flex w-full items-center rounded-[var(--radius-sm)] px-3 py-1.5 text-left text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+              >
+                {t('workspace.manualAlignment.cancel')}
+              </button>
+            ) : lineContextMenu.lineNumber !== null ? (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={Boolean(manualAlignmentDisabledReason)}
+                title={manualAlignmentDisabledReason ?? undefined}
+                onClick={() => startManualAlignment(lineContextMenu.sourceSide, lineContextMenu.lineNumber!)}
+                className="flex w-full items-center rounded-[var(--radius-sm)] px-3 py-1.5 text-left text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t('workspace.manualAlignment.contextAction')}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={Boolean(copyReason)}
+              aria-describedby={copyReasonId}
+              title={copyReason ?? undefined}
+              onClick={() => mergeRow(lineContextMenu.rowId, lineContextMenu.sourceSide)}
+              className="flex w-full items-center rounded-[var(--radius-sm)] px-3 py-1.5 text-left text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t('workspace.diffEdit.copyLine', { target: sourceSideLabel(targetSide) })}
+            </button>
+            {copyReason && <span id={copyReasonId} className="sr-only">{copyReason}</span>}
+          </div>
+        )
+      })()}
     </div>
   )
 }

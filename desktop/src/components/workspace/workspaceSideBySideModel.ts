@@ -72,6 +72,8 @@ export type WorkspaceSideBySideViewItem =
   | { id: string; kind: 'row'; row: WorkspaceSideBySideRow }
   | { id: string; kind: 'separator'; hiddenCount: number | null }
 
+const EMPTY_EXPANDED_SEPARATOR_IDS: ReadonlySet<string> = new Set()
+
 type ContentLine = Pick<PreparedWorkspaceComparisonLine, 'text' | 'ending' | 'lineNumber' | 'comparisonEnding'>
 
 function splitSvnDiff(value: string) {
@@ -519,10 +521,28 @@ export function projectWorkspaceSideBySideFile(
   file: WorkspaceSideBySideFile,
   mode: WorkspaceSideBySideViewMode,
   contextLines = 3,
+  expandedSeparatorIds: ReadonlySet<string> = EMPTY_EXPANDED_SEPARATOR_IDS,
 ): WorkspaceSideBySideViewItem[] {
   const rows = contentRows(file)
-  const indexes = selectedIndexes(rows, file.sections, mode, contextLines, file.complete)
-  if (indexes.length === 0) return []
+  const baseIndexes = selectedIndexes(rows, file.sections, mode, contextLines, file.complete)
+  if (baseIndexes.length === 0) return []
+
+  const separatorId = (afterIndex: number, beforeIndex: number) => (
+    `${file.id}-separator-${afterIndex}-${beforeIndex}`
+  )
+  const expandedIndexes = new Set(baseIndexes)
+  if (mode === 'context' && file.complete && expandedSeparatorIds.size > 0) {
+    const expandGap = (afterIndex: number, beforeIndex: number) => {
+      if (!expandedSeparatorIds.has(separatorId(afterIndex, beforeIndex))) return
+      for (let index = afterIndex + 1; index < beforeIndex; index += 1) expandedIndexes.add(index)
+    }
+    if (baseIndexes[0]! > 0) expandGap(-1, baseIndexes[0]!)
+    for (let index = 1; index < baseIndexes.length; index += 1) {
+      expandGap(baseIndexes[index - 1]!, baseIndexes[index]!)
+    }
+    if (baseIndexes.at(-1)! < rows.length - 1) expandGap(baseIndexes.at(-1)!, rows.length)
+  }
+  const indexes = [...expandedIndexes].sort((left, right) => left - right)
 
   const items: WorkspaceSideBySideViewItem[] = []
   const addSeparator = (afterIndex: number, beforeIndex: number) => {
@@ -532,7 +552,7 @@ export function projectWorkspaceSideBySideFile(
     const hiddenCount = crossesUnknownPatchGap ? null : Math.max(0, beforeIndex - afterIndex - 1)
     if (hiddenCount === 0 && !crossesUnknownPatchGap) return
     items.push({
-      id: `${file.id}-separator-${afterIndex}-${beforeIndex}`,
+      id: separatorId(afterIndex, beforeIndex),
       kind: 'separator',
       hiddenCount,
     })

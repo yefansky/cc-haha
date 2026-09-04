@@ -9,11 +9,10 @@ describe('registerChangedFileAccessRoot', () => {
   beforeEach(() => clearFilesystemAccessRootsForTests())
   afterEach(() => clearFilesystemAccessRootsForTests())
 
-  it('registers the containing dir of a changed file outside the workdir', () => {
+  it('registers only the exact changed file outside the workdir', () => {
     registerChangedFileAccessRoot('/elsewhere/proj/todo.html', '/work/dir')
     expect(isWithinRegisteredFilesystemRoot('/elsewhere/proj/todo.html')).toBe(true)
-    // sibling assets in the same dir become previewable too (html needs its css/js)
-    expect(isWithinRegisteredFilesystemRoot('/elsewhere/proj/style.css')).toBe(true)
+    expect(isWithinRegisteredFilesystemRoot('/elsewhere/proj/style.css')).toBe(false)
     // an unrelated dir stays denied
     expect(isWithinRegisteredFilesystemRoot('/elsewhere/other/secret.txt')).toBe(false)
   })

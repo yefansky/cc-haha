@@ -120,6 +120,8 @@ export function WorkspaceComparisonSettingsPanel({
           >
             <option value="text">{t('workspace.comparisonSettings.language.text')}</option>
             <option value="cpp">{t('workspace.comparisonSettings.language.cpp')}</option>
+            <option value="python">{t('workspace.comparisonSettings.language.python')}</option>
+            <option value="lua">{t('workspace.comparisonSettings.language.lua')}</option>
           </select>
         </label>
         <label className="flex items-center gap-2 self-end py-1">

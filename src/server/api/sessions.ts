@@ -45,7 +45,7 @@ import {
   createSessionBranch,
   SessionBranchingError,
 } from '../../utils/sessionBranching.js'
-import { registerChangedFileAccessRoot, registerFilesystemAccessRoot } from '../services/filesystemAccessRoots.js'
+import { registerFilesystemAccessRoot } from '../services/filesystemAccessRoots.js'
 import { findGitRoot } from '../../utils/git.js'
 import { traceCaptureService, trimTraceCallPreviews } from '../services/traceCaptureService.js'
 import { getSubagentRunByTool } from '../services/subagentRunService.js'
@@ -259,6 +259,9 @@ export async function handleSessionsApi(
       }
       if (segments[4] === 'file' && req.method === 'PUT') {
         return await writeSessionWorkspaceFile(req, sessionId)
+      }
+      if (segments[4] === 'file' && segments[5] === 'write-access' && req.method === 'POST') {
+        return await grantSessionWorkspaceFileWriteAccess(req, sessionId)
       }
       if (segments[4] === 'file' && segments[5] === 'revert' && req.method === 'POST') {
         return await revertSessionWorkspaceFile(req, sessionId)
@@ -626,6 +629,27 @@ async function writeSessionWorkspaceFile(req: Request, sessionId: string): Promi
   )
 }
 
+async function grantSessionWorkspaceFileWriteAccess(req: Request, sessionId: string): Promise<Response> {
+  await requireSessionWorkspace(sessionId)
+  let body: { path?: unknown }
+  try {
+    body = await req.json() as { path?: unknown }
+  } catch {
+    throw ApiError.badRequest('Expected a JSON workspace write-access request')
+  }
+  if (typeof body.path !== 'string' || !body.path.trim()) {
+    throw ApiError.badRequest('path must be a non-empty file path')
+  }
+  // A persisted preview can survive a sidecar restart and satisfy the UI
+  // without another checkpoint-list request. Rehydrate the session-scoped,
+  // exact-file capabilities from trusted server-side checkpoints before
+  // evaluating the grant requested by the client.
+  await restoreTurnCheckpointFileReadAccess(sessionId)
+  return await runWorkspaceRequest(() => (
+    workspaceService.grantExternalFileWriteAccess(sessionId, body.path.trim())
+  ))
+}
+
 async function revertSessionWorkspaceFile(req: Request, sessionId: string): Promise<Response> {
   await requireSessionWorkspace(sessionId)
   let body: { path?: unknown; expectedContent?: unknown }
@@ -658,7 +682,7 @@ async function registerSessionWorkspaceRoot(req: Request, sessionId: string): Pr
   if (typeof body.path !== 'string' || !body.path.trim()) {
     throw ApiError.badRequest('path must be a non-empty directory path')
   }
-  const path = await workspaceService.registerExternalRoot(body.path.trim())
+  const path = await workspaceService.registerExternalRoot(sessionId, body.path.trim())
   return Response.json({ path })
 }
 
@@ -1408,10 +1432,27 @@ async function getTurnCheckpoints(sessionId: string): Promise<Response> {
   // path on another drive). Writing them was authorized, so previewing is too.
   for (const checkpoint of checkpoints) {
     for (const filePath of checkpoint.code.filesChanged) {
-      registerChangedFileAccessRoot(filePath, checkpoint.workDir)
+      await workspaceService.registerTurnCheckpointFileReadAccess(
+        sessionId,
+        filePath,
+        checkpoint.workDir,
+      )
     }
   }
   return Response.json({ checkpoints })
+}
+
+async function restoreTurnCheckpointFileReadAccess(sessionId: string): Promise<void> {
+  const checkpoints = await listSessionTurnCheckpoints(sessionId)
+  for (const checkpoint of checkpoints) {
+    for (const filePath of checkpoint.code.filesChanged) {
+      await workspaceService.registerTurnCheckpointFileReadAccess(
+        sessionId,
+        filePath,
+        checkpoint.workDir,
+      )
+    }
+  }
 }
 
 async function getTurnCheckpointDiff(sessionId: string, url: URL): Promise<Response> {

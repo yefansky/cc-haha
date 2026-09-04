@@ -14,6 +14,20 @@ describe('workspaceComparisonSettings', () => {
     expect(first.rules).not.toBe(second.rules)
   })
 
+  it.each([
+    ['src/main.cpp', 'cpp'],
+    ['include/value.HPP', 'cpp'],
+    ['tools/check.py', 'python'],
+    ['tools/plugin.PYI', 'python'],
+    ['scripts/setup.lua', 'lua'],
+    ['README.md', 'text'],
+    ['src/notcpp', 'text'],
+    ['notesxcpp', 'text'],
+    ['cpp', 'text'],
+  ] as const)('infers %s as %s comparison language', (path, language) => {
+    expect(createDefaultWorkspaceComparisonSettings(path).language).toBe(language)
+  })
+
   it('compiles bounded regular-language expressions without using JavaScript RegExp semantics', () => {
     const result = compileWorkspaceRulePattern('(?:TODO|FIXME)[0-9]{1,3}', false)
     expect(result.state).toBe('ok')

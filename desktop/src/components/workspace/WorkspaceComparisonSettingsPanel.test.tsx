@@ -17,6 +17,28 @@ describe('WorkspaceComparisonSettingsPanel', () => {
     expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ profile: 'precise', ignoreCase: true }))
   })
 
+  it('offers Python and Lua languages and applies either selection', () => {
+    const onApply = vi.fn()
+    render(<WorkspaceComparisonSettingsPanel
+      path="notes.txt"
+      settings={createDefaultWorkspaceComparisonSettings('notes.txt')}
+      onApply={onApply}
+      onCancel={() => {}}
+    />)
+
+    const language = screen.getByLabelText('Language')
+    expect(language.querySelector('option[value="python"]')).not.toBeNull()
+    expect(language.querySelector('option[value="lua"]')).not.toBeNull()
+
+    fireEvent.change(language, { target: { value: 'python' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }))
+    expect(onApply).toHaveBeenLastCalledWith(expect.objectContaining({ language: 'python' }))
+
+    fireEvent.change(language, { target: { value: 'lua' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }))
+    expect(onApply).toHaveBeenLastCalledWith(expect.objectContaining({ language: 'lua' }))
+  })
+
   it('shows compile errors, retains the old applied settings, and supports cancel/defaults', () => {
     const onApply = vi.fn()
     const onCancel = vi.fn()

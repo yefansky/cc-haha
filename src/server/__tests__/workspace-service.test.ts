@@ -153,22 +153,33 @@ describe('WorkspaceService outside-workspace preview', () => {
     clearFilesystemAccessRootsForTests()
   })
 
-  it('rejects a file outside the workdir until its dir is a registered access root, then reads it', async () => {
+  it('restores one checkpoint external file without exposing its sibling or another session', async () => {
     const workDir = await makeTempDir('workspace-service-work-')
     const outsideDir = await makeTempDir('workspace-service-outside-')
     const outsideFile = path.join(outsideDir, 'todo.html')
+    const siblingFile = path.join(outsideDir, 'secret.txt')
     await fs.writeFile(outsideFile, '<h1>hi</h1>\n')
+    await fs.writeFile(siblingFile, 'secret\n')
 
-    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? workDir : null)
+    const service = new WorkspaceService(async (sessionId) => (
+      sessionId === 'session-1' || sessionId === 'session-2' ? workDir : null
+    ))
 
     // Not registered yet → treated as a sandbox escape.
     await expect(service.readFile('session-1', outsideFile)).rejects.toThrow(/outside workspace/)
 
-    // Registered (as the turn-checkpoint flow does for changed files) → readable.
-    registerFilesystemAccessRoot(outsideDir)
+    await service.registerTurnCheckpointFileReadAccess('session-1', outsideFile, workDir)
     const allowed = await service.readFile('session-1', outsideFile)
     expect(allowed.state).toBe('ok')
     expect(allowed.content).toContain('<h1>hi</h1>')
+    await expect(service.readFile('session-1', siblingFile)).rejects.toThrow(/outside workspace/)
+    await expect(service.readFile('session-2', outsideFile)).rejects.toThrow(/outside workspace/)
+
+    await expect(service.grantExternalFileWriteAccess('session-1', outsideFile)).resolves.toMatchObject({
+      path: expect.stringMatching(/todo\.html$/),
+    })
+    await expect(service.grantExternalFileWriteAccess('session-1', siblingFile)).rejects.toThrow(/outside workspace/)
+    await expect(service.grantExternalFileWriteAccess('session-2', outsideFile)).rejects.toThrow(/outside workspace/)
   })
 
   it('still rejects an unrelated path even when another outside dir is registered', async () => {
@@ -486,7 +497,7 @@ describe('WorkspaceService', () => {
       state: 'error',
     })
 
-    registerFilesystemAccessRoot(outsideDir)
+    await service.registerExternalRoot('session-1', outsideDir)
     const registeredTarget = path.join(outsideDir, 'registered.txt')
     await expect(service.writeTextFile('session-1', registeredTarget, null, 'no\n')).resolves.toMatchObject({
       state: 'error',
@@ -692,6 +703,246 @@ describe('WorkspaceService', () => {
     expect(diff.diff).toContain('diff --session a/src/App.jsx b/src/App.jsx')
     expect(diff.diff).toContain('-export default function App() { return <main>Old</main> }')
     expect(diff.diff).toContain('+export default function App() { return <main>New</main> }')
+    expect(diff.comparison).toMatchObject({
+      left: {
+        exists: true,
+        state: 'ok',
+        content: 'export default function App() { return <main>Old</main> }\n',
+        source: { kind: 'session_baseline' },
+        writable: false,
+      },
+      right: {
+        exists: true,
+        state: 'ok',
+        content: 'export default function App() { return <main>New</main> }\n',
+        source: { kind: 'working_tree' },
+        writable: true,
+      },
+    })
+  })
+
+  it('grants external writes to one exact canonical file in one session only', async () => {
+    const workspaceDir = await makeTempDir('workspace-service-exact-grant-work-')
+    const outsideDir = await createGitWorkspace()
+    const grantedPath = path.join(outsideDir, 'tracked.txt')
+    const siblingPath = path.join(outsideDir, 'clean.txt')
+    const service = new WorkspaceService(async (sessionId) => (
+      sessionId === 'session-1' || sessionId === 'session-2' ? workspaceDir : null
+    ))
+    await service.registerExternalRoot('session-1', outsideDir)
+
+    await expect(service.writeTextFile('session-1', grantedPath, 'before\nafter\n', 'denied\n')).resolves.toMatchObject({
+      state: 'error',
+      error: 'Registered external roots are read-only.',
+    })
+    await expect(service.revertFile('session-1', grantedPath, 'before\nafter\n')).resolves.toMatchObject({
+      state: 'error',
+      error: 'Registered external roots are read-only.',
+    })
+
+    await expect(service.grantExternalFileWriteAccess('session-1', grantedPath)).resolves.toMatchObject({
+      path: expect.stringMatching(/tracked\.txt$/),
+    })
+    await expect(service.getDiff('session-1', grantedPath)).resolves.toMatchObject({
+      comparison: { right: { source: { kind: 'working_tree' }, writable: true } },
+    })
+    await expect(service.writeTextFile('session-1', grantedPath, 'before\nafter\n', 'after grant\n')).resolves.toMatchObject({
+      state: 'ok',
+      content: 'after grant\n',
+    })
+    await expect(fs.readFile(grantedPath, 'utf8')).resolves.toBe('after grant\n')
+
+    await expect(service.writeTextFile('session-1', siblingPath, 'clean\n', 'changed\n')).resolves.toMatchObject({
+      state: 'error',
+      error: 'Registered external roots are read-only.',
+    })
+    await expect(service.writeTextFile('session-2', grantedPath, 'after grant\n', 'other session\n')).resolves.toMatchObject({
+      state: 'error',
+      error: expect.stringMatching(/outside workspace/),
+    })
+    await expect(service.grantExternalFileWriteAccess('session-2', grantedPath)).rejects.toThrow(
+      /outside workspace/,
+    )
+    await expect(fs.readFile(siblingPath, 'utf8')).resolves.toBe('clean\n')
+    await expect(fs.readFile(grantedPath, 'utf8')).resolves.toBe('after grant\n')
+  })
+
+  it('rejects external write grants outside trusted read roots and after a symlink retarget', async () => {
+    const workspaceDir = await makeTempDir('workspace-service-grant-escape-work-')
+    const trustedDir = await makeTempDir('workspace-service-grant-trusted-')
+    const siblingDir = await makeTempDir('workspace-service-grant-sibling-')
+    const trustedPath = path.join(trustedDir, 'target.txt')
+    const siblingPath = path.join(siblingDir, 'secret.txt')
+    await fs.writeFile(trustedPath, 'trusted\n')
+    await fs.writeFile(siblingPath, 'secret\n')
+    const service = new WorkspaceService(async () => workspaceDir)
+    await service.registerExternalRoot('session-1', trustedDir)
+
+    await expect(service.grantExternalFileWriteAccess('session-1', siblingPath)).rejects.toThrow(/outside workspace/)
+    await service.grantExternalFileWriteAccess('session-1', trustedPath)
+
+    await fs.unlink(trustedPath)
+    await fs.symlink(siblingPath, trustedPath, 'file')
+    await expect(service.writeTextFile('session-1', trustedPath, 'secret\n', 'escaped\n')).resolves.toMatchObject({
+      state: 'error',
+    })
+    await expect(fs.readFile(siblingPath, 'utf8')).resolves.toBe('secret\n')
+  })
+
+  it('checks the canonical external file is writable before granting access', async () => {
+    const workspaceDir = await makeTempDir('workspace-service-grant-writable-work-')
+    const trustedDir = await makeTempDir('workspace-service-grant-writable-root-')
+    const trustedPath = path.join(trustedDir, 'target.txt')
+    await fs.writeFile(trustedPath, 'trusted\n')
+    const service = new WorkspaceService(async () => workspaceDir) as WorkspaceService & {
+      assertExternalFileWritable: (filePath: string) => Promise<void>
+    }
+    await service.registerExternalRoot('session-1', trustedDir)
+    let checkedPath: string | null = null
+    service.assertExternalFileWritable = async (filePath) => {
+      checkedPath = filePath
+      throw Object.assign(new Error('synthetic access denied'), { code: 'EACCES' })
+    }
+
+    await expect(service.grantExternalFileWriteAccess('session-1', trustedPath)).rejects.toThrow(/EACCES/)
+    expect(checkedPath).toBe(await fs.realpath(trustedPath))
+    await expect(service.writeTextFile('session-1', trustedPath, 'trusted\n', 'changed\n')).resolves.toMatchObject({
+      state: 'error',
+      error: 'Registered external roots are read-only.',
+    })
+    await expect(fs.readFile(trustedPath, 'utf8')).resolves.toBe('trusted\n')
+  })
+
+  it('reconstructs a complete session baseline across consecutive edits outside VCS', async () => {
+    const nonGitDir = await makeTempDir('workspace-service-session-baseline-')
+    await fs.writeFile(path.join(nonGitDir, 'notes.md'), 'head\r\nfinal value\r\ntail\r\n')
+    const service = new WorkspaceService(
+      async () => nonGitDir,
+      async () => [{
+        id: 'assistant-1',
+        type: 'tool_use',
+        timestamp: new Date().toISOString(),
+        content: [
+          {
+            type: 'tool_use',
+            name: 'Edit',
+            input: { file_path: 'notes.md', old_string: 'old value', new_string: 'middle value' },
+          },
+          {
+            type: 'tool_use',
+            name: 'Edit',
+            input: { file_path: 'notes.md', old_string: 'middle value', new_string: 'final value' },
+          },
+        ],
+      }],
+    )
+
+    const diff = await service.getDiff('session-1', 'notes.md')
+
+    expect(diff).toMatchObject({
+      state: 'ok',
+      comparison: {
+        left: {
+          state: 'ok',
+          content: 'head\r\nold value\r\ntail\r\n',
+          lineEnding: 'crlf',
+          source: { kind: 'session_baseline' },
+        },
+        right: {
+          state: 'ok',
+          content: 'head\r\nfinal value\r\ntail\r\n',
+          lineEnding: 'crlf',
+          source: { kind: 'working_tree' },
+        },
+      },
+    })
+  })
+
+  it('keeps full-file mode on the real SVN BASE after a session change is committed', async () => {
+    const workspaceDir = await createSvnWorkspace()
+    svn(workspaceDir, 'commit', '-m', 'finish session changes')
+    const service = new WorkspaceService(
+      async () => workspaceDir,
+      async () => [{
+        id: 'assistant-1',
+        type: 'tool_use',
+        timestamp: new Date().toISOString(),
+        content: [{
+          type: 'tool_use',
+          name: 'Edit',
+          input: {
+            file_path: 'tracked.txt',
+            old_string: 'before\n',
+            new_string: 'before\nafter\n',
+          },
+        }],
+      }],
+    )
+
+    const diff = await service.getDiff('session-1', 'tracked.txt')
+
+    expect(diff).toMatchObject({
+      state: 'ok',
+      diff: '',
+      comparison: {
+        left: {
+          state: 'ok',
+          content: 'before\nafter\n',
+          source: { kind: 'svn_base' },
+        },
+        right: {
+          state: 'ok',
+          content: 'before\nafter\n',
+          source: { kind: 'working_tree' },
+        },
+      },
+    })
+  })
+
+  it('does not fabricate a full comparison when the recorded patch cannot reproduce the working file', async () => {
+    const nonGitDir = await makeTempDir('workspace-service-session-baseline-mismatch-')
+    await fs.writeFile(path.join(nonGitDir, 'notes.md'), 'unexpected current content\n')
+    const service = new WorkspaceService(
+      async () => nonGitDir,
+      async () => [{
+        id: 'assistant-1',
+        type: 'tool_use',
+        timestamp: new Date().toISOString(),
+        content: [{
+          type: 'tool_use',
+          name: 'Edit',
+          input: { file_path: 'notes.md', old_string: 'old', new_string: 'new' },
+        }],
+      }],
+    )
+
+    const diff = await service.getDiff('session-1', 'notes.md')
+
+    expect(diff.state).toBe('ok')
+    expect(diff.diff).toContain('-old')
+    expect(diff.comparison).toBeUndefined()
+  })
+
+  it('does not guess a session baseline when reverse patch placement is ambiguous', async () => {
+    const nonGitDir = await makeTempDir('workspace-service-session-baseline-ambiguous-')
+    await fs.writeFile(path.join(nonGitDir, 'notes.md'), 'new\nnew\n')
+    const service = new WorkspaceService(
+      async () => nonGitDir,
+      async () => [{
+        id: 'assistant-1',
+        type: 'tool_use',
+        timestamp: new Date().toISOString(),
+        content: [{
+          type: 'tool_use',
+          name: 'Edit',
+          input: { file_path: 'notes.md', old_string: 'old', new_string: 'new' },
+        }],
+      }],
+    )
+
+    const diff = await service.getDiff('session-1', 'notes.md')
+
+    expect(diff.state).toBe('ok')
     expect(diff.comparison).toBeUndefined()
   })
 
@@ -1070,7 +1321,7 @@ describe('WorkspaceService', () => {
       content: '# project brain\n',
     })
 
-    const registeredRoot = await service.registerExternalRoot(projectBrain)
+    const registeredRoot = await service.registerExternalRoot('session-1', projectBrain)
     const external = await service.readTree('session-1', registeredRoot)
     expect(external.entries).toContainEqual({
       name: 'index.md',
@@ -1200,6 +1451,17 @@ describe('WorkspaceService', () => {
       },
     })
     expect(diff.path).toBe(trackedFile.path)
+    await expect(service.grantExternalFileWriteAccess('session-1', trackedFile.path)).resolves.toMatchObject({
+      path: trackedFile.path,
+    })
+    await expect(service.getDiff('session-1', trackedFile.path)).resolves.toMatchObject({
+      comparison: {
+        right: {
+          source: { kind: 'working_tree' },
+          writable: true,
+        },
+      },
+    })
     await expect(service.getDiff('session-1', 'legacy-svn/x64/Generated/new-source.lua')).resolves.toMatchObject({
       state: 'ok',
       path: 'legacy-svn/x64/Generated/new-source.lua',
@@ -1773,6 +2035,32 @@ describe('WorkspaceService', () => {
       error: expect.stringMatching(/U\+1F600.*gbk/i),
     })
     await expect(fs.readFile(target)).resolves.toEqual(original)
+  })
+
+  it('serializes raw-byte CAS writes so concurrent saves cannot both overwrite the same file', async () => {
+    const workspaceDir = await createGitWorkspace()
+    const target = path.join(workspaceDir, 'concurrent.txt')
+    await fs.writeFile(target, 'before\n')
+    const service = new WorkspaceService(async () => workspaceDir)
+    const fingerprint = (await service.getDiff('session-1', 'concurrent.txt')).comparison?.right.contentFingerprint
+
+    const [first, second] = await Promise.all([
+      service.writeTextFile('session-1', 'concurrent.txt', 'before\n', 'first\n', {
+        expectedFingerprint: fingerprint,
+        encoding: 'utf8',
+        bom: 'none',
+        lineEnding: 'lf',
+      }),
+      service.writeTextFile('session-1', 'concurrent.txt', 'before\n', 'second\n', {
+        expectedFingerprint: fingerprint,
+        encoding: 'utf8',
+        bom: 'none',
+        lineEnding: 'lf',
+      }),
+    ])
+
+    expect([first.state, second.state].sort()).toEqual(['conflict', 'ok'])
+    await expect(fs.readFile(target, 'utf8')).resolves.toBe(first.state === 'ok' ? 'first\n' : 'second\n')
   })
 
   it('creates and deletes encoded files with raw-byte missing/existing CAS identities', async () => {

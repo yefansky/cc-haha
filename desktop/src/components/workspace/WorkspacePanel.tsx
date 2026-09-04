@@ -48,6 +48,7 @@ import {
   discardWorkspaceComparisonSession,
   isWorkspaceComparisonSessionDirty,
   saveWorkspaceComparisonSession,
+  type WorkspaceComparisonSession,
   type WorkspaceComparisonSourceSide,
 } from './workspaceComparisonSession'
 import { WorkspaceTableSurface } from './WorkspaceTableSurface'
@@ -1422,6 +1423,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const [comparisonSaving, setComparisonSaving] = useState(false)
   const [comparisonSaveError, setComparisonSaveError] = useState<string | null>(null)
   const [encodingChangingSide, setEncodingChangingSide] = useState<WorkspaceComparisonSourceSide | null>(null)
+  const [writeAccessChangingSide, setWriteAccessChangingSide] = useState<WorkspaceComparisonSourceSide | null>(null)
   const previewTabContextMenuRef = useRef<HTMLDivElement>(null)
   const fileContextMenuRef = useRef<HTMLDivElement>(null)
   const width = useWorkspacePanelStore((state) => state.width)
@@ -1812,18 +1814,24 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
 
   const findTabs = (tabIds: string[]) => previewTabs.filter((tab) => tabIds.includes(tab.id))
 
-  const saveComparisonTabs = async (tabs: WorkspacePreviewTab[]) => {
+  const saveComparisonTabs = async (
+    tabs: WorkspacePreviewTab[],
+    exactSession?: { tabId: string; session: WorkspaceComparisonSession },
+  ) => {
     setComparisonSaving(true)
     setComparisonSaveError(null)
     try {
       for (const requestedTab of tabs) {
         const liveTab = useWorkspacePanelStore.getState().previewTabsBySession[sessionId]
           ?.find((tab) => tab.id === requestedTab.id)
-        if (!liveTab?.comparisonSession || !isWorkspaceComparisonSessionDirty(liveTab.comparisonSession)) continue
-        const outcome = await saveWorkspaceComparisonSession(liveTab.comparisonSession, (request) => (
+        const comparisonSession = exactSession?.tabId === requestedTab.id
+          ? exactSession.session
+          : liveTab?.comparisonSession
+        if (!comparisonSession || !isWorkspaceComparisonSessionDirty(comparisonSession)) continue
+        const outcome = await saveWorkspaceComparisonSession(comparisonSession, (request) => (
           sessionsApi.writeWorkspaceFile(sessionId, request)
         ))
-        setComparisonSession(sessionId, liveTab.id, outcome.session)
+        setComparisonSession(sessionId, requestedTab.id, outcome.session)
         if (outcome.state !== 'ok') {
           setComparisonSaveError(outcome.state === 'conflict'
             ? t('workspace.diffEdit.saveConflict')
@@ -1916,6 +1924,33 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       }
     }
     requestDirtyAction('switch', [activePreviewTab], proceed)
+  }
+
+  const handleRequestWriteAccess = async (sourceSide: WorkspaceComparisonSourceSide) => {
+    if (!activePreviewTab?.comparisonSession || activePreviewTab.kind !== 'diff') return
+    const sourcePath = activePreviewTab.comparisonSession[sourceSide].source.path
+    setWriteAccessChangingSide(sourceSide)
+    setComparisonSaveError(null)
+    try {
+      await sessionsApi.grantWorkspaceFileWriteAccess(sessionId, sourcePath)
+      await openPreview(
+        sessionId,
+        activePreviewTab.path,
+        activePreviewTab.kind,
+        undefined,
+        undefined,
+        activePreviewTab.diffSource,
+        activePreviewTab.textEncoding,
+        activePreviewTab.comparisonEncodings,
+        { force: true },
+      )
+    } catch (error) {
+      setComparisonSaveError(t('workspace.diffEdit.saveFailed', {
+        reason: error instanceof Error ? error.message : String(error),
+      }))
+    } finally {
+      setWriteAccessChangingSide(null)
+    }
   }
 
   const handleAddWorkspaceFolder = async () => {
@@ -2607,8 +2642,11 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               setComparisonSaveError(null)
               setComparisonSession(sessionId, activePreviewTab.id, comparisonSession)
             }}
-            onSave={async () => {
-              const saved = await saveComparisonTabs([activePreviewTab])
+            onSave={async (exactSession) => {
+              const saved = await saveComparisonTabs([activePreviewTab], {
+                tabId: activePreviewTab.id,
+                session: exactSession,
+              })
               if (saved) {
                 await openPreview(
                   sessionId,
@@ -2627,6 +2665,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             saveError={comparisonSaveError}
             onEncodingChange={handleComparisonEncodingChange}
             encodingChangingSide={encodingChangingSide}
+            onRequestWriteAccess={handleRequestWriteAccess}
+            writeAccessChangingSide={writeAccessChangingSide}
             onAddComment={(selection, note) => addDiffCommentToChat(activePreviewTab.path, selection, note)}
           />
         ) : state === 'ok' && activeMarkdownView === 'preview' ? (
