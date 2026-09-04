@@ -26,7 +26,7 @@ $localAppData = Join-Path $testRoot 'AppData\Local'
 $userProfile = Join-Path $testRoot 'UserProfile'
 $appExe = Join-Path $installDir 'Claude Code Haha.exe'
 $uninstaller = Join-Path $installDir 'Uninstall Claude Code Haha.exe'
-$desktopDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+$desktopDirectory = Join-Path $userProfile 'Desktop'
 $desktopShortcut = Join-Path $desktopDirectory 'Claude Code Haha.lnk'
 $recoveryHelper = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\build\recover-legacy-install-data.ps1')).Path
 $processHelper = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\build\check-install-processes.ps1')).Path
@@ -403,7 +403,7 @@ function Invoke-LegacyRecoveryDiagnostic {
 }
 
 try {
-  New-Item -ItemType Directory -Path $appData, $localAppData, $userProfile -Force | Out-Null
+  New-Item -ItemType Directory -Path $appData, $localAppData, $userProfile, $desktopDirectory -Force | Out-Null
   $env:APPDATA = $appData
   $env:LOCALAPPDATA = $localAppData
   $env:USERPROFILE = $userProfile
