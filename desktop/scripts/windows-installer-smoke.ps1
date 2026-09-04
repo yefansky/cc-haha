@@ -97,6 +97,22 @@ function Invoke-CheckedProcess {
   }
 }
 
+function Wait-ForPathRemoval {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Description,
+    [int]$TimeoutSeconds = 30
+  )
+
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  while ((Test-Path -LiteralPath $Path) -and [DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 200
+  }
+  if (Test-Path -LiteralPath $Path) {
+    throw "$Description was still present after waiting $TimeoutSeconds seconds: $Path"
+  }
+}
+
 function Test-IsProcessElevated {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   try {
@@ -542,9 +558,7 @@ try {
   }
   if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
     Invoke-CheckedProcess -FilePath $uninstaller -Stage 'Cleanup uninstall' -Arguments @('/S', '/KEEP_APP_DATA', '/currentuser') -TimeoutSeconds 120
-  }
-  if (Test-Path -LiteralPath $desktopShortcut -PathType Leaf) {
-    throw "Cleanup uninstall left the desktop shortcut behind: $desktopShortcut"
+    Wait-ForPathRemoval -Path $desktopShortcut -Description 'Cleanup uninstall desktop shortcut'
   }
   foreach ($name in $savedEnvironment.Keys) {
     $value = $savedEnvironment[$name]

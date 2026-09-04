@@ -684,6 +684,8 @@ describe('release desktop workflow', () => {
     expect(installerSmoke).toContain("$desktopDirectory = Join-Path $userProfile 'Desktop'")
     expect(installerSmoke).toContain('$appData, $localAppData, $userProfile, $desktopDirectory')
     expect(installerSmoke).not.toContain('[Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)')
+    expect(installerSmoke).toContain('function Wait-ForPathRemoval')
+    expect(installerSmoke).toContain("Wait-ForPathRemoval -Path $desktopShortcut -Description 'Cleanup uninstall desktop shortcut'")
     expect(installerSmoke).toContain('Reinstall removed the application executable')
     expect(installerSmoke).toContain("'中文 安装目录\\Claude Code Haha'")
     expect(installerSmoke).toContain('Invoke-InstalledApplicationSmoke')
