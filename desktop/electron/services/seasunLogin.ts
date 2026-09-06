@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
-import type { BrowserWindow, BrowserWindowConstructorOptions, Session } from 'electron'
+import type { BrowserWindow, BrowserWindowConstructorOptions, Session, WebFrameMain } from 'electron'
 import { localSeasunStatus, parseSeasunStatus, type SeasunStatus } from '../../src/providerBusinesses/seasun/types'
 
 const SSO_ORIGIN = 'https://sso.seasungame.com'
@@ -162,20 +162,47 @@ export class SeasunLoginService {
       contents.session.setPermissionCheckHandler(() => false)
       contents.session.on('will-download', event => event.preventDefault())
       contents.on('will-attach-webview', event => event.preventDefault())
+      let committedSsoFrame: WebFrameMain | null = null
+      // Sticky for this dedicated window: removing an iframe must not erase its provenance.
+      let subframeObserved = false
+      contents.on('frame-created', (_event, details) => {
+        try {
+          if (!details.frame || details.frame.detached || details.frame.parent !== null) subframeObserved = true
+        } catch { subframeObserved = true }
+      })
+      contents.on('did-navigate', (_event, url) => {
+        try {
+          committedSsoFrame = isSeasunPage(url) ? contents.mainFrame : null
+          if (contents.mainFrame.frames.length > 0) subframeObserved = true
+        } catch { committedSsoFrame = null; subframeObserved = true }
+      })
       // window.open provides no reliable initiating frame identity, so never consume it.
       contents.setWindowOpenHandler(() => ({ action: 'deny' }))
-      const navigate = (event: { preventDefault(): void }, target: string, isMainFrame: boolean, source: string) => {
+      const trustedSource = (event: { frame?: WebFrameMain | null; initiator?: WebFrameMain | null }) => {
+        try {
+          const main = contents.mainFrame
+          if (main !== committedSsoFrame || !isSeasunPage(main.url) || !isSeasunPage(contents.getURL())) return false
+          // Electron's frame is the navigation target, not its initiator, and may be null.
+          if (event.frame && event.frame !== main) return false
+          if (event.initiator) return event.initiator === main && isSeasunPage(event.initiator.url)
+          // With no initiator metadata, trust only this committed, childless SSO document.
+          // An iframe targeting _top must never inherit the top frame's trust.
+          return !subframeObserved && main.frames.length === 0
+        } catch { return false }
+      }
+      const navigate = (event: { preventDefault(): void; frame?: WebFrameMain | null; initiator?: WebFrameMain | null }, target: string, isMainFrame: boolean) => {
         if (!isMainFrame) { event.preventDefault(); return }
         if (isSeasunCallback(target)) {
+          const trusted = trustedSource(event)
           event.preventDefault()
-          if (isSeasunPage(source)) void this.complete(attempt, target)
+          if (trusted) void this.complete(attempt, target)
           else void this.cancel('error')
           return
         }
         if (!isSeasunPage(target)) { event.preventDefault(); void this.cancel('error') }
       }
-      contents.on('will-frame-navigate', event => navigate(event, event.url, event.isMainFrame, event.frame?.url ?? ''))
-      contents.on('will-redirect', (event, url, _inPlace, isMainFrame) => navigate(event, url, isMainFrame, event.frame?.url ?? ''))
+      contents.on('will-frame-navigate', event => navigate(event, event.url, event.isMainFrame))
+      contents.on('will-redirect', (event, url, _inPlace, isMainFrame) => navigate(event, url, isMainFrame))
       window.on('closed', () => { if (!attempt.settled && !attempt.cancelled) void this.cancel() })
       await window.loadURL(credentials.authorizeUrl)
     } catch {

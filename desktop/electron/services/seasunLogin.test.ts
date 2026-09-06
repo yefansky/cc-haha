@@ -15,14 +15,19 @@ class FakeWindow extends EventEmitter {
     clearStorageData: vi.fn(async () => {}), clearCache: vi.fn(async () => {}),
   })
   readonly webContents = Object.assign(new EventEmitter(), {
-    session: this.session, mainFrame: { url: LOGIN }, setWindowOpenHandler: vi.fn(),
+    session: this.session, mainFrame: { url: LOGIN, frames: [] as unknown[] }, setWindowOpenHandler: vi.fn(),
+    getURL: () => this.webContents.mainFrame.url,
   })
   focus = vi.fn()
-  loadURL = vi.fn(async () => {})
+  loadURL = vi.fn(async (url: string) => {
+    this.webContents.mainFrame.url = url
+    this.webContents.emit('did-navigate', {}, url)
+  })
   isDestroyed() { return this.destroyed }
   destroy() { this.destroyed = true; this.emit('closed') }
   navigate(url: string, source = LOGIN, isMainFrame = true) {
-    const event = { preventDefault: vi.fn(), url, isMainFrame, frame: { url: source } }
+    const event = { preventDefault: vi.fn(), url, isMainFrame, frame: this.webContents.mainFrame,
+      initiator: source === this.webContents.mainFrame.url ? this.webContents.mainFrame : { url: source } }
     this.webContents.emit('will-frame-navigate', event)
     return event
   }
@@ -110,6 +115,72 @@ describe('Seasun login trust boundary', () => {
     expect(open({ url: CALLBACK })).toEqual({ action: 'deny' })
     h.windows[0]!.navigate('https://evil.test/')
     expect((await result).phase).toBe('error')
+  })
+
+  it.each(['missing-target', 'missing-all'] as const)('accepts a committed SSO main document with %s navigation metadata', async mode => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    const window = h.windows[0]!
+    const event = { url: CALLBACK, isMainFrame: true, frame: null,
+      initiator: mode === 'missing-target' ? window.webContents.mainFrame : null, preventDefault: vi.fn() }
+    window.webContents.emit('will-frame-navigate', event)
+    expect((await result).phase).toBe('connected')
+    expect(event.preventDefault).toHaveBeenCalledOnce()
+    expect(h.request.mock.calls.filter(([action]) => action === 'complete')).toHaveLength(1)
+  })
+
+  it.each(['child-initiator', 'unknown-initiator-with-child', 'deleted-child', 'frame-evidence-error', 'wrong-target', 'uncommitted-document', 'changed-frame', 'untrusted-current-page'] as const)('rejects callback from %s despite targeting the main frame', async mode => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    const window = h.windows[0]!, main = window.webContents.mainFrame
+    const child = { url: LOGIN }
+    if (mode === 'unknown-initiator-with-child') main.frames.push(child)
+    if (mode === 'deleted-child') {
+      main.frames.push(child)
+      window.webContents.emit('frame-created', {}, { frame: { ...child, parent: main, detached: false } })
+      main.frames.pop()
+      // A later trusted document commit does not erase the earlier iframe evidence.
+      window.webContents.emit('did-navigate', {}, LOGIN)
+    }
+    if (mode === 'frame-evidence-error') window.webContents.emit('frame-created', {}, { get frame() { throw new Error('detached frame') } })
+    if (mode === 'uncommitted-document') window.webContents.emit('did-navigate', {}, 'about:blank')
+    if (mode === 'changed-frame') window.webContents.mainFrame = { url: LOGIN, frames: [] }
+    if (mode === 'untrusted-current-page') main.url = 'https://evil.test/'
+    window.webContents.emit('will-frame-navigate', {
+      url: CALLBACK, isMainFrame: true, preventDefault: vi.fn(),
+      frame: mode === 'wrong-target' ? child : null,
+      initiator: mode === 'child-initiator' ? child : null,
+    })
+    expect((await result).phase).toBe('error')
+    expect(h.request.mock.calls.some(([action]) => action === 'complete')).toBe(false)
+    expect(h.request.mock.calls.some(([action]) => action === 'cancel')).toBe(true)
+  })
+
+  it('accepts a verified main-frame initiator after child history but rejects unreadable metadata', async () => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    const window = h.windows[0]!, main = window.webContents.mainFrame
+    window.webContents.emit('frame-created', {}, { frame: { url: LOGIN, parent: main, detached: false } })
+    window.navigate(CALLBACK)
+    expect((await result).phase).toBe('connected')
+
+    const other = harness(); const rejected = other.service.login(other.parent); await flush()
+    other.windows[0]!.webContents.emit('will-frame-navigate', {
+      url: CALLBACK, isMainFrame: true, preventDefault: vi.fn(),
+      get initiator() { throw new Error('frame destroyed') },
+    })
+    expect((await rejected).phase).toBe('error')
+    expect(other.request.mock.calls.some(([action]) => action === 'complete')).toBe(false)
+  })
+
+  it('applies the same missing-metadata and iframe boundary to redirects', async () => {
+    for (const withChild of [false, true]) {
+      const h = harness(); const result = h.service.login(h.parent); await flush()
+      const window = h.windows[0]!
+      if (withChild) window.webContents.mainFrame.frames.push({ url: LOGIN })
+      const event = { preventDefault: vi.fn(), frame: null, initiator: null }
+      window.webContents.emit('will-redirect', event, CALLBACK, false, true)
+      expect((await result).phase).toBe(withChild ? 'error' : 'connected')
+      expect(event.preventDefault).toHaveBeenCalledOnce()
+      expect(h.request.mock.calls.some(([action]) => action === 'complete')).toBe(!withChild)
+    }
   })
 
   it('cancels an in-flight exchange and discards its late successful result', async () => {
