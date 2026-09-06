@@ -93,9 +93,29 @@ jobs:
         run: node ./node_modules/electron-builder/out/cli/cli.js --win nsis --x64 --publish never
 
       - name: Verify Windows installer execution
+        id: installer_smoke
         timeout-minutes: 10
         working-directory: desktop
         run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-installer-smoke.ps1 -ArtifactsDir ./build-artifacts/electron -Arch x64
+
+      - name: Upload Windows installer failure diagnostics
+        if: ${{ always() && steps.installer_smoke.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          # Public repository artifacts must never include raw crash memory or WER files.
+          path: desktop/build-artifacts/electron/installer-diagnostics/public/installer-diagnostics.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload failed Windows installer
+        if: ${{ always() && steps.installer_smoke.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-failed-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: desktop/build-artifacts/electron/Claude-Code-Haha-*-win-x64.exe
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Verify packaged app structure
         run: bun run test:package-smoke --platform windows --arch x64 --package-kind release --artifacts-dir desktop/build-artifacts/electron

@@ -18,6 +18,8 @@ if ($installers.Count -ne 1) {
   throw "Expected exactly one Windows $Arch installer in $resolvedArtifactsDir, found $($installers.Count)."
 }
 $installer = $installers[0].FullName
+. (Join-Path $PSScriptRoot 'windows-installer-diagnostics.ps1')
+$installerDiagnostics = New-InstallerDiagnostics -Installer $installer -Directory (Join-Path $resolvedArtifactsDir 'installer-diagnostics\public')
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) "cc-haha-installer-smoke-$([Guid]::NewGuid().ToString('N'))"
 $installDir = Join-Path $testRoot '中文 安装目录\Claude Code Haha'
@@ -82,6 +84,7 @@ function Invoke-CheckedProcess {
   )
 
   [Console]::Out.WriteLine("$Stage starting...")
+  $started = Get-Date
   $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru
   try {
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
@@ -89,6 +92,11 @@ function Invoke-CheckedProcess {
       throw "$Stage timed out after $TimeoutSeconds seconds."
     }
     if ($process.ExitCode -ne 0) {
+      if ($FilePath -eq $installer) {
+        try {
+          Add-InstallerFailureDiagnostics -Context $installerDiagnostics -Stage $Stage -ProcessId $process.Id -Started $started -Ended (Get-Date) -ExitCode $process.ExitCode
+        } catch { $installerDiagnostics.Errors += 'failure_diagnostics_failed' }
+      }
       throw "$Stage failed with process exit code $($process.ExitCode)."
     }
     [Console]::Out.WriteLine("$Stage completed successfully.")
@@ -418,7 +426,9 @@ function Invoke-LegacyRecoveryDiagnostic {
   [Console]::Out.WriteLine('Direct legacy recovery diagnostic completed successfully.')
 }
 
+$primaryFailure = $null
 try {
+  try { Enable-InstallerCrashDumps -Context $installerDiagnostics } catch { $installerDiagnostics.Errors += 'dump_setup_failed' }
   New-Item -ItemType Directory -Path $appData, $localAppData, $userProfile, $desktopDirectory -Force | Out-Null
   $env:APPDATA = $appData
   $env:LOCALAPPDATA = $localAppData
@@ -547,7 +557,11 @@ try {
   }
 
   [Console]::Out.WriteLine('Windows installer Unicode-path launch, fresh-install, no-CLR default reinstall, and fail-closed portable reinstall smoke passed.')
+} catch {
+  $primaryFailure = $_
+  throw
 } finally {
+  try {
   foreach ($probeProcess in @($installProcess, $siblingProcess, $bundledHelperProcess)) {
     if ($null -ne $probeProcess) {
       if (-not $probeProcess.HasExited) {
@@ -560,6 +574,12 @@ try {
     Invoke-CheckedProcess -FilePath $uninstaller -Stage 'Cleanup uninstall' -Arguments @('/S', '/KEEP_APP_DATA', '/currentuser') -TimeoutSeconds 120
     Wait-ForPathRemoval -Path $desktopShortcut -Description 'Cleanup uninstall desktop shortcut'
   }
+  } catch {
+    $installerDiagnostics.Errors += 'installer_cleanup_failed'
+    if ($null -eq $primaryFailure) { throw }
+    [Console]::Error.WriteLine('Installer cleanup failed after the original smoke failure; preserving the original failure.')
+  } finally {
+  try { Complete-InstallerDiagnostics -Context $installerDiagnostics } catch { [Console]::Error.WriteLine('Installer diagnostics finalization failed; continuing original cleanup.') }
   foreach ($name in $savedEnvironment.Keys) {
     $value = $savedEnvironment[$name]
     if ($null -eq $value) {
@@ -569,4 +589,5 @@ try {
     }
   }
   Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }

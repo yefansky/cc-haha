@@ -24,6 +24,32 @@ describe('release desktop workflow', () => {
 
   const electronBuilderCli = 'node ./node_modules/electron-builder/out/cli/cli.js ${{ matrix.builder_args }} --publish never'
 
+  test('Windows installer failures retain only public diagnostics and the failed installer without bypassing release gates', () => {
+    for (const workflowPath of ['.github/workflows/release-windows-continuous.yml', '.github/workflows/release-desktop.yml']) {
+      const workflow = readText(workflowPath)
+      const smoke = extractStep(workflow, 'Verify Windows installer execution')!
+      const diagnostics = extractStep(workflow, 'Upload Windows installer failure diagnostics')!
+      const installer = extractStep(workflow, 'Upload failed Windows installer')!
+      expect(smoke, workflowPath).toContain('id: installer_smoke')
+      expect(smoke).not.toContain('continue-on-error')
+      expect(smoke).toContain('-ArtifactsDir ./build-artifacts/electron -Arch x64')
+      for (const step of [diagnostics, installer]) {
+        expect(step, workflowPath).toContain("if: ${{ always() && steps.installer_smoke.outcome == 'failure' }}")
+        expect(step).toContain('uses: actions/upload-artifact@v4')
+        expect(step).toContain('${{ github.run_id }}-${{ github.run_attempt }}')
+        expect(step).toContain('retention-days: 7')
+        expect(step).not.toContain('continue-on-error')
+      }
+      expect(diagnostics).toContain('installer-diagnostics/public/installer-diagnostics.json')
+      expect(diagnostics).not.toMatch(/\*|\.dmp|\/private\/|include-hidden-files:\s*true/)
+      expect(installer).toContain('desktop/build-artifacts/electron/Claude-Code-Haha-*-win-x64.exe')
+      expect(workflow.indexOf('Verify Windows installer execution')).toBeLessThan(workflow.indexOf('Upload Windows installer failure diagnostics'))
+      expect(workflow.indexOf('Upload failed Windows installer')).toBeLessThan(workflow.indexOf('Verify packaged app structure'))
+      const packageCheck = extractStep(workflow, 'Verify packaged app structure')!
+      expect(packageCheck).not.toMatch(/always\(\)|continue-on-error/)
+    }
+  })
+
   test('Windows continuous release publishes an installable, updater-compatible build for every main push', () => {
     const workflow = readFileSync('.github/workflows/release-windows-continuous.yml', 'utf8')
     const desktopPackage = JSON.parse(readFileSync('desktop/package.json', 'utf8')) as {
