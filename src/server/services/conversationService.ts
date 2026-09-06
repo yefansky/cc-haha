@@ -54,6 +54,7 @@ import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { findCanonicalGitRoot } from '../../utils/git.js'
 import { sanitizePath } from '../../utils/path.js'
 import { getProcessEnvWithTerminalShellEnvironment } from '../../utils/terminalShellEnvironment.js'
+import { providerRuntimeSnapshots } from '../proxy/runtimeSnapshots.js'
 import { attributionHeaderEnvForModel } from './attributionHeaderPolicy.js'
 import {
   buildNetworkEnvironment,
@@ -67,11 +68,7 @@ import {
   createImageMetadataText,
   maybeResizeAndDownsampleImageBuffer,
 } from '../../utils/imageResizer.js'
-import {
-  buildKsccRuntimeEnv,
-  KSCC_HEADERS_ENV_KEY,
-  KSCC_PROTOCOL_ENV_KEY,
-} from './ksccProtocol.js'
+import { providerIntegrations } from '../providerIntegrations/index.js'
 
 const MAX_CAPTURED_PROCESS_LINES = 80
 const MAX_CAPTURED_SDK_MESSAGES = 40
@@ -199,6 +196,7 @@ function networkRoutingFingerprint(
 }
 
 type SessionProcess = {
+  providerSnapshotId?: string
   proc: ReturnType<typeof Bun.spawn>
   outputCallbacks: SessionOutputCallback[]
   workDir: string
@@ -450,7 +448,7 @@ export class ConversationService {
     // chdir 后落到正确目录。
     //
     const networkSettings = await loadNetworkSettings()
-    const networkRuntimeMetadata = { firstTokenTimeoutDerived: false }
+    const networkRuntimeMetadata: { firstTokenTimeoutDerived: boolean; providerSnapshot?: import('../types/provider.js').SavedProvider } = { firstTokenTimeoutDerived: false }
     const childEnv = await this.buildChildEnv(
       launchWorkDir,
       sdkUrl,
@@ -458,12 +456,20 @@ export class ConversationService {
       networkSettings,
       networkRuntimeMetadata,
     )
-    const usesOfficialOAuth = this.shouldMarkManagedOAuth(options?.providerId)
+    const usesOfficialOAuth = !networkRuntimeMetadata.providerSnapshot && this.shouldMarkManagedOAuth(options?.providerId)
+    let providerSnapshotId: string | undefined
+    if (networkRuntimeMetadata.providerSnapshot) {
+        const proxyUrl = new URL(childEnv.ANTHROPIC_BASE_URL!)
+        providerSnapshotId = providerRuntimeSnapshots.create(networkRuntimeMetadata.providerSnapshot)
+        proxyUrl.pathname = `/proxy/scopes/${providerSnapshotId}`
+        childEnv.ANTHROPIC_BASE_URL = proxyUrl.toString().replace(/\/$/, '')
+    }
 
     let proc: ReturnType<typeof Bun.spawn>
     try {
       proc = Bun.spawn(args, buildConversationCliSpawnOptions(launchWorkDir, childEnv))
     } catch (spawnErr) {
+      if (providerSnapshotId) providerRuntimeSnapshots.release(providerSnapshotId)
       void diagnosticsService.recordEvent({
         type: 'cli_spawn_failed',
         severity: 'error',
@@ -490,6 +496,7 @@ export class ConversationService {
       resolveSdkAttached = resolve
     })
     const session: SessionProcess = {
+      providerSnapshotId,
       proc,
       outputCallbacks: [],
       workDir: launchWorkDir,
@@ -523,8 +530,9 @@ export class ConversationService {
     ]).then(() => undefined)
 
     proc.exited.then((code) => {
+      if (providerSnapshotId) providerRuntimeSnapshots.release(providerSnapshotId)
       void this.handleProcessExit(sessionId, proc, code)
-    })
+    }, () => { if (providerSnapshotId) providerRuntimeSnapshots.release(providerSnapshotId) })
 
     const STARTUP_GRACE_MS = 3000
     let startupGraceTimer: ReturnType<typeof setTimeout> | undefined
@@ -1388,6 +1396,7 @@ export class ConversationService {
     session: SessionProcess,
     reason = new Error('CLI session stopped'),
   ): void {
+    if (session.providerSnapshotId) providerRuntimeSnapshots.release(session.providerSnapshotId)
     const pending = session.pendingControlRequests
     if (!pending || pending.size === 0) return
     for (const cancel of [...pending.values()]) {
@@ -1742,7 +1751,7 @@ export class ConversationService {
     sdkUrl?: string,
     options?: SessionStartOptions,
     networkSettingsOverride?: NetworkSettings,
-    networkRuntimeMetadata?: { firstTokenTimeoutDerived: boolean },
+    networkRuntimeMetadata?: { firstTokenTimeoutDerived: boolean; providerSnapshot?: import('../types/provider.js').SavedProvider },
   ): Promise<Record<string, string>> {
     // Provider isolation: when Desktop has its own provider config/index,
     // strip inherited provider env vars so the child CLI reads fresh values
@@ -1783,8 +1792,7 @@ export class ConversationService {
       IMAGE_GENERATION_BASE_URL_ENV_KEY,
       IMAGE_GENERATION_API_KEY_ENV_KEY,
       IMAGE_GENERATION_MODEL_ENV_KEY,
-      KSCC_PROTOCOL_ENV_KEY,
-      KSCC_HEADERS_ENV_KEY,
+      ...providerIntegrations.managedEnvKeys(),
     ] as const
 
     const cleanEnv = await getProcessEnvWithTerminalShellEnvironment()
@@ -1815,13 +1823,19 @@ export class ConversationService {
       }
     }
 
-    const explicitProvider =
+    let explicitProvider =
       typeof options?.providerId === 'string'
         ? await this.providerService.getProvider(options.providerId)
         : null
+    if (!explicitProvider && options?.providerId == null) {
+      const index = await this.providerService.listProviders()
+      const active = index.providers.find(value => value.id === index.activeId)
+      if (active?.modelCatalog?.some(entry => entry.transport)) explicitProvider = active
+    }
     const explicitProviderEnv = explicitProvider
-      ? await this.providerService.getProviderRuntimeEnv(explicitProvider.id)
+      ? await this.providerService.getProviderRuntimeEnv(explicitProvider.id, explicitProvider.modelCatalog?.some(entry => entry.transport) ? explicitProvider : undefined)
       : null
+    if (networkRuntimeMetadata && explicitProvider?.modelCatalog?.some(entry => entry.transport)) networkRuntimeMetadata.providerSnapshot = structuredClone(explicitProvider)
     const networkEnv = buildNetworkEnvironment(
       networkSettingsOverride ?? await loadNetworkSettings(),
       cleanEnv,
@@ -1830,8 +1844,8 @@ export class ConversationService {
     if (explicitProviderEnv && options?.model?.trim()) {
       explicitProviderEnv.ANTHROPIC_MODEL = options.model.trim()
     }
-    if (explicitProviderEnv && explicitProvider?.presetId === 'kscc') {
-      Object.assign(explicitProviderEnv, buildKsccRuntimeEnv(workDir))
+    if (explicitProviderEnv && explicitProvider) {
+      Object.assign(explicitProviderEnv, providerIntegrations.buildRuntimeEnv(explicitProvider, workDir))
     }
     const attributionHeaderEnv = attributionHeaderEnvForModel(
       options?.model?.trim() ||
@@ -1943,7 +1957,7 @@ export class ConversationService {
           : {}
       ),
       ...networkEnv,
-      ...(this.shouldMarkManagedOAuth(options?.providerId)
+      ...(!explicitProvider && this.shouldMarkManagedOAuth(options?.providerId)
         ? await this.buildOfficialOAuthEnv()
         : {}),
       ...attributionHeaderEnv,

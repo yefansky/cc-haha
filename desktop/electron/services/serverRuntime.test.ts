@@ -138,12 +138,17 @@ describe('ElectronServerRuntime', () => {
   })
 
   it('keeps the pet capability independent and exposes it only to the server sidecar', async () => {
-    const runtime = createRuntime()
+    const runtime = createRuntime({ env: { CC_HAHA_DESKTOP_INTEGRATION_TOKEN: 'inherited-token-must-not-propagate' } })
 
     await runtime.startServer()
 
     const localToken = runtime.getLocalAccessToken()
     const petToken = runtime.getPetAccessToken()
+    const integrationToken = runtime.getIntegrationToken()
+    expect(integrationToken.length).toBeGreaterThanOrEqual(32)
+    expect(integrationToken).not.toBe(localToken)
+    expect(integrationToken).not.toBe('inherited-token-must-not-propagate')
+    expect(sidecarMocks.serverPlans[0]!.env.CC_HAHA_DESKTOP_INTEGRATION_TOKEN).toBe(integrationToken)
     expect(localToken.length).toBeGreaterThanOrEqual(32)
     expect(petToken.length).toBeGreaterThanOrEqual(32)
     expect(petToken).not.toBe(localToken)
@@ -154,6 +159,7 @@ describe('ElectronServerRuntime', () => {
       .filter(plan => plan.args[0] === 'adapters')) {
       expect(adapter.env.CC_HAHA_LOCAL_ACCESS_TOKEN).toBe(localToken)
       expect(adapter.env.CC_HAHA_PET_ACCESS_TOKEN).toBeUndefined()
+      expect(adapter.env.CC_HAHA_DESKTOP_INTEGRATION_TOKEN).toBeUndefined()
     }
   })
 

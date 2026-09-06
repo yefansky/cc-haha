@@ -38,7 +38,7 @@ export type KsccOAuthServiceOptions = {
   requestTimeoutMs?: number
 }
 
-class KsccRequestTimeoutError extends Error {
+export class KsccRequestTimeoutError extends Error {
   constructor(operation: string, timeoutMs: number) {
     super(`KSCC ${operation} timed out after ${Math.max(1, Math.ceil(timeoutMs / 1000))}s`)
     this.name = 'KsccRequestTimeoutError'
@@ -178,7 +178,7 @@ export class KsccOAuthService {
 
   private async activate(token: string, baseUrl: string): Promise<void> {
     const models = await this.fetchModels(token, baseUrl)
-    await this.providerService.upsertKsccProvider({ apiKey: token, baseUrl, modelCatalog: models })
+    await this.providerService.upsertIntegratedProvider('kscc', { apiKey: token, baseUrl, modelCatalog: models })
     this.session = null
     await this.savePendingLogin(null)
   }

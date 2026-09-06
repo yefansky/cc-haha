@@ -3,6 +3,15 @@ import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS } from '../../../electro
 import { createElectronHost } from './electronHost'
 
 describe('electron desktop host', () => {
+  it('exposes only safe Seasun status and offers no arbitrary auth payload', async () => {
+    const invoke = vi.fn().mockResolvedValue({ phase: 'connected', identityConnected: true, loggedIn: true, active: false, pending: false, modelAccess: 'unknown', token: 'private', callbackUrl: 'private', completionSecret: 'private' })
+    const host = createElectronHost({ invoke, subscribe: vi.fn() })
+    const status = await host.providerBusinesses!.seasun.login()
+    expect(status.identityConnected).toBe(true)
+    expect(JSON.stringify(status)).not.toContain('private')
+    expect(invoke).toHaveBeenCalledWith(ELECTRON_IPC_CHANNELS.seasunLogin, undefined)
+    expect(Object.keys(host.providerBusinesses!.seasun)).toEqual(['login', 'cancel'])
+  })
   it('synchronizes locale preferences through narrow app IPC boundaries', async () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce('jp')

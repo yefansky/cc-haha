@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Copy, LogIn } from 'lucide-react'
 import { copyTextToClipboard } from '@/lib/clipboard'
-import { getDesktopHost } from '../../lib/desktopHost'
-import { useTranslation } from '../../i18n'
-import { useKsccOAuthStore } from '../../stores/ksccOAuthStore'
-import { useProviderStore } from '../../stores/providerStore'
+import { getDesktopHost } from '@/lib/desktopHost'
+import { useTranslation } from '@/i18n'
+import { useKsccOAuthStore } from './store'
+import { useProviderStore } from '@/stores/providerStore'
 
 export function KsccLogin() {
   const t = useTranslation()
@@ -12,8 +12,9 @@ export function KsccLogin() {
   const [switchError, setSwitchError] = useState<string | null>(null)
   const [isSwitching, setIsSwitching] = useState(false)
   const { status, isLoading, error, fetchStatus, login, startPolling, stopPolling } = useKsccOAuthStore()
-  const { providers, fetchProviders, activateProvider } = useProviderStore()
+  const { providers, activeId, fetchProviders, activateProvider } = useProviderStore()
   const ksccProvider = providers.find((provider) => provider.presetId === 'kscc')
+  const isActive = providers.some((provider) => provider.id === activeId && provider.presetId === 'kscc')
 
   useEffect(() => {
     void fetchStatus()
@@ -73,7 +74,7 @@ export function KsccLogin() {
   }
 
   if (status?.loggedIn) {
-    const message = status.active
+    const message = isActive
       ? t('settings.kscc.loggedInActive')
       : t('settings.kscc.loggedInInactive')
     return (
@@ -81,7 +82,7 @@ export function KsccLogin() {
       <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--color-success)]/25 bg-[var(--color-success)]/5 px-3 py-2">
         <div className="text-sm text-[var(--color-success)]">{message}</div>
         <div className="flex shrink-0 items-center gap-2">
-          {!status.active && <button type="button" onClick={switchToKscc} disabled={isLoading || isSwitching} className="rounded-md bg-[image:var(--gradient-btn-primary)] px-3 py-1.5 text-xs text-[var(--color-btn-primary-fg)] disabled:opacity-50">
+          {!isActive && <button type="button" onClick={switchToKscc} disabled={isLoading || isSwitching} className="rounded-md bg-[image:var(--gradient-btn-primary)] px-3 py-1.5 text-xs text-[var(--color-btn-primary-fg)] disabled:opacity-50">
             {isSwitching ? t('settings.kscc.switching') : t('settings.kscc.switch')}
           </button>}
           <button type="button" onClick={signIn} disabled={isLoading} className="rounded-md border border-[var(--color-border-separator)] px-3 py-1.5 text-xs disabled:opacity-50">

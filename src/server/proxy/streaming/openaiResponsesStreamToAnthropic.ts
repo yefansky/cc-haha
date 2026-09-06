@@ -19,6 +19,8 @@ export type OpenAIResponsesStreamOptions = {
    * stream errors are surfaced, and EOF without response.completed is rejected.
    */
   openAICodexOAuth?: boolean
+  strictStream?: boolean
+  preserveReasoning?: boolean
   /** Internal lifecycle hooks used by the OAuth fetch adapter. */
   onTerminal?: (event: string) => void
   onCancel?: (reason: unknown) => void
@@ -87,11 +89,11 @@ export function openaiResponsesStreamToAnthropic(
         resetEvent()
 
         if (dataText === '[DONE]') {
-          if (options.openAICodexOAuth) {
+          if ((options.strictStream ?? options.openAICodexOAuth)) {
             state.lastUpstreamEvent = '[DONE]'
             return true
           }
-          if (!options.openAICodexOAuth && !state.messageStopped) {
+          if (!(options.strictStream ?? options.openAICodexOAuth) && !state.messageStopped) {
             state.terminalSeen = true
             closeAllReasoningBlocks(state, controller, encoder)
             emitMessageStop(state, controller, encoder, model)
@@ -162,7 +164,12 @@ export function openaiResponsesStreamToAnthropic(
             dispatchEvent()
           }
 
-          if (options.openAICodexOAuth && !state.terminalSeen) {
+          if ((options.strictStream ?? options.openAICodexOAuth) && !state.terminalSeen) {
+            if (options.strictStream) {
+              controller.enqueue(encoder.encode(formatSse('error', strictProtocolError())))
+              controller.close()
+              return
+            }
             const error = new Error(
               `OpenAI Responses stream closed before response.completed (last event: ${state.lastUpstreamEvent ?? 'none'})`,
             ) as Error & { code: string }
@@ -173,9 +180,14 @@ export function openaiResponsesStreamToAnthropic(
 
           controller.close()
         } catch (error) {
-          if (!cancelled) controller.error(error)
+          if (!cancelled) {
+            if (options.strictStream) {
+              controller.enqueue(encoder.encode(formatSse('error', strictProtocolError())))
+              controller.close()
+            } else controller.error(error)
+          }
         } finally {
-          if (state.terminalSeen && !cancelled) {
+          if ((state.terminalSeen || options.strictStream) && !cancelled) {
             await reader.cancel('OpenAI Responses terminal event received').catch(() => {})
           }
           options.onSettled?.()
@@ -190,6 +202,12 @@ export function openaiResponsesStreamToAnthropic(
       await reader.cancel(reason).catch(() => {})
     },
   })
+}
+
+function strictProtocolError() {
+  // A protocol violation is not a retryable provider overload. An explicit SSE
+  // error survives the HTTP boundary; controller.error alone can look like EOF.
+  return { type: 'error', error: { type: 'invalid_request_error', message: 'Provider response was interrupted or invalid. Please retry the turn.' } }
 }
 
 function emitMessageStart(
@@ -264,7 +282,7 @@ function processEvent(
             input: {},
           },
         })))
-      } else if (item.type === 'reasoning' && !options.openAICodexOAuth) {
+      } else if (item.type === 'reasoning' && !(options.preserveReasoning ?? options.openAICodexOAuth)) {
         ensureReasoningBlock(data, state, controller, encoder)
       }
       break
@@ -274,7 +292,7 @@ function processEvent(
       const item = asRecord(data.item)
       if (!item || item.type !== 'reasoning') break
 
-      if (!options.openAICodexOAuth) {
+      if (!(options.preserveReasoning ?? options.openAICodexOAuth)) {
         closeReasoningBlock(data, state, controller, encoder)
         break
       }
@@ -317,7 +335,7 @@ function processEvent(
     }
 
     case 'response.reasoning_summary_part.added': {
-      if (!options.openAICodexOAuth) {
+      if (!(options.preserveReasoning ?? options.openAICodexOAuth)) {
         ensureReasoningBlock(data, state, controller, encoder)
       }
       break
@@ -325,7 +343,7 @@ function processEvent(
 
     case 'response.reasoning_summary_text.delta':
     case 'response.reasoning_text.delta': {
-      if (options.openAICodexOAuth) break
+      if ((options.preserveReasoning ?? options.openAICodexOAuth)) break
       const index = ensureReasoningBlock(data, state, controller, encoder)
       const delta = typeof data.delta === 'string' ? data.delta : ''
       if (!delta) break
@@ -412,7 +430,7 @@ function processEvent(
     }
 
     case 'response.incomplete':
-      if (!options.openAICodexOAuth) break
+      if (!(options.strictStream ?? options.openAICodexOAuth)) break
       state.terminalSeen = true
       if (readIncompleteReason(asRecord(data.response)) === 'max_output_tokens') {
         const response = asRecord(data.response)
@@ -427,16 +445,16 @@ function processEvent(
       }
       controller.enqueue(encoder.encode(formatSse('error', {
         type: 'error',
-        error: readStreamError(event, data),
+        error: options.strictStream ? strictProtocolError().error : readStreamError(event, data),
       })))
       return true
 
     case 'response.failed':
     case 'response.cancelled':
     case 'error': {
-      if (!options.openAICodexOAuth) break
+      if (!(options.strictStream ?? options.openAICodexOAuth)) break
       state.terminalSeen = true
-      const streamError = readStreamError(event, data)
+      const streamError = options.strictStream ? strictProtocolError().error : readStreamError(event, data)
       controller.enqueue(encoder.encode(formatSse('error', {
         type: 'error',
         error: streamError,

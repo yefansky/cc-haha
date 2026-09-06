@@ -108,6 +108,7 @@ export class ElectronServerRuntime {
   private readonly resolveSystemProxy?: (url: string) => Promise<string>
   private readonly localAccessToken = randomBytes(32).toString('base64url')
   private readonly petAccessToken = randomBytes(32).toString('base64url')
+  private readonly integrationToken = randomBytes(32).toString('base64url')
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private systemProxyBridge: SystemProxyBridgeLike | null = null
   private server: ActiveServer | null = null
@@ -152,6 +153,11 @@ export class ElectronServerRuntime {
 
   getLocalAccessToken(): string {
     return this.localAccessToken
+  }
+
+  /** Main-process use only. Never expose this through IPC or renderer bootstrap. */
+  getIntegrationToken(): string {
+    return this.integrationToken
   }
 
   getPetAccessToken(): string {
@@ -211,7 +217,10 @@ export class ElectronServerRuntime {
     const url = `http://${SERVER_CONTROL_HOST}:${port}`
     const logs: string[] = []
     let startState: ServerStartState | null = null
-    const env = this.withServerAccessTokens(await this.resolveSidecarBaseEnv())
+    const env = {
+      ...this.withServerAccessTokens(await this.resolveSidecarBaseEnv()),
+      CC_HAHA_DESKTOP_INTEGRATION_TOKEN: this.integrationToken,
+    }
     this.assertCurrentGeneration(generation)
     const plan = createServerPlan({
       desktopRoot: this.desktopRoot,
@@ -331,8 +340,9 @@ export class ElectronServerRuntime {
   }
 
   private withLocalAccessToken(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    const { CC_HAHA_DESKTOP_INTEGRATION_TOKEN: _integrationToken, ...safeEnv } = env
     return {
-      ...env,
+      ...safeEnv,
       CC_HAHA_LOCAL_ACCESS_TOKEN: this.localAccessToken,
     }
   }

@@ -184,6 +184,13 @@ function convertUserMessage(
         tool_call_id: block.tool_use_id,
         content: resultContent,
       })
+      if (Array.isArray(block.content)) {
+        for (const part of block.content) {
+          if (part.type !== 'image') continue
+          if (imageContentMode === 'text_only') textOnlyParts.push(OMITTED_IMAGE_TEXT)
+          else contentParts.push({ type: 'image_url', image_url: { url: `data:${part.source.media_type};base64,${part.source.data}` } })
+        }
+      }
     }
   }
 

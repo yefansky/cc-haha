@@ -15,6 +15,10 @@ describe('Electron IPC capabilities', () => {
   })
 
   it('rejects channels outside the desktop host contract', () => {
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.seasunLogin, undefined)).toBe(true)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.seasunLogin, { url: 'https://evil.test' })).toBe(false)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.seasunCancel, { attemptId: 'injected' })).toBe(false)
+    expect(isElectronIpcChannelAllowedForPetWindow(ELECTRON_IPC_CHANNELS.seasunLogin)).toBe(false)
     expect(isElectronIpcChannel(ELECTRON_IPC_CHANNELS.appGetVersion)).toBe(true)
     expect(isElectronIpcChannel(ELECTRON_IPC_CHANNELS.appGetLocalePreference)).toBe(true)
     expect(isElectronIpcChannel(ELECTRON_IPC_CHANNELS.appSetLocalePreference)).toBe(true)

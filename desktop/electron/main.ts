@@ -8,6 +8,7 @@ import {
   validateElectronIpcPayload,
 } from './ipc/capabilities'
 import { ElectronServerRuntime } from './services/serverRuntime'
+import { SeasunLoginService, createSeasunBackendRequest, isSeasunIpcSender } from './services/seasunLogin'
 import { appendHostDiagnostic, electronHostDiagnosticsFile, sanitizeHostDiagnostic } from './services/sidecarManager'
 import { openDialog, saveDialog } from './services/dialogs'
 import { openExternalUrl, openSystemPath, openSystemSettingsUrl } from './services/shell'
@@ -420,6 +421,25 @@ async function handleCommandInvoke(payload: unknown): Promise<unknown> {
 }
 
 function registerIpcHandlers() {
+  const seasunLogin = new SeasunLoginService({
+    createWindow: options => new BrowserWindow(options),
+    request: createSeasunBackendRequest(async () => {
+      const runtime = getServerRuntime()
+      return { serverUrl: await runtime.getServerUrl(), localToken: runtime.getLocalAccessToken(), integrationToken: runtime.getIntegrationToken() }
+    }),
+  })
+  const requireMainFrame = (event: Electron.IpcMainInvokeEvent) => {
+    if (!mainWindow || !isSeasunIpcSender(event, mainWindow, rendererEntry())) {
+      throw new Error('Seasun sign-in is only available in the main desktop window')
+    }
+    return mainWindow
+  }
+  registerHandler(ELECTRON_IPC_CHANNELS.seasunLogin, event => seasunLogin.login(requireMainFrame(event)))
+  registerHandler(ELECTRON_IPC_CHANNELS.seasunCancel, event => {
+    requireMainFrame(event)
+    return seasunLogin.cancel()
+  })
+  app.on('before-quit', () => { void seasunLogin.cancel() })
   ipcMain.on(ELECTRON_INTERNAL_CHANNELS.previewMessageFromView, (event, raw) => {
     void getPreviewService().sendMessageToRenderer(event.sender, raw, mainWindow?.webContents)
   })

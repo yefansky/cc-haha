@@ -61,8 +61,11 @@ import type {
 } from '../types/provider.js'
 import {
   BUILT_IN_PROVIDER_IDS,
+  SavedProviderSchema,
 } from '../types/provider.js'
-import { buildKsccTestRequest } from './ksccProtocol.js'
+import { providerIntegrations } from '../providerIntegrations/index.js'
+import type { ProviderIntegrationRegistry } from '../providerIntegrations/registry.js'
+import type { ProviderAuthorization } from '../providerIntegrations/types.js'
 
 const DEFAULT_INDEX: ProvidersIndex = {
   schemaVersion: CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
@@ -158,6 +161,8 @@ function appendNewProviderToOrder(providerOrder: string[], providerId: string, e
 export class ProviderService {
   private static serverPort = 3456
   private managedSettingsService = new ManagedSettingsService()
+
+  constructor(private readonly integrations: ProviderIntegrationRegistry = providerIntegrations) {}
 
   static setServerPort(port: number): void {
     ProviderService.serverPort = port
@@ -278,62 +283,27 @@ export class ProviderService {
     return imported
   }
 
-  async upsertKsccProvider(input: {
-    apiKey: string
-    baseUrl: string
-    modelCatalog: SavedProvider['modelCatalog']
-  }): Promise<SavedProvider> {
+  async upsertIntegratedProvider(integrationId: string, authorization: ProviderAuthorization): Promise<SavedProvider> {
+    const integration = this.integrations.get(integrationId)
+    if (!integration?.buildAuthorizedProvider) throw ApiError.badRequest('Provider integration does not accept authorization')
     const index = await this.readIndex()
-    const existingIndex = index.providers.findIndex((provider) => provider.presetId === 'kscc')
+    const existingIndex = index.providers.findIndex(provider => provider.presetId === integration.presetId)
     const existing = existingIndex === -1 ? undefined : index.providers[existingIndex]
-    const modelIds = new Set(input.modelCatalog?.map((model) => model.id) ?? [])
-    const model = existing && modelIds.has(existing.models.main)
-      ? existing.models.main
-      : input.modelCatalog?.find((value) => value.id.trim())?.id
-    if (!model) throw ApiError.badRequest('KSCC did not return any available models')
-
-    const models = {
-      main: model,
-      haiku: model,
-      sonnet: model,
-      opus: model,
+    const provider: SavedProvider = {
+      ...integration.buildAuthorizedProvider(authorization, existing),
+      id: existing?.id ?? crypto.randomUUID(),
+      presetId: integration.presetId,
     }
-    const provider: SavedProvider = existingIndex === -1
-      ? {
-          id: crypto.randomUUID(),
-          presetId: 'kscc',
-          name: 'KSCC',
-          apiKey: input.apiKey,
-          authStrategy: 'auth_token_empty_api_key',
-          baseUrl: input.baseUrl,
-          apiFormat: 'anthropic',
-          runtimeKind: 'anthropic_compatible',
-          models,
-          modelCatalog: input.modelCatalog,
-          toolSearchEnabled: true,
-          notes: 'Authorized through KSCC enterprise sign-in',
-        }
-      : {
-          ...index.providers[existingIndex],
-          name: 'KSCC',
-          apiKey: input.apiKey,
-          authStrategy: 'auth_token_empty_api_key',
-          baseUrl: input.baseUrl,
-          apiFormat: 'anthropic',
-          runtimeKind: 'anthropic_compatible',
-          models,
-          modelCatalog: input.modelCatalog,
-        }
-
+    SavedProviderSchema.parse(provider)
     if (existingIndex === -1) {
       index.providerOrder = appendNewProviderToOrder(index.providerOrder, provider.id, index.providers)
       index.providers.push(provider)
     } else {
       index.providers[existingIndex] = provider
     }
-    index.activeId = provider.id
+    if (integration.activateOnAuthorization) index.activeId = provider.id
     await this.writeIndex(index)
-    await this.syncToSettings(provider)
+    if (index.activeId === provider.id && !integration.saveOnlyOnAuthorization) await this.syncToSettings(provider)
     return provider
   }
 
@@ -480,8 +450,8 @@ export class ProviderService {
     })
   }
 
-  async getProviderRuntimeEnv(id: string): Promise<Record<string, string>> {
-    const provider = await this.getProvider(id)
+  async getProviderRuntimeEnv(id: string, resolvedProvider?: SavedProvider): Promise<Record<string, string>> {
+    const provider = resolvedProvider ?? await this.getProvider(id)
     return this.buildManagedEnv(provider, {
       proxyPath: `/proxy/providers/${provider.id}`,
     })
@@ -632,6 +602,8 @@ export class ProviderService {
     baseUrl: string
     apiKey: string
     apiFormat: ApiFormat
+    modelCatalog?: SavedProvider['modelCatalog']
+    presetId?: string
   } | null> {
     if (providerId) {
       if (isOpenAIOfficialProviderId(providerId) || isGrokOfficialProviderId(providerId)) {
@@ -644,6 +616,7 @@ export class ProviderService {
         baseUrl: provider.baseUrl,
         apiKey: provider.apiKey,
         apiFormat: provider.apiFormat ?? 'anthropic',
+        ...(provider.modelCatalog?.some(entry => entry.transport) ? { modelCatalog: provider.modelCatalog, presetId: provider.presetId } : {}),
       }
     }
 
@@ -660,6 +633,7 @@ export class ProviderService {
       baseUrl: provider.baseUrl,
       apiKey: provider.apiKey,
       apiFormat: provider.apiFormat ?? 'anthropic',
+      ...(provider.modelCatalog?.some(entry => entry.transport) ? { modelCatalog: provider.modelCatalog, presetId: provider.presetId } : {}),
     }
   }
 
@@ -691,9 +665,36 @@ export class ProviderService {
     if (!baseUrl || !apiKey) {
       return { connectivity: { success: false, latencyMs: 0, error: 'Missing baseUrl or apiKey' } }
     }
-    if (provider.presetId === 'kscc') {
-      return {
-        connectivity: await this.testKsccConnectivity(baseUrl, apiKey, normalizeModelStringForAPI(modelId)),
+    if (provider.modelCatalog?.some(entry => entry.transport)) {
+      const started = Date.now()
+      const { providerRuntimeSnapshots } = await import('../proxy/runtimeSnapshots.js')
+      const scope = providerRuntimeSnapshots.create(provider)
+      try {
+        const { handleProxyRequest } = await import('../proxy/handler.js')
+        const url = new URL(`http://localhost/proxy/scopes/${scope}/v1/messages`)
+        const response = await handleProxyRequest(new Request(url, { method: 'POST', body: JSON.stringify({ model: modelId, max_tokens: 64, messages: [{ role: 'user', content: 'Say ok.' }] }) }), url)
+        const body = await response.json().catch(() => null)
+        const success = response.ok && Array.isArray(body?.content) && body.content.some((part: { type?: string; text?: string }) => part.type === 'text' && !!part.text)
+        return { connectivity: { success, latencyMs: Date.now() - started, modelUsed: modelId, httpStatus: response.status, ...(!success ? { error: 'Provider returned no completed text response' } : {}) } }
+      } catch {
+        return { connectivity: { success: false, latencyMs: Date.now() - started, error: 'Provider connectivity check failed', modelUsed: modelId } }
+      } finally { providerRuntimeSnapshots.release(scope) }
+    }
+    const integration = this.integrations.forPreset(provider.presetId)
+    if (integration?.testConnectivity) {
+      try {
+        const result = await integration.testConnectivity({ baseUrl, apiKey, modelId: normalizeModelStringForAPI(modelId) })
+        return {
+          connectivity: {
+            success: result.success,
+            latencyMs: result.latencyMs,
+            modelUsed: result.modelUsed,
+            httpStatus: result.httpStatus,
+            error: result.error?.replaceAll(apiKey, '[redacted]').replaceAll(encodeURIComponent(apiKey), '[redacted]'),
+          },
+        }
+      } catch {
+        return { connectivity: { success: false, latencyMs: 0, error: 'Provider connectivity check failed' } }
       }
     }
     return this.testProviderConfig({
@@ -703,65 +704,6 @@ export class ProviderService {
       authStrategy,
       apiFormat,
     })
-  }
-
-  /** KSCC validates its own client protocol and only exposes a streaming endpoint. */
-  private async testKsccConnectivity(
-    baseUrl: string,
-    apiKey: string,
-    modelId: string,
-  ): Promise<ProviderTestStepResult> {
-    const start = Date.now()
-    const networkSettings = await loadNetworkSettings()
-    const request = buildKsccTestRequest(baseUrl, apiKey, modelId)
-    try {
-      const response = await fetch(request.url, {
-        method: 'POST',
-        headers: request.headers,
-        body: JSON.stringify(request.body),
-        signal: AbortSignal.timeout(networkSettings.aiRequestTimeoutMs),
-        ...getNetworkProxyFetchOptions(networkSettings, request.url),
-      })
-      const latencyMs = Date.now() - start
-      const responseText = await response.text().catch(() => '')
-      if (!response.ok) {
-        let error = `HTTP ${response.status}`
-        try {
-          const parsed = JSON.parse(responseText) as { error?: { message?: string } }
-          error = parsed.error?.message || error
-        } catch {
-          if (responseText.trim()) error = responseText.trim().slice(0, 200)
-        }
-        return { success: false, latencyMs, error, modelUsed: modelId, httpStatus: response.status }
-      }
-
-      if (!responseText.includes('"type":"message_start"')) {
-        return {
-          success: false,
-          latencyMs,
-          error: 'KSCC returned 200 but no valid message stream',
-          modelUsed: modelId,
-          httpStatus: response.status,
-        }
-      }
-      return { success: true, latencyMs, modelUsed: modelId, httpStatus: response.status }
-    } catch (err: unknown) {
-      const latencyMs = Date.now() - start
-      if (err instanceof DOMException && err.name === 'TimeoutError') {
-        return {
-          success: false,
-          latencyMs,
-          error: `Request timed out (${Math.round(networkSettings.aiRequestTimeoutMs / 1000)}s)`,
-          modelUsed: modelId,
-        }
-      }
-      return {
-        success: false,
-        latencyMs,
-        error: err instanceof Error ? err.message : String(err),
-        modelUsed: modelId,
-      }
-    }
   }
 
   async testProviderConfig(input: TestProviderInput): Promise<ProviderTestResult> {

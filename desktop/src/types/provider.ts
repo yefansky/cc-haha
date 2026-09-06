@@ -48,6 +48,11 @@ export type ProviderModelCatalogEntry = {
   name?: string
   description?: string
   capabilities: ProviderModelCapability[]
+  transport?: {
+    apiFormat: ApiFormat
+    endpoint: string
+    features?: { preserveReasoning?: boolean; strictStream?: boolean }
+  }
 }
 
 export type SavedProvider = {

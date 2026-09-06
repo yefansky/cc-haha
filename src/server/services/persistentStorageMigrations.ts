@@ -7,7 +7,9 @@ import { isOpenAIOfficialProviderId } from './openaiOfficialProvider.js'
 import { isGrokOfficialProviderId } from './grokOfficialProvider.js'
 import { BUILT_IN_PROVIDER_IDS } from '../types/provider.js'
 
-export const CURRENT_PROVIDER_INDEX_SCHEMA_VERSION = 3
+// v4 adds optional per-model transport. Existing entries remain protocol-default;
+// migration below preserves their complete objects and unknown fields.
+export const CURRENT_PROVIDER_INDEX_SCHEMA_VERSION = 4
 
 type MigrationReport = {
   migratedEntries: string[]

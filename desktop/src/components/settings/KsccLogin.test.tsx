@@ -8,7 +8,7 @@ const { openMock, startMock, statusMock } = vi.hoisted(() => ({
   statusMock: vi.fn(),
 }))
 
-vi.mock('../../api/ksccOAuth', () => ({
+vi.mock('@/providerBusinesses/kscc/api', () => ({
   ksccOAuthApi: { start: startMock, status: statusMock },
 }))
 
@@ -53,10 +53,10 @@ describe('KsccLogin', () => {
   })
 
   afterEach(() => {
+    cleanup()
     act(() => useKsccOAuthStore.getState().stopPolling())
     useKsccOAuthStore.setState(initialState)
     useProviderStore.setState(initialProviderState)
-    cleanup()
     vi.restoreAllMocks()
   })
 

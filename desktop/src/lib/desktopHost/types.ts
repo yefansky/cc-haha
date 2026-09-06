@@ -3,6 +3,7 @@ import type {
   AppModeConfig as SettingsAppModeConfig,
 } from '../../types/settings'
 import type { Locale } from '../../i18n/locale'
+import type { SeasunStatus } from '../../providerBusinesses/seasun/types'
 
 export type DesktopHostKind = 'browser' | 'electron'
 
@@ -267,6 +268,12 @@ export type AppModeSetInput = {
 }
 
 export type DesktopHost = {
+  providerBusinesses?: {
+    seasun: {
+      login(): Promise<SeasunStatus>
+      cancel(): Promise<SeasunStatus>
+    }
+  }
   kind: DesktopHostKind
   isDesktop: boolean
   capabilities: DesktopHostCapabilities

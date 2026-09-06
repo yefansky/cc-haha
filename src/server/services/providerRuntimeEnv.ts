@@ -230,6 +230,7 @@ function normalizeModelCatalog(value: unknown): ProviderModelCatalogEntry[] | un
         )
       : []
     byId.set(id, {
+      ...rawEntry,
       id,
       ...(typeof rawEntry.name === 'string' && rawEntry.name.trim()
         ? { name: rawEntry.name.trim() }
@@ -238,6 +239,7 @@ function normalizeModelCatalog(value: unknown): ProviderModelCatalogEntry[] | un
         ? { description: rawEntry.description }
         : {}),
       capabilities: [...new Set(capabilities)],
+      ...(rawEntry.transport !== undefined ? { transport: rawEntry.transport as ProviderModelCatalogEntry['transport'] } : {}),
     })
   }
   return byId.size > 0 ? [...byId.values()] : undefined
@@ -456,7 +458,7 @@ export function buildProviderManagedEnv(
   }
 
   const apiFormat: ApiFormat = provider.apiFormat ?? 'anthropic'
-  const needsProxy = apiFormat !== 'anthropic'
+  const needsProxy = apiFormat !== 'anthropic' || !!provider.modelCatalog?.some(entry => entry.transport)
   const proxyPath = options?.proxyPath ?? '/proxy'
   const serverPort = options?.serverPort ?? 3456
   const baseUrl = needsProxy

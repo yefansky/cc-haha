@@ -1,3 +1,4 @@
+import { applyProviderRequestHeaders } from '../providerRuntime/index.js'
 import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import type { GoogleAuth } from 'google-auth-library'
@@ -144,7 +145,7 @@ export function resolveManagedProviderProxyAccessToken({
     const basePathname = base.pathname.replace(/\/+$/, '') || '/'
     const requestPathname = request.pathname.replace(/\/+$/, '') || '/'
     const isManagedProxyPath = basePathname === '/proxy' ||
-      /^\/proxy\/providers\/[^/]+$/.test(basePathname)
+      /^\/proxy\/(?:providers|scopes)\/[^/]+$/.test(basePathname)
     const isRequestWithinProxy = request.origin === base.origin &&
       (
         requestPathname === basePathname ||
@@ -518,18 +519,7 @@ function buildFetch(
     // the desktop credential and prevents that credential from reaching the
     // real provider; the server adds the upstream provider key itself.
     const requestUrl = input instanceof Request ? input.url : String(input)
-    if (process.env.CC_HAHA_KSCC_PROTOCOL === '1') {
-      try {
-        const ksccHeaders = JSON.parse(process.env.CC_HAHA_KSCC_HEADERS || '{}') as Record<string, unknown>
-        for (const [name, value] of Object.entries(ksccHeaders)) {
-          if (typeof value === 'string') headers.set(name, value)
-        }
-      } catch {
-        // Invalid host metadata should surface as an upstream auth error, not crash fetch.
-      }
-      // Native KSCC creates this value for every API call, not once per process.
-      headers.set('X-KSC-REQUEST-ID', randomUUID())
-    }
+    applyProviderRequestHeaders(headers, process.env)
     const localProxyToken = resolveManagedProviderProxyAccessToken({ requestUrl })
     if (localProxyToken) {
       headers.set('Authorization', `Bearer ${localProxyToken}`)

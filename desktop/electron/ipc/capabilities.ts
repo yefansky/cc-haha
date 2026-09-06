@@ -216,6 +216,8 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appSetLocalePreference]: localePreference,
   [ELECTRON_IPC_CHANNELS.appGetPreferredSystemLanguages]: noPayload,
   [ELECTRON_IPC_CHANNELS.runtimeGetServerUrl]: noPayload,
+  [ELECTRON_IPC_CHANNELS.seasunLogin]: noPayload,
+  [ELECTRON_IPC_CHANNELS.seasunCancel]: noPayload,
   [ELECTRON_IPC_CHANNELS.runtimeGetLocalAccessToken]: noPayload,
   [ELECTRON_IPC_CHANNELS.runtimeGetPetAccessToken]: noPayload,
   [ELECTRON_IPC_CHANNELS.commandInvoke]: commandInvoke,

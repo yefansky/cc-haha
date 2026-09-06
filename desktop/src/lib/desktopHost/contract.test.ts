@@ -6,6 +6,7 @@ import { createDesktopHost, detectDesktopHostEnvironment } from './index'
 describe('desktop host contract', () => {
   it('keeps browser fallback explicit for non-desktop runtimes', () => {
     expect(browserHost.kind).toBe('browser')
+    expect(browserHost.providerBusinesses?.seasun).toBeUndefined()
     expect(browserHost.isDesktop).toBe(false)
     expect(browserHost.capabilities).toEqual({
       appMode: false,

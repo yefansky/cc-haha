@@ -94,11 +94,18 @@ function createState(model: string): StreamState {
 export function openaiChatStreamToAnthropic(
   upstream: ReadableStream<Uint8Array>,
   model: string,
+  options: { strictStream?: boolean } = {},
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   let buffer = ''
   const state = createState(model)
+  const choicesSeen = new Set<number>()
+  const choicesFinished = new Set<number>()
+  let doneSeen = false
+  const assertFinished = () => {
+    if (options.strictStream && (!choicesSeen.size || [...choicesSeen].some(index => !choicesFinished.has(index)))) throw new Error('Upstream Chat stream ended without completed choices')
+  }
 
   return new ReadableStream({
     async start(controller) {
@@ -119,29 +126,50 @@ export function openaiChatStreamToAnthropic(
             if (!trimmed || trimmed.startsWith(':')) continue
 
             if (trimmed === 'data: [DONE]') {
+              assertFinished()
+              doneSeen = true
               finalizeStream(state)
               flushQueue(state, controller, encoder)
               continue
             }
 
-            if (!trimmed.startsWith('data: ')) continue
-            const jsonStr = trimmed.slice(6)
+            if (!trimmed.startsWith('data:')) continue
+            const jsonStr = trimmed.slice(5).trimStart()
 
             let chunk: OpenAIChatStreamChunk
             try {
               chunk = JSON.parse(jsonStr)
             } catch {
+              if (options.strictStream) throw new Error('Invalid upstream Chat stream JSON')
               continue
             }
 
-            processChunk(chunk, state)
+            if (options.strictStream) {
+              if ('error' in chunk || doneSeen) throw new Error('Upstream Chat stream failed')
+              for (const choice of chunk.choices ?? []) {
+                if (choicesFinished.has(choice.index) && Object.values(choice.delta ?? {}).some(value => value !== undefined && value !== null && value !== '')) throw new Error('Chat data arrived after choice completed')
+                choicesSeen.add(choice.index)
+                if (choice.finish_reason) choicesFinished.add(choice.index)
+              }
+              // Anthropic has one answer stream; additional choices cannot be merged safely.
+              if ([...choicesSeen].some(index => index !== 0)) throw new Error('Multiple Chat choices cannot be represented')
+            }
+
+            processChunk(chunk, state, options.strictStream)
             flushQueue(state, controller, encoder)
           }
         }
+        assertFinished()
       } catch (err) {
         errored = true
-        controller.error(err)
+        if (options.strictStream) {
+          controller.enqueue(encoder.encode(formatSse('error', {
+            type: 'error', error: { type: 'invalid_request_error', message: 'Provider response was interrupted or invalid. Please retry the turn.' },
+          })))
+          controller.close()
+        } else controller.error(err)
       } finally {
+        await reader.cancel().catch(() => {})
         if (!errored) {
           finalizeStream(state)
           flushQueue(state, controller, encoder)
@@ -327,7 +355,7 @@ function detectBlockTransition(
 
 // ─── Main chunk processing ─────────────────────────────────
 
-function processChunk(chunk: OpenAIChatStreamChunk, state: StreamState): void {
+function processChunk(chunk: OpenAIChatStreamChunk, state: StreamState, strictStream = false): void {
   const choice = chunk.choices?.[0]
 
   // Handle chunks with empty/missing choices (some providers send these)
@@ -373,6 +401,15 @@ function processChunk(chunk: OpenAIChatStreamChunk, state: StreamState): void {
 
   // Handle finish_reason
   if (choice.finish_reason) {
+    // Validate after applying this chunk's final argument delta, but before
+    // handleFinishReason closes blocks and clears their assembly state.
+    if (strictStream && choice.finish_reason === 'tool_calls') {
+      if (!state.toolBlocks.size) throw new Error('Chat tool completion has no tool calls')
+      for (const tool of state.toolBlocks.values()) {
+        if (!tool.id || !tool.name) throw new Error('Chat tool identity is incomplete')
+        try { JSON.parse(tool.argsBuffer) } catch { throw new Error('Chat tool arguments are incomplete') }
+      }
+    }
     handleFinishReason(choice.finish_reason, chunk, state)
   }
 }

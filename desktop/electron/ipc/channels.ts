@@ -1,4 +1,6 @@
 export const ELECTRON_IPC_CHANNELS = {
+  seasunLogin: 'desktop:seasun:login',
+  seasunCancel: 'desktop:seasun:cancel',
   appGetVersion: 'desktop:app:get-version',
   appGetLocalePreference: 'desktop:app:get-locale-preference',
   appSetLocalePreference: 'desktop:app:set-locale-preference',

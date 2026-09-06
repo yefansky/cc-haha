@@ -10,6 +10,9 @@
  */
 
 import { ProviderService } from '../services/providerService.js'
+import { providerRuntimeSnapshots } from './runtimeSnapshots.js'
+import { resolveModelTransport, resolveProtocolEndpoint } from './modelTransport.js'
+import type { ProviderModelTransport } from '../types/provider.js'
 import { resolvePromptCacheKey } from './promptCacheKey.js'
 import { anthropicToOpenaiChat } from './transform/anthropicToOpenaiChat.js'
 import { anthropicToOpenaiResponses } from './transform/anthropicToOpenaiResponses.js'
@@ -158,11 +161,12 @@ export function withStreamIdleTimeout(
 
 export async function handleProxyRequest(req: Request, url: URL): Promise<Response> {
   const providerMatch = url.pathname.match(/^\/proxy\/providers\/([^/]+)\/v1\/messages$/)
+  const scopeMatch = url.pathname.match(/^\/proxy\/scopes\/([^/]+)\/v1\/messages$/)
   const providerId = providerMatch ? decodeURIComponent(providerMatch[1]!) : undefined
   const isActiveProxyPath = url.pathname === '/proxy/v1/messages'
 
   // Only handle POST /proxy/v1/messages or POST /proxy/providers/:providerId/v1/messages
-  if (req.method !== 'POST' || (!isActiveProxyPath && !providerMatch)) {
+  if (req.method !== 'POST' || (!isActiveProxyPath && !providerMatch && !scopeMatch)) {
     return Response.json(
       {
         error: 'Not Found',
@@ -173,7 +177,7 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
   }
 
   // Read active/default provider config or an explicitly-scoped provider config.
-  const config = await providerService.getProviderForProxy(providerId)
+  const config = scopeMatch ? providerRuntimeSnapshots.read(scopeMatch[1]!) : await providerService.getProviderForProxy(providerId)
   if (!config) {
     return Response.json(
       {
@@ -189,7 +193,7 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
     )
   }
 
-  if (config.apiFormat === 'anthropic') {
+  if (config.apiFormat === 'anthropic' && !config.modelCatalog?.some(entry => entry.transport)) {
     return Response.json(
       {
         type: 'error',
@@ -227,12 +231,22 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
   const promptCacheKey = resolvePromptCacheKey(body, req.headers.get('x-claude-code-session-id'))
 
   try {
-    if (config.apiFormat === 'openai_chat') {
-      return await handleOpenaiChat(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext)
+    const transport = resolveModelTransport(config, body.model)
+    const format = transport?.apiFormat ?? config.apiFormat
+    if (format === 'anthropic' && transport) {
+      const upstream = await fetchUpstreamWithTimeout(transport.endpoint, {
+        method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', Authorization: `Bearer ${config.apiKey}` },
+        body: JSON.stringify(body), ...getNetworkProxyFetchOptions(networkSettings, transport.endpoint),
+      }, networkSettings.aiRequestTimeoutMs, isStream)
+      return new Response(isStream && upstream.body ? withStreamIdleTimeout(upstream.body, networkSettings.aiRequestTimeoutMs) : upstream.body, { status: upstream.status, headers: { 'content-type': upstream.headers.get('content-type') ?? 'application/json' } })
+    }
+    if (format === 'openai_chat') {
+      return await handleOpenaiChat(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, transport)
     } else {
-      return await handleOpenaiResponses(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, promptCacheKey)
+      return await handleOpenaiResponses(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, promptCacheKey, transport)
     }
   } catch (err) {
+    if (config.modelCatalog?.some(entry => entry.transport)) err = new Error('Provider protocol request failed')
     if (traceContext && !wasTraceErrorRecorded(err)) {
       void recordProxyTrace({
         context: traceContext,
@@ -265,14 +279,15 @@ async function handleOpenaiChat(
   isStream: boolean,
   networkSettings: NetworkSettings,
   traceContext: ProxyTraceContext | null,
+  transport?: ProviderModelTransport,
 ): Promise<Response> {
   const deepSeekCompatible = shouldUseDeepSeekReasoningCompat(baseUrl)
   const transformed = anthropicToOpenaiChat(body, {
-    roundTripReasoningContent: deepSeekCompatible,
+    roundTripReasoningContent: transport?.features?.preserveReasoning ?? deepSeekCompatible,
     passThinkingToggle: deepSeekCompatible,
     imageContentMode: shouldUseTextOnlyOpenAIChatContent(baseUrl) ? 'text_only' : 'vision',
   })
-  const url = `${baseUrl}/v1/chat/completions`
+  const url = transport?.endpoint ?? resolveProtocolEndpoint(baseUrl, 'openai_chat')
   const upstreamRequestHeaders = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`,
@@ -295,6 +310,7 @@ async function handleOpenaiChat(
   try {
     upstream = await fetchUpstreamWithTimeout(url, {
       method: 'POST',
+      ...(transport ? { redirect: 'error' as const } : {}),
       headers: upstreamRequestHeaders,
       body: JSON.stringify(transformed),
       ...proxyOptions,
@@ -318,7 +334,8 @@ async function handleOpenaiChat(
   }
 
   if (!upstream.ok) {
-    const errText = await upstream.text().catch(() => '')
+    const rawError = await upstream.text().catch(() => '')
+    const errText = transport ? rawError.replaceAll(apiKey, '[redacted]').replaceAll(encodeURIComponent(apiKey), '[redacted]') : rawError
     const errorBody = {
       type: 'error',
       error: {
@@ -369,7 +386,7 @@ async function handleOpenaiChat(
       )
     }
     const upstreamBody = withStreamIdleTimeout(upstream.body, networkSettings.aiRequestTimeoutMs)
-    const anthropicStream = openaiChatStreamToAnthropic(upstreamBody, body.model)
+    const anthropicStream = openaiChatStreamToAnthropic(upstreamBody, body.model, { strictStream: transport?.features?.strictStream })
     const tracedStream = traceContext
       ? captureTraceStream(anthropicStream, async (bodySnapshot, error) => {
           await recordProxyTrace({
@@ -439,9 +456,11 @@ async function handleOpenaiResponses(
   networkSettings: NetworkSettings,
   traceContext: ProxyTraceContext | null,
   promptCacheKey?: string,
+  transport?: ProviderModelTransport,
 ): Promise<Response> {
-  const transformed = anthropicToOpenaiResponses(body, { cacheKey: promptCacheKey })
-  const url = `${baseUrl}/v1/responses`
+  const transformed = anthropicToOpenaiResponses(body, { cacheKey: promptCacheKey, preserveOpenAIReasoning: transport?.features?.preserveReasoning })
+  if (transport?.features?.preserveReasoning) transformed.include = ['reasoning.encrypted_content']
+  const url = transport?.endpoint ?? resolveProtocolEndpoint(baseUrl, 'openai_responses')
   const upstreamRequestHeaders = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`,
@@ -464,6 +483,7 @@ async function handleOpenaiResponses(
   try {
     upstream = await fetchUpstreamWithTimeout(url, {
       method: 'POST',
+      ...(transport ? { redirect: 'error' as const } : {}),
       headers: upstreamRequestHeaders,
       body: JSON.stringify(transformed),
       ...proxyOptions,
@@ -487,7 +507,8 @@ async function handleOpenaiResponses(
   }
 
   if (!upstream.ok) {
-    const errText = await upstream.text().catch(() => '')
+    const rawError = await upstream.text().catch(() => '')
+    const errText = transport ? rawError.replaceAll(apiKey, '[redacted]').replaceAll(encodeURIComponent(apiKey), '[redacted]') : rawError
     const errorBody = {
       type: 'error',
       error: {
@@ -538,7 +559,7 @@ async function handleOpenaiResponses(
       )
     }
     const upstreamBody = withStreamIdleTimeout(upstream.body, networkSettings.aiRequestTimeoutMs)
-    const anthropicStream = openaiResponsesStreamToAnthropic(upstreamBody, body.model)
+    const anthropicStream = openaiResponsesStreamToAnthropic(upstreamBody, body.model, { strictStream: transport?.features?.strictStream, preserveReasoning: transport?.features?.preserveReasoning })
     const tracedStream = traceContext
       ? captureTraceStream(anthropicStream, async (bodySnapshot, error) => {
           await recordProxyTrace({
@@ -569,7 +590,8 @@ async function handleOpenaiResponses(
 
   // Non-streaming
   const responseBody = await upstream.json()
-  const anthropicResponse = openaiResponsesToAnthropic(responseBody, body.model)
+  if (transport?.features?.strictStream && responseBody.status !== 'completed') throw new Error('Upstream response did not complete')
+  const anthropicResponse = openaiResponsesToAnthropic(responseBody, body.model, { preserveOpenAIReasoning: transport?.features?.preserveReasoning })
   if (traceContext) {
     recordProxyTraceInBackground({
       callId: traceCallId,

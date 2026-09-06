@@ -11,6 +11,7 @@ import {
   type ElectronIpcChannel,
 } from '../../../electron/ipc/channels'
 import { validateElectronIpcPayload } from '../../../electron/ipc/capabilities'
+import { parseSeasunStatus } from '../../providerBusinesses/seasun/types'
 
 export type ElectronHostBridge = {
   invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T>
@@ -77,6 +78,12 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
     runtime: {
       getServerUrl: () => invoke(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl),
       getLocalAccessToken: () => invoke(ELECTRON_IPC_CHANNELS.runtimeGetLocalAccessToken),
+    },
+    providerBusinesses: {
+      seasun: {
+        login: async () => parseSeasunStatus(await invoke(ELECTRON_IPC_CHANNELS.seasunLogin)),
+        cancel: async () => parseSeasunStatus(await invoke(ELECTRON_IPC_CHANNELS.seasunCancel)),
+      },
     },
     app: {
       getVersion: () => invoke(ELECTRON_IPC_CHANNELS.appGetVersion),

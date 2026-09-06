@@ -72,11 +72,18 @@ export const ProviderModelCapabilitySchema = z.enum([
   'adaptive_thinking',
   'interleaved_thinking',
 ])
+export const ProviderModelTransportSchema = z.object({
+  apiFormat: ApiFormatSchema,
+  endpoint: z.string().url(),
+  features: z.object({ preserveReasoning: z.boolean().optional(), strictStream: z.boolean().optional() }).passthrough().optional(),
+}).passthrough()
+export type ProviderModelTransport = z.infer<typeof ProviderModelTransportSchema>
 export const ProviderModelCatalogEntrySchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1).optional(),
   description: z.string().optional(),
   capabilities: z.array(ProviderModelCapabilitySchema).default([]),
+  transport: ProviderModelTransportSchema.optional(),
 })
 export const ProviderModelCatalogSchema = z.array(ProviderModelCatalogEntrySchema)
 export const ToolSearchEnabledSchema = z.boolean()

@@ -57,6 +57,22 @@ describe('resolveAnthropicClientApiKey', () => {
 })
 
 describe('resolveManagedProviderProxyAccessToken', () => {
+  test('authenticates only requests inside the owned runtime snapshot scope', async () => {
+    const { resolveManagedProviderProxyAccessToken } = await import('./client.js')
+    const baseUrl = 'http://127.0.0.1:3456/proxy/scopes/snapshot-1'
+    const input = { providerManagedByHost: '1', apiKey: 'proxy-managed', baseUrl, localAccessToken: 'scope-local-secret' }
+    expect(resolveManagedProviderProxyAccessToken({ ...input, requestUrl: `${baseUrl}/v1/messages` })).toBe('scope-local-secret')
+    for (const requestUrl of [
+      'http://127.0.0.1:3456/proxy/scopes/snapshot-2/v1/messages',
+      'http://127.0.0.1:3456/proxy/scopes/snapshot-1-other/v1/messages',
+      'http://127.0.0.1:3457/proxy/scopes/snapshot-1/v1/messages',
+      'https://example.test/proxy/scopes/snapshot-1/v1/messages',
+    ]) expect(resolveManagedProviderProxyAccessToken({ ...input, requestUrl })).toBeNull()
+    for (const unowned of ['http://127.0.0.1:3456/proxy/scopes', `${baseUrl}/extra`, `${baseUrl}?token=x`, 'http://localhost:3456/proxy/scopes/snapshot-1']) {
+      expect(resolveManagedProviderProxyAccessToken({ ...input, baseUrl: unowned })).toBeNull()
+    }
+  })
+
   test('returns the desktop local credential only for the host-managed loopback proxy', async () => {
     const { resolveManagedProviderProxyAccessToken } = await import('./client.js')
     const input = {

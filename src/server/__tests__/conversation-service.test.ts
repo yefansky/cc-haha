@@ -837,6 +837,56 @@ describe('ConversationService', () => {
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined()
   })
 
+  test('buildChildEnv clears registered business env when switching from KSCC to an ordinary provider', async () => {
+    const previousProtocol = process.env.CC_HAHA_KSCC_PROTOCOL
+    const previousHeaders = process.env.CC_HAHA_KSCC_HEADERS
+    try {
+      const providerService = new ProviderService()
+      const kscc = await providerService.addProvider({
+        presetId: 'kscc', name: 'KSCC', apiKey: 'kscc-token', baseUrl: 'http://kscc.test',
+        apiFormat: 'anthropic', models: { main: 'kscc-model', haiku: '', sonnet: '', opus: '' },
+      })
+      const ordinary = await providerService.addProvider({
+        presetId: 'custom', name: 'Ordinary', apiKey: 'ordinary-token', baseUrl: 'https://ordinary.test',
+        apiFormat: 'anthropic', models: { main: 'ordinary-model', haiku: '', sonnet: '', opus: '' },
+      })
+      const service = new ConversationService() as any
+      const ksccEnv = await service.buildChildEnv('/tmp', undefined, { providerId: kscc.id })
+      process.env.CC_HAHA_KSCC_PROTOCOL = ksccEnv.CC_HAHA_KSCC_PROTOCOL
+      process.env.CC_HAHA_KSCC_HEADERS = ksccEnv.CC_HAHA_KSCC_HEADERS
+      const ordinaryEnv = await service.buildChildEnv('/tmp', undefined, { providerId: ordinary.id })
+      expect(ordinaryEnv.CC_HAHA_KSCC_PROTOCOL).toBeUndefined()
+      expect(ordinaryEnv.CC_HAHA_KSCC_HEADERS).toBeUndefined()
+      expect(ordinaryEnv.ANTHROPIC_MODEL).toBe('ordinary-model')
+      expect(ksccEnv.CC_HAHA_KSCC_PROTOCOL).toBe('1')
+      expect(ksccEnv.ANTHROPIC_MODEL).toBe('kscc-model')
+    } finally {
+      if (previousProtocol === undefined) delete process.env.CC_HAHA_KSCC_PROTOCOL
+      else process.env.CC_HAHA_KSCC_PROTOCOL = previousProtocol
+      if (previousHeaders === undefined) delete process.env.CC_HAHA_KSCC_HEADERS
+      else process.env.CC_HAHA_KSCC_HEADERS = previousHeaders
+    }
+  })
+
+  test('explicit and default multi-protocol env use one immutable provider resolution across reauthorization', async () => {
+    const providers = new ProviderService()
+    const modelCatalog = [{ id: 'r', capabilities: [] as [], transport: { apiFormat: 'openai_responses' as const, endpoint: 'https://aihub.seasungame.com/airoute/responses' } }]
+    const provider = await providers.upsertIntegratedProvider('seasun', { apiKey: 'first-snapshot-key', baseUrl: '', modelCatalog })
+    await providers.activateProvider(provider.id)
+    const service = new ConversationService() as any
+    for (const providerId of [provider.id, undefined, null]) {
+      const metadata = { firstTokenTimeoutDerived: false, providerSnapshot: undefined as any }
+      const env = await service.buildChildEnv(tmpDir, undefined, { providerId, model: 'r' }, undefined, metadata)
+      expect(metadata.providerSnapshot.id).toBe(provider.id)
+      expect(metadata.providerSnapshot.apiKey).toBe('first-snapshot-key')
+      expect(env.ANTHROPIC_BASE_URL).toContain(`/proxy/providers/${provider.id}`)
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+      await providers.upsertIntegratedProvider('seasun', { apiKey: 'new-key', baseUrl: '', modelCatalog })
+      expect(metadata.providerSnapshot.apiKey).toBe('first-snapshot-key')
+      await providers.upsertIntegratedProvider('seasun', { apiKey: 'first-snapshot-key', baseUrl: '', modelCatalog })
+    }
+  })
+
   test('buildChildEnv injects trace provider metadata for desktop sdk session-scoped providers', async () => {
     const providerService = new ProviderService()
     const provider = await providerService.addProvider({
