@@ -868,6 +868,27 @@ describe('EmptySession', () => {
     })
   })
 
+  it('retains the submitted first turn until its provider pair is acknowledged', async () => {
+    useSessionRuntimeStore.getState().setSelection('__draft__', { providerId: 'synthetic-b', modelId: 'shared' })
+    render(<EmptySession />)
+    setComposerText('first turn retained', 19)
+    fireEvent.click(screen.getByRole('button', { name: /Run/i }))
+    await waitFor(() => expect(useChatStore.getState().sessions['draft-session']?.queuedUserMessages).toHaveLength(1))
+    expect(mocks.wsSend.mock.calls.some(call => call[1]?.type === 'user_message')).toBe(false)
+    const pending = useChatStore.getState().sessions['draft-session']!.pendingRuntimeConfig!
+    act(() => useChatStore.getState().handleServerMessage('draft-session', {
+      type: 'runtime_config_failed', requestId: pending.requestId, ...pending.selection, code: 'RUNTIME_CONFIG_INVALID',
+    }))
+    expect(useChatStore.getState().sessions['draft-session']!.queuedUserMessages?.[0]?.content).toBe('first turn retained')
+    act(() => useChatStore.getState().setSessionRuntime('draft-session', pending.selection))
+    const retry = useChatStore.getState().sessions['draft-session']!.pendingRuntimeConfig!
+    act(() => useChatStore.getState().handleServerMessage('draft-session', {
+      type: 'runtime_config_applied', requestId: retry.requestId, ...retry.selection,
+    }))
+    expect(mocks.wsSend).toHaveBeenCalledWith('draft-session', expect.objectContaining({ type: 'user_message', content: 'first turn retained' }))
+    expect(useChatStore.getState().sessions['draft-session']!.queuedUserMessages).toHaveLength(0)
+  })
+
   it('sends a selected @ directory as an inline @"path" in the first draft message', async () => {
     mocks.search.mockResolvedValueOnce({
       currentPath: '/workspace/project',
@@ -893,7 +914,12 @@ describe('EmptySession', () => {
     await waitFor(() => {
       expect(mocks.createSession).toHaveBeenCalled()
     })
+    const pending = useChatStore.getState().sessions['draft-session']?.pendingRuntimeConfig
+    if (pending) {
+      act(() => useChatStore.getState().handleServerMessage('draft-session', { type: 'runtime_config_applied', requestId: pending.requestId, ...pending.selection }))
+    }
     expect(mocks.wsSend).toHaveBeenCalledWith('draft-session', {
+      messageUuid: expect.any(String),
       type: 'user_message',
       content: '@"/workspace/project/backend" 讲一下这个目录。',
       attachments: [],

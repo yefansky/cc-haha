@@ -277,6 +277,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const pendingPermissionMode = activeTabId ? pendingPermissionBySession[activeTabId] : undefined
   const displayedPermissionMode = pendingPermissionMode ?? activePermissionMode
   const pendingModelLabel = runtimeModelLabel ?? t('model.selectModel')
+  const runtimeSwitchBlocked = !!(sessionState?.pendingRuntimeConfig || sessionState?.runtimeConfigError)
   const isBypassWarningVisible = activeTabId &&
     !dismissedBypassWarningBySession[activeTabId] &&
     (displayedPermissionMode === 'bypassPermissions' || runningConfig?.permissionMode === 'bypassPermissions')
@@ -319,7 +320,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const pendingSlashUiAction = !isMemberSession && input.trim().startsWith('/')
     ? resolveSlashUiAction(input.trim().slice(1))
     : null
-  const canSubmit = !isWorkspaceMissing &&
+  const canSubmit = !runtimeSwitchBlocked && !isWorkspaceMissing &&
     !launchTransitioning &&
     (!showLaunchControls || launchReady || !!pendingSlashUiAction) &&
     (input.trim().length > 0 || (!isMemberSession && (attachments.length > 0 || hasWorkspaceReferences)))
@@ -762,6 +763,8 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   }, [activeTabId, replaceEmptySession, t, updateRepositoryLaunchDraft])
 
   const handleSubmit = async () => {
+    const runtimeState = activeTabId ? useChatStore.getState().sessions[activeTabId] : undefined
+    if (runtimeState?.pendingRuntimeConfig || runtimeState?.runtimeConfigError) return
     const text = input.trim()
     if ((!text && ((!attachments.length && !hasWorkspaceReferences) || isMemberSession)) || isWorkspaceMissing) return
 
@@ -891,10 +894,11 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
         displayAttachments: visibleAttachmentPayload,
       })
     } else {
-      sendMessage(targetSessionId, contentForModel, [...uploadAttachmentPayload, ...workspaceAttachmentPayload], {
+      const sent = sendMessage(targetSessionId, contentForModel, [...uploadAttachmentPayload, ...workspaceAttachmentPayload], {
         displayContent,
         displayAttachments: visibleAttachmentPayload,
       })
+      if (sent === false) return
     }
     invalidatePendingPastes()
     setComposerInput('', [])
@@ -1366,6 +1370,11 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             </div>
           )}
 
+          {runtimeSwitchBlocked && (
+            <div role={sessionState?.runtimeConfigError ? 'alert' : 'status'} className="mb-2 px-3 text-xs text-[var(--color-text-secondary)]">
+              {t(sessionState?.runtimeConfigError ? 'model.switchFailed' : 'model.switching')}
+            </div>
+          )}
           {isActive && runningConfig && (runningConfig.modelLabel !== pendingModelLabel || runningConfig.permissionMode !== displayedPermissionMode) && (
             <div data-testid="pending-runtime-config" className="mb-2 flex flex-wrap gap-x-3 gap-y-1 rounded-lg bg-[var(--color-surface-container-low)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">
               <span>{t('chat.currentRunConfig', { model: runningConfig.modelLabel, permission: t(`permMode.label.${runningConfig.permissionMode}` as 'permMode.label.default') })}</span>

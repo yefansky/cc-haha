@@ -21,10 +21,14 @@ export const DRAFT_RUNTIME_SELECTION_KEY = '__draft__'
 
 type SessionRuntimeStore = {
   selections: Record<string, RuntimeSelection>
+  revision: number
+  selectionRevisions: Record<string, number>
+  pendingKeys: Record<string, boolean>
+  setPending: (key: string, pending: boolean) => void
   setSelection: (key: string, selection: RuntimeSelection) => void
   clearSelection: (key: string) => void
   moveSelection: (fromKey: string, toKey: string) => void
-  syncFromSessions: (sessions: SessionListItem[]) => void
+  syncFromSessions: (sessions: SessionListItem[], requestRevision?: number) => void
 }
 
 function normalizeSelection(selection: RuntimeSelection): RuntimeSelection {
@@ -88,6 +92,10 @@ function persistSelections(selections: Record<string, RuntimeSelection>) {
 
 export const useSessionRuntimeStore = create<SessionRuntimeStore>((set) => ({
   selections: loadSelections(),
+  revision: 0,
+  selectionRevisions: {},
+  pendingKeys: {},
+  setPending: (key, pending) => set(state => ({ pendingKeys: { ...state.pendingKeys, [key]: pending } })),
 
   setSelection: (key, selection) =>
     set((state) => {
@@ -96,7 +104,7 @@ export const useSessionRuntimeStore = create<SessionRuntimeStore>((set) => ({
         [key]: normalizeSelection(selection),
       }
       persistSelections(selections)
-      return { selections }
+      return { selections, revision: state.revision + 1, selectionRevisions: { ...state.selectionRevisions, [key]: state.revision + 1 } }
     }),
 
   clearSelection: (key) =>
@@ -104,7 +112,9 @@ export const useSessionRuntimeStore = create<SessionRuntimeStore>((set) => ({
       if (!(key in state.selections)) return state
       const { [key]: _removed, ...rest } = state.selections
       persistSelections(rest)
-      return { selections: rest }
+      const { [key]: _revision, ...selectionRevisions } = state.selectionRevisions
+      const { [key]: _pending, ...pendingKeys } = state.pendingKeys
+      return { selections: rest, revision: state.revision + 1, selectionRevisions: { ...selectionRevisions, [key]: state.revision + 1 }, pendingKeys }
     }),
 
   moveSelection: (fromKey, toKey) =>
@@ -117,13 +127,16 @@ export const useSessionRuntimeStore = create<SessionRuntimeStore>((set) => ({
         [toKey]: selection,
       }
       persistSelections(selections)
-      return { selections }
+      const { [fromKey]: _revision, ...selectionRevisions } = state.selectionRevisions
+      const { [fromKey]: pending, ...pendingKeys } = state.pendingKeys
+      return { selections, revision: state.revision + 1, selectionRevisions: { ...selectionRevisions, [fromKey]: state.revision + 1, [toKey]: state.revision + 1 }, pendingKeys: { ...pendingKeys, [toKey]: !!pending } }
     }),
 
-  syncFromSessions: (sessions) =>
+  syncFromSessions: (sessions, requestRevision) =>
     set((state) => {
       let selections = state.selections
       for (const session of sessions) {
+        if (state.pendingKeys[session.id] || (requestRevision !== undefined && (state.selectionRevisions[session.id] ?? 0) > requestRevision)) continue
         if (!session.runtimeModelId || session.runtimeProviderId === undefined) continue
         const selection = normalizeSelection({
           providerId: session.runtimeProviderId,

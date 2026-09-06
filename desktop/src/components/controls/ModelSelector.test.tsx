@@ -433,8 +433,8 @@ describe('ModelSelector', () => {
     expect(scrollRegion?.contains(search)).toBe(false)
   })
 
-  it('selects provider-scoped runtime models and mirrors session selections', async () => {
-    const setSessionRuntime = vi.fn()
+  it('selects provider-scoped runtime models without changing global or draft defaults', async () => {
+    const setSessionRuntime = vi.fn(useChatStore.getState().setSessionRuntime)
     const setModel = vi.fn(async () => {})
     useSettingsStore.setState({
       locale: 'en',
@@ -485,22 +485,13 @@ describe('ModelSelector', () => {
       await Promise.resolve()
     })
 
-    expect(useSessionRuntimeStore.getState().selections['session-1']).toEqual({
-      providerId: 'provider-a',
-      modelId: 'provider-fast',
-      effortLevel: 'high',
-    })
-    expect(useSessionRuntimeStore.getState().selections.__draft__).toEqual({
-      providerId: 'provider-a',
-      modelId: 'provider-fast',
-      effortLevel: 'high',
-    })
+    expect(useSessionRuntimeStore.getState().selections.__draft__).toBeUndefined()
     expect(setSessionRuntime).toHaveBeenCalledWith('session-1', {
       providerId: 'provider-a',
       modelId: 'provider-fast',
       effortLevel: 'high',
     })
-    expect(setModel).toHaveBeenCalledWith('provider-fast')
+    expect(setModel).not.toHaveBeenCalled()
   })
 
   it('renders discovered provider models with their declared effort levels', async () => {
@@ -667,7 +658,7 @@ describe('ModelSelector', () => {
   })
 
   it('keeps every CLI effort stop scoped to the selected session', async () => {
-    const setSessionRuntime = vi.fn()
+    const setSessionRuntime = vi.fn(useChatStore.getState().setSessionRuntime)
     useSettingsStore.setState({
       locale: 'en',
       availableModels: MODELS,
@@ -732,7 +723,7 @@ describe('ModelSelector', () => {
   })
 
   it('keeps effort selectable for unlisted Claude models from compatible providers', async () => {
-    const setSessionRuntime = vi.fn()
+    const setSessionRuntime = vi.fn(useChatStore.getState().setSessionRuntime)
     useSettingsStore.setState({
       locale: 'en',
       availableModels: [],
@@ -855,7 +846,7 @@ describe('ModelSelector', () => {
         supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
       },
     ]
-    const setSessionRuntime = vi.fn()
+    const setSessionRuntime = vi.fn(useChatStore.getState().setSessionRuntime)
     useHahaOpenAIOAuthStore.setState({
       status: { loggedIn: true, expiresAt: null, email: null, accountId: null },
       fetchStatus: async () => {},
@@ -982,7 +973,7 @@ describe('ModelSelector', () => {
       defaultReasoningEffort: 'low',
       supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     }
-    const setSessionRuntime = vi.fn()
+    const setSessionRuntime = vi.fn(useChatStore.getState().setSessionRuntime)
     useHahaOpenAIOAuthStore.setState({
       status: { loggedIn: true, expiresAt: null, email: null, accountId: null },
       fetchStatus: async () => {},

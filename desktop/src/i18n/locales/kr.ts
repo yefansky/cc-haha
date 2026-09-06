@@ -2439,6 +2439,8 @@ export const kr: Record<TranslationKey, string> = {
   'permMode.label.dontAsk': '확인 안 함',
 
   // ─── Model Selector ──────────────────────────────────────
+  'model.switching': '모델 전환 중…',
+  'model.switchFailed': '모델 전환을 확인하지 못했습니다. 입력은 보존됩니다. 모델을 다시 선택해 주세요.',
   'model.selectModel': '모델 선택',
   'model.configureProvider': '모델 공급자 설정',
   'model.configuration': '모델 구성',

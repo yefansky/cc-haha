@@ -1,4 +1,5 @@
 import { create, type StoreApi } from 'zustand'
+import { isModelReasoningEffort } from '../../../src/shared/modelReasoning'
 import { wsManager } from '../api/websocket'
 import { sessionsApi } from '../api/sessions'
 import { useTeamStore } from './teamStore'
@@ -176,6 +177,10 @@ export type PerSessionState = {
   compactCount?: number
   /** Bumped when the server confirms the selected runtime is applied. */
   runtimeConfigReadyCount?: number
+  pendingRuntimeConfig?: { requestId: string; selection: RuntimeSelection }
+  confirmedRuntimeConfig?: RuntimeSelection
+  runtimeConfigError?: 'failed' | 'timeout'
+  runtimeConfigTimer?: ReturnType<typeof setTimeout>
   /**
    * Characters streamed by the assistant during the current turn (text,
    * thinking, tool input). ÷4 approximates output tokens for the streaming
@@ -847,7 +852,7 @@ type ChatStore = {
       replaceFromMessageId?: string
       messageUuid?: string
     },
-  ) => void
+  ) => void | false
   respondToPermission: (
     sessionId: string,
     requestId: string,
@@ -2032,6 +2037,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           composerDraft: existing?.composerDraft ?? null,
           repositoryLaunchDraft: existing?.repositoryLaunchDraft ?? null,
           queuedUserMessages: existing?.queuedUserMessages ?? [],
+          confirmedRuntimeConfig: existing?.confirmedRuntimeConfig,
+          pendingRuntimeConfig: existing?.pendingRuntimeConfig,
+          runtimeConfigError: existing?.runtimeConfigError,
+          runtimeConfigTimer: existing?.runtimeConfigTimer,
           backgroundAgentTasks: existing?.backgroundAgentTasks ?? {},
           agentTaskNotifications: existing?.agentTaskNotifications ?? {},
         },
@@ -2063,6 +2072,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }),
       }))
     })
+    let receivedConnected = false
     wsManager.onMessage(sessionId, (msg) => {
       if (msg.type === 'connected') {
         set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, () => ({
@@ -2070,13 +2080,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           connectionSnapshotReady: false,
           userDecisionSnapshot: undefined,
         })) }))
+        const session = get().sessions[sessionId]
+        if (receivedConnected && (session?.pendingRuntimeConfig || session?.runtimeConfigError)) {
+          const desired = useSessionRuntimeStore.getState().selections[sessionId]
+          if (desired) get().setSessionRuntime(sessionId, desired)
+        }
+        receivedConnected = true
       }
       get().handleServerMessage(sessionId, msg)
     })
 
     const runtimeSelection = useSessionRuntimeStore.getState().selections[sessionId]
     if (runtimeSelection && options?.applyRuntimeSelection !== false) {
-      wsManager.send(sessionId, { type: 'set_runtime_config', ...runtimeSelection })
+      get().setSessionRuntime(sessionId, runtimeSelection)
     }
     if (
       options?.prewarm !== false &&
@@ -2106,6 +2122,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   disconnectSession: (sessionId) => {
     const session = get().sessions[sessionId]
     if (session?.elapsedTimer) clearInterval(session.elapsedTimer)
+    if (session?.runtimeConfigTimer) clearTimeout(session.runtimeConfigTimer)
+    useSessionRuntimeStore.getState().setPending(sessionId, false)
     if (pendingDeltaBySession.has(sessionId)) {
       const text = consumePendingDelta(sessionId)
       set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, (sess) => ({ streamingText: sess.streamingText + text })) }))
@@ -2121,6 +2139,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   sendMessage: (sessionId, content, attachments, options) => {
+    const runtimeState = get().sessions[sessionId]
+    if (runtimeState?.pendingRuntimeConfig || runtimeState?.runtimeConfigError) return false
     const isMemberSession = !!useTeamStore.getState().getMemberBySessionId(sessionId)
     const messageUuid = isMemberSession
       ? undefined
@@ -2491,8 +2511,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   setSessionRuntime: (sessionId, selection) => {
+    const requestId = crypto.randomUUID()
+    const previous = get().sessions[sessionId]
+    const confirmed = previous?.confirmedRuntimeConfig ?? useSessionRuntimeStore.getState().selections[sessionId]
+    if (previous?.runtimeConfigTimer) clearTimeout(previous.runtimeConfigTimer)
+    useSessionRuntimeStore.getState().setSelection(sessionId, selection)
+    useSessionRuntimeStore.getState().setPending(sessionId, true)
+    const timer = setTimeout(() => {
+      set(state => ({ sessions: updateSessionIn(state.sessions, sessionId, session =>
+        session.pendingRuntimeConfig?.requestId === requestId
+          ? { pendingRuntimeConfig: undefined, runtimeConfigTimer: undefined, runtimeConfigError: 'timeout' as const }
+          : {}) }))
+    }, 45_000)
+    set(state => ({ sessions: { ...state.sessions, [sessionId]: {
+      ...(state.sessions[sessionId] ?? createDefaultSessionState()),
+      pendingRuntimeConfig: { requestId, selection }, runtimeConfigError: undefined, runtimeConfigTimer: timer,
+      confirmedRuntimeConfig: confirmed,
+    } } }))
     wsManager.send(sessionId, {
       type: 'set_runtime_config',
+      requestId,
       ...selection,
     })
   },
@@ -2983,6 +3021,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   sendQueuedUserMessage: (sessionId, messageId) => {
     const session = get().sessions[sessionId]
+    if (session?.pendingRuntimeConfig || session?.runtimeConfigError) return
     const queuedMessage = (session?.queuedUserMessages ?? []).find((message) => message.id === messageId)
     if (!session || !queuedMessage) return
 
@@ -3252,6 +3291,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break
 
       case 'runtime_config_applied': {
+        const session = get().sessions[sessionId]
+        const pending = session?.pendingRuntimeConfig
+        if (pending && (msg.requestId !== pending.requestId || msg.providerId !== pending.selection.providerId || msg.modelId !== pending.selection.modelId)) break
+        if (!pending && msg.requestId) break
+        const applied: RuntimeSelection = { providerId: msg.providerId, modelId: msg.modelId,
+          ...(typeof msg.effortLevel === 'string' && isModelReasoningEffort(msg.effortLevel) ? { effortLevel: msg.effortLevel } : {}) }
+        if (pending || !session?.runtimeConfigError) {
+          if (session?.runtimeConfigTimer) clearTimeout(session.runtimeConfigTimer)
+          useSessionRuntimeStore.getState().setSelection(sessionId, applied)
+          useSessionRuntimeStore.getState().setPending(sessionId, false)
+          update(() => ({ pendingRuntimeConfig: undefined, runtimeConfigTimer: undefined,
+            runtimeConfigError: undefined, confirmedRuntimeConfig: applied }))
+        }
         const selected = useSessionRuntimeStore.getState().selections[sessionId]
         const matchesCurrentSelection = Boolean(selected) &&
           (selected?.providerId ?? null) === msg.providerId &&
@@ -3262,6 +3314,25 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             runtimeConfigReadyCount: (session.runtimeConfigReadyCount ?? 0) + 1,
           }))
         }
+        if (pending && matchesCurrentSelection && get().sessions[sessionId]?.chatState === 'idle') {
+          const queued = get().sessions[sessionId]?.queuedUserMessages?.[0]
+          if (queued) get().sendQueuedUserMessage(sessionId, queued.id)
+        }
+        break
+      }
+
+      case 'runtime_config_failed': {
+        const session = get().sessions[sessionId]
+        const pending = session?.pendingRuntimeConfig
+        if (!pending || msg.requestId !== pending.requestId || msg.providerId !== pending.selection.providerId || msg.modelId !== pending.selection.modelId) break
+        if (session.runtimeConfigTimer) clearTimeout(session.runtimeConfigTimer)
+        const restored: RuntimeSelection | undefined = msg.restored ? {
+          providerId: msg.restored.providerId, modelId: msg.restored.modelId,
+          ...(typeof msg.restored.effortLevel === 'string' && isModelReasoningEffort(msg.restored.effortLevel) ? { effortLevel: msg.restored.effortLevel } : {}),
+        } : session?.confirmedRuntimeConfig
+        if (restored) useSessionRuntimeStore.getState().setSelection(sessionId, restored)
+        update(() => ({ pendingRuntimeConfig: undefined, runtimeConfigTimer: undefined,
+          runtimeConfigError: 'failed', ...(restored ? { confirmedRuntimeConfig: restored } : {}) }))
         break
       }
 

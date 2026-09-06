@@ -11,7 +11,7 @@ const EXPECTED_GROK_SELECTION = {
 describe('sessionRuntimeStore runtime cleanup', () => {
   beforeEach(() => {
     localStorage.clear()
-    useSessionRuntimeStore.setState({ selections: {} })
+    useSessionRuntimeStore.setState({ selections: {}, revision: 0, selectionRevisions: {}, pendingKeys: {} })
   })
 
   it('discards retired Grok selections before persisting them', () => {
@@ -85,5 +85,33 @@ describe('sessionRuntimeStore runtime cleanup', () => {
     expect(JSON.parse(localStorage.getItem('cc-haha-session-runtime')!)).toEqual({
       'session-loaded-kimi': expectedSelection,
     })
+  })
+})
+
+
+describe('session list and runtime switch ordering', () => {
+  it('ignores pending and older responses but accepts a fresh list after confirmation', () => {
+    useSessionRuntimeStore.setState({ selections: {}, revision: 0, selectionRevisions: {}, pendingKeys: {} })
+    const store = useSessionRuntimeStore.getState()
+    const list = [{ id: 's', runtimeProviderId: 'a', runtimeModelId: 'shared' } as SessionListItem]
+    store.syncFromSessions(list, 0)
+    const before = useSessionRuntimeStore.getState().revision
+    store.setSelection('s', { providerId: 'b', modelId: 'shared' })
+    store.setPending('s', true)
+    store.syncFromSessions(list, useSessionRuntimeStore.getState().revision)
+    expect(useSessionRuntimeStore.getState().selections.s?.providerId).toBe('b')
+    store.setSelection('s', { providerId: 'b', modelId: 'shared' })
+    store.setPending('s', false)
+    store.syncFromSessions(list, before)
+    expect(useSessionRuntimeStore.getState().selections.s?.providerId).toBe('b')
+    store.syncFromSessions(list, useSessionRuntimeStore.getState().revision)
+    expect(useSessionRuntimeStore.getState().selections.s?.providerId).toBe('a')
+    store.moveSelection('s', 'new')
+    expect(useSessionRuntimeStore.getState().selectionRevisions.s).toBeGreaterThan(0)
+    store.clearSelection('new')
+    expect(useSessionRuntimeStore.getState().pendingKeys.new).toBeUndefined()
+    expect(useSessionRuntimeStore.getState().selectionRevisions.new).toBeGreaterThan(0)
+    store.syncFromSessions([{ ...list[0], id: 'new' } as SessionListItem], 0)
+    expect(useSessionRuntimeStore.getState().selections.new).toBeUndefined()
   })
 })

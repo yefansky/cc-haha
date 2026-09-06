@@ -71,13 +71,14 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   fetchSessions: async (project?: string) => {
     const requestId = ++fetchSessionsRequestId
+    const runtimeRevision = useSessionRuntimeStore.getState().revision
     set({ isLoading: true, error: null, sessionListRequestId: requestId })
     try {
       const response = await sessionsApi.list(buildSessionListParams(project))
       if (requestId !== get().sessionListRequestId) return
       const raw = response.sessions
       const indexStatus = response.index ?? null
-      useSessionRuntimeStore.getState().syncFromSessions(raw)
+      useSessionRuntimeStore.getState().syncFromSessions(raw, runtimeRevision)
       let syncedSessions: SessionListItem[] = []
       set((state) => {
         if (requestId !== state.sessionListRequestId) return state

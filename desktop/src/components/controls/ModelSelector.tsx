@@ -570,16 +570,11 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     onRuntimeSelectionChange?.(normalizedSelection)
     if (runtimeKey) {
       const runtimeStore = useSessionRuntimeStore.getState()
-      runtimeStore.setSelection(runtimeKey, normalizedSelection)
-      if (runtimeKey !== DRAFT_RUNTIME_SELECTION_KEY) {
-        // A session-specific switch is also the user's preference for the next window.
-        runtimeStore.setSelection(DRAFT_RUNTIME_SELECTION_KEY, normalizedSelection)
+      if (runtimeKey === DRAFT_RUNTIME_SELECTION_KEY) {
+        runtimeStore.setSelection(runtimeKey, normalizedSelection)
+      } else {
         useChatStore.getState().setSessionRuntime(runtimeKey, normalizedSelection)
       }
-      // localStorage preserves a running renderer, but a new desktop window
-      // can have a different origin/session. Persist the choice through the
-      // provider-managed model setting as the durable default.
-      void setModel(selection.modelId).catch(() => {})
     }
     setOpen(false)
   }

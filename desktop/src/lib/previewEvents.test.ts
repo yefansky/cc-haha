@@ -27,7 +27,7 @@ describe('subscribePreviewEvents', () => {
   beforeEach(() => {
     previewHandler = null
     prefill.mockClear()
-    sendMessage.mockClear()
+    sendMessage.mockReset()
     previewMessage.mockClear()
     useBrowserPanelStore.setState({ bySession: {} })
     usePreviewSelectionStore.setState({ bySession: {} })
@@ -91,6 +91,16 @@ describe('subscribePreviewEvents', () => {
         displayAttachments: [expect.objectContaining({ name: '<h1>', note: '改一下' })],
       }),
     )
+  })
+
+  it('retains a direct picked element in the selection draft when runtime is unconfirmed', async () => {
+    sendMessage.mockReturnValue(false)
+    useBrowserPanelStore.getState().open('s1', 'http://x/')
+    useBrowserPanelStore.getState().setPicker('s1', true)
+    await subscribePreviewEvents('s1')
+    previewHandler!({ v: 1, type: 'selection', payload: { pageUrl: 'http://x/', element: { selector: '#t', tag: 'h1', classes: [] }, screenshot: { dataUrl: 'data:image/png;base64,AAAA', kind: 'element' } } })
+    expect(usePreviewSelectionStore.getState().bySession.s1?.items).toHaveLength(1)
+    expect(useUIStore.getState().toasts).toHaveLength(1)
   })
 
   it('accepts the selection that arrives before picker-exited on the confirm path', async () => {

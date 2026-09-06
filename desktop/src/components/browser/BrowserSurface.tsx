@@ -281,10 +281,11 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
           selectionNumber: entry.number,
         }]
       })
-      useChatStore.getState().sendMessage(sessionId, batch.modelText, attachments, {
+      const sent = useChatStore.getState().sendMessage(sessionId, batch.modelText, attachments, {
         displayContent: t('browser.selection.batchMessage', { count: draft.items.length }),
         displayAttachments: attachments,
       })
+      if (sent === false) return
       try {
         await previewBridge.message({ v: 1, type: 'commit-selection-draft' })
       } finally {

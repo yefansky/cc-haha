@@ -6637,6 +6637,21 @@ describe('MessageList nested tool calls', () => {
     })
   })
 
+  it('retains prompt edits without replacing history while runtime is unconfirmed', async () => {
+    const replace = vi.spyOn(sessionsApi, 'replaceMessage')
+    useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSessionState({ messages: [
+      { id: 'first-ui', transcriptMessageId: 'user-1', type: 'user_text', content: 'first prompt', timestamp: 1 },
+      { id: 'assistant-1', type: 'assistant_text', content: 'reply', timestamp: 2 },
+    ] }) } })
+    render(<MessageList />)
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit this prompt' }))[0]!)
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Edit prompt' }), { target: { value: 'retained edit' } })
+    act(() => useChatStore.getState().setSessionRuntime(ACTIVE_TAB, { providerId: 'b', modelId: 'shared' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(replace).not.toHaveBeenCalled()
+    expect((screen.getByRole('textbox', { name: 'Edit prompt' }) as HTMLTextAreaElement).value).toBe('retained edit')
+  })
+
   it('keeps every persisted prompt editable while the latest reply is streaming', async () => {
     vi.spyOn(sessionsApi, 'replaceMessage').mockResolvedValue({
       target: { targetUserMessageId: 'user-2', userMessageIndex: 1, userMessageCount: 2 },

@@ -147,6 +147,7 @@ vi.mock('./cliTaskStore', () => ({
 }))
 
 import { sessionsApi } from '../api/sessions'
+import { wsManager } from '../api/websocket'
 import { useSettingsStore } from './settingsStore'
 import {
   mapHistoryMessagesToUiMessages,
@@ -3409,6 +3410,7 @@ describe('chatStore history mapping', () => {
 
     expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
       type: 'set_runtime_config',
+      requestId: expect.any(String),
       providerId: 'provider-1',
       modelId: 'kimi-k2.6',
       effortLevel: 'high',
@@ -3418,6 +3420,7 @@ describe('chatStore history mapping', () => {
         TEST_SESSION_ID,
         {
           type: 'set_runtime_config',
+      requestId: expect.any(String),
           providerId: 'provider-1',
           modelId: 'kimi-k2.6',
           effortLevel: 'high',
@@ -3478,6 +3481,7 @@ describe('chatStore history mapping', () => {
 
     expect(sendMock).not.toHaveBeenCalledWith(TEST_SESSION_ID, expect.objectContaining({
       type: 'set_runtime_config',
+      requestId: expect.any(String),
     }))
     expect(sendMock).not.toHaveBeenCalledWith(TEST_SESSION_ID, {
       type: 'prewarm_session',
@@ -3610,6 +3614,95 @@ describe('chatStore history mapping', () => {
     expect(sendMock).not.toHaveBeenCalledWith(TEST_SESSION_ID, { type: 'prewarm_session' })
   })
 
+  it('gates both direct and queued messages until the newest provider/model pair is acknowledged', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ chatState: 'idle' }) } })
+    const store = useChatStore.getState()
+    store.setSessionRuntime(TEST_SESSION_ID, { providerId: 'a', modelId: 'shared' })
+    const first = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+    store.setSessionRuntime(TEST_SESSION_ID, { providerId: 'b', modelId: 'shared' })
+    const second = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+    store.queueUserMessage(TEST_SESSION_ID, { content: 'retained queue', displayContent: 'retained queue' })
+    store.queueUserMessage(TEST_SESSION_ID, { content: 'second queued', displayContent: 'second queued' })
+    expect(store.sendMessage(TEST_SESSION_ID, 'retained input')).toBe(false)
+    store.sendQueuedUserMessage(TEST_SESSION_ID, useChatStore.getState().sessions[TEST_SESSION_ID]!.queuedUserMessages![0]!.id)
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.queuedUserMessages).toHaveLength(2)
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: first.requestId, ...first.selection })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig?.requestId).toBe(second.requestId)
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: second.requestId, providerId: 'a', modelId: 'shared' })
+    expect(store.sendMessage(TEST_SESSION_ID, 'still blocked')).toBe(false)
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: second.requestId, ...second.selection })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.confirmedRuntimeConfig).toEqual(second.selection)
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig).toBeUndefined()
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, expect.objectContaining({ type: 'user_message', content: 'retained queue' }))
+    expect(sendMock.mock.calls.filter(call => call[1]?.type === 'user_message')).toHaveLength(1)
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.queuedUserMessages?.[0]?.content).toBe('second queued')
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'message_complete', usage: { input_tokens: 1, output_tokens: 1 } })
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, expect.objectContaining({ type: 'user_message', content: 'second queued' }))
+    expect(sendMock.mock.calls.filter(call => call[1]?.type === 'user_message')).toHaveLength(2)
+  })
+
+  it('restores the confirmed pair on matching failure but preserves queued input until explicit retry', () => {
+    const original = { providerId: 'a', modelId: 'shared' }
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ confirmedRuntimeConfig: original, chatState: 'idle' }) } })
+    const store = useChatStore.getState()
+    store.setSessionRuntime(TEST_SESSION_ID, { providerId: 'b', modelId: 'shared' })
+    const pending = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+    store.queueUserMessage(TEST_SESSION_ID, { content: 'keep me', displayContent: 'keep me' })
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_failed', requestId: 'old', ...pending.selection, code: 'CLI_RESTART_FAILED' })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig).toBeDefined()
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_failed', requestId: pending.requestId, ...pending.selection, code: 'RUNTIME_CONFIG_INVALID' })
+    expect(useSessionRuntimeStore.getState().selections[TEST_SESSION_ID]).toEqual(original)
+    expect(store.sendMessage(TEST_SESSION_ID, 'do not send old provider')).toBe(false)
+    store.sendQueuedUserMessage(TEST_SESSION_ID, useChatStore.getState().sessions[TEST_SESSION_ID]!.queuedUserMessages![0]!.id)
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.queuedUserMessages).toHaveLength(1)
+    store.setSessionRuntime(TEST_SESSION_ID, original)
+    const retry = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: retry.requestId, ...original })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.runtimeConfigError).toBeUndefined()
+  })
+
+  it('re-correlates an unresolved switch once on reconnect without duplicating the first connection', () => {
+    useChatStore.setState({ sessions: {} })
+    useSessionRuntimeStore.getState().setSelection(TEST_SESSION_ID, { providerId: 'a', modelId: 'shared' })
+    const store = useChatStore.getState()
+    store.connectToSession(TEST_SESSION_ID, { prewarm: false, minimalBootstrap: true })
+    const onMessage = vi.mocked(wsManager.onMessage).mock.calls.at(-1)![1]
+    const first = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+    onMessage({ type: 'connected', sessionId: TEST_SESSION_ID })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig?.requestId).toBe(first.requestId)
+    connectionStateHandlers.get(TEST_SESSION_ID)!('reconnecting')
+    onMessage({ type: 'connected', sessionId: TEST_SESSION_ID })
+    const retry = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+    expect(retry.requestId).not.toBe(first.requestId)
+    expect(sendMock.mock.calls.filter(call => call[1]?.type === 'set_runtime_config')).toHaveLength(2)
+    onMessage({ type: 'runtime_config_applied', requestId: first.requestId, ...first.selection })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig?.requestId).toBe(retry.requestId)
+    onMessage({ type: 'runtime_config_applied', requestId: retry.requestId, ...retry.selection })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig).toBeUndefined()
+    store.disconnectSession(TEST_SESSION_ID)
+    expect(useSessionRuntimeStore.getState().pendingKeys[TEST_SESSION_ID]).toBe(false)
+  })
+
+  it('times out without sending and permits a fresh correlated retry', () => {
+    vi.useFakeTimers()
+    try {
+      useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ chatState: 'idle' }) } })
+      const store = useChatStore.getState()
+      store.setSessionRuntime(TEST_SESSION_ID, { providerId: null, modelId: 'model' })
+      const old = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+      vi.advanceTimersByTime(45_000)
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.runtimeConfigError).toBe('timeout')
+      expect(store.sendMessage(TEST_SESSION_ID, 'retained')).toBe(false)
+      store.setSessionRuntime(TEST_SESSION_ID, old.selection)
+      const retry = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+      expect(retry.requestId).not.toBe(old.requestId)
+      store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: old.requestId, ...old.selection })
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig?.requestId).toBe(retry.requestId)
+      store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: retry.requestId, ...retry.selection })
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.runtimeConfigError).toBeUndefined()
+    } finally { vi.useRealTimers() }
+  })
+
   it('sends explicit runtime overrides over websocket', () => {
     useChatStore.getState().setSessionRuntime(TEST_SESSION_ID, {
       providerId: null,
@@ -3619,13 +3712,14 @@ describe('chatStore history mapping', () => {
 
     expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
       type: 'set_runtime_config',
+      requestId: expect.any(String),
       providerId: null,
       modelId: 'claude-opus-4-7',
       effortLevel: 'max',
     })
   })
 
-  it('bumps context refresh only for the runtime config currently selected', () => {
+  it('accepts uncorrelated authoritative runtime corrections when no switch is pending', () => {
     useSessionRuntimeStore.getState().setSelection(TEST_SESSION_ID, {
       providerId: 'provider-b',
       modelId: 'model-b',
@@ -3643,7 +3737,7 @@ describe('chatStore history mapping', () => {
       modelId: 'model-a',
       effortLevel: 'high',
     })
-    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.runtimeConfigReadyCount).toBe(0)
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.runtimeConfigReadyCount).toBe(1)
 
     useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
       type: 'runtime_config_applied',
@@ -3651,7 +3745,7 @@ describe('chatStore history mapping', () => {
       modelId: 'model-b',
       effortLevel: 'high',
     })
-    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.runtimeConfigReadyCount).toBe(1)
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.runtimeConfigReadyCount).toBe(2)
   })
 
   it('keeps AskUserQuestion permission requests out of the message list while tracking the pending request', () => {

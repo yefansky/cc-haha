@@ -30,7 +30,7 @@ export type ClientMessage =
       response: UserDecisionResponse
     }
   | { type: 'set_permission_mode'; mode: PermissionMode }
-  | ({ type: 'set_runtime_config' } & RuntimeSelection)
+  | ({ type: 'set_runtime_config'; requestId?: string } & RuntimeSelection)
   | { type: 'stop_generation' }
   | { type: 'stop_background_task'; taskId: string }
   | { type: 'ping' }
@@ -205,9 +205,18 @@ export type ServerMessage =
   | { type: 'status'; state: ChatState; verb?: string; attemptStart?: boolean }
   | {
       type: 'runtime_config_applied'
+      requestId?: string
       providerId: string | null
       modelId: string
       effortLevel?: string
+    }
+  | {
+      type: 'runtime_config_failed'
+      requestId?: string
+      providerId: string | null
+      modelId: string
+      code: 'RUNTIME_CONFIG_INVALID' | 'CLI_RESTART_FAILED'
+      restored?: { providerId: string | null; modelId: string; effortLevel?: string }
     }
   // CLI 回传的权限模式变化（如 ExitPlanMode 退出 plan 后恢复、Shift+Tab）。
   // 桌面端据此把选择器校正回 CLI 的真实权限，避免本地影子值漂移。

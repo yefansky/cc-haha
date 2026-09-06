@@ -368,7 +368,13 @@ export function EmptySession() {
       // serialized from the live document; the bubble keeps the pill text.
       const serializedText = (composerRef.current?.getModelContent() ?? input).trim()
       if (serializedText || attachmentPayload.length > 0) {
-        sendMessage(sessionId, serializedText, attachmentPayload, { displayContent: text })
+        const sent = sendMessage(sessionId, serializedText, attachmentPayload, { displayContent: text })
+        if (sent === false) {
+          // This first turn is already submitted; retain it until runtime ACK.
+          useChatStore.getState().queueUserMessage(sessionId, {
+            content: serializedText, attachments: attachmentPayload, displayContent: text,
+          })
+        }
       }
       setInput('')
       setMentions([])

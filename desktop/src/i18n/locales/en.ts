@@ -2438,6 +2438,8 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'permMode.label.dontAsk': "Don't ask",
 
   // ─── Model Selector ──────────────────────────────────────
+  'model.switching': 'Switching model…',
+  'model.switchFailed': 'Model switch was not confirmed. Your input is kept; select a model again before sending.',
   'model.selectModel': 'Select model',
   'model.configureProvider': 'Configure model provider',
   'model.configuration': 'Model Configuration',

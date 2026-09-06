@@ -71,7 +71,7 @@ export type ClientMessage =
       response: ComputerUsePermissionResponse
     }
   | { type: 'set_permission_mode'; mode: PermissionMode }
-  | { type: 'set_runtime_config'; providerId: string | null; modelId: string; effortLevel?: string }
+  | { type: 'set_runtime_config'; providerId: string | null; modelId: string; effortLevel?: string; requestId?: string }
   | { type: 'stop_generation' }
   | { type: 'stop_background_task'; taskId: string }
   | ReplaceUserTurnRequest
@@ -260,6 +260,15 @@ export type ServerMessage =
       providerId: string | null
       modelId: string
       effortLevel?: string
+      requestId?: string
+    }
+  | {
+      type: 'runtime_config_failed'
+      requestId?: string
+      providerId: string | null
+      modelId: string
+      code: 'RUNTIME_CONFIG_INVALID' | 'CLI_RESTART_FAILED'
+      restored?: { providerId: string | null; modelId: string; effortLevel?: string }
     }
   // CLI 是权限模式的唯一真相来源。当 CLI 内部 mode 变化（如 ExitPlanMode 后
   // 恢复到进入 plan 前的模式、Shift+Tab 切换）时，把新模式回传给前端，让桌面端

@@ -433,6 +433,18 @@ describe('BrowserSurface', () => {
     expect(bridge.message).toHaveBeenCalledWith({ v: 1, type: 'commit-selection-draft' })
   })
 
+  it('retains the selection batch when runtime confirmation blocks sending', async () => {
+    sendMessage.mockReturnValue(false)
+    useBrowserPanelStore.getState().open('s1', 'http://localhost:5173/')
+    usePreviewSelectionStore.getState().add('s1', { pageUrl: 'http://localhost:5173/', element: { selector: '#one', tag: 'h1', classes: [] } as never, screenshot: { dataUrl: 'data:image/png;base64,AAAA', kind: 'region' } })
+    render(<BrowserSurface sessionId="s1" />)
+    fireEvent.click(screen.getByRole('button', { name: '发送 1 个' }))
+    expect(sendMessage).toHaveBeenCalled()
+    expect(usePreviewSelectionStore.getState().bySession.s1?.items).toHaveLength(1)
+    expect(bridge.message).not.toHaveBeenCalledWith({ v: 1, type: 'commit-selection-draft' })
+    expect(screen.getByTestId('browser-selection-draft')).toBeInTheDocument()
+  })
+
   it('protects a selection batch before navigating to another page', async () => {
     useBrowserPanelStore.getState().open('s1', 'http://localhost:5173/')
     usePreviewSelectionStore.getState().add('s1', {

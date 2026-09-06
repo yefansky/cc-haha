@@ -2438,6 +2438,8 @@ export const zh: Record<TranslationKey, string> = {
   'permMode.label.dontAsk': '不詢問',
 
   // ─── Model Selector ──────────────────────────────────────
+  'model.switching': '正在切換模型…',
+  'model.switchFailed': '模型切換未確認。輸入已保留，請重新選擇模型後傳送。',
   'model.selectModel': '選擇模型',
   'model.configureProvider': '設定模型服務商',
   'model.configuration': '模型配置',

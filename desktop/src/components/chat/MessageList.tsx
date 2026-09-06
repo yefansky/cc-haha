@@ -2929,6 +2929,11 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   const submitEditMessage = useCallback(async () => {
     if (!resolvedSessionId || !editingTurn || rewindingTurnId || isMemberSession) return
 
+    const runtime = useChatStore.getState().sessions[resolvedSessionId]
+    if (runtime?.pendingRuntimeConfig || runtime?.runtimeConfigError) {
+      addToast({ type: 'error', message: t('model.switchFailed') })
+      return
+    }
     const content = editingTurn.content.trim()
     if (!content) return
     const target = editingTurn.target
@@ -2942,11 +2947,12 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
         targetUserMessageId: target.targetUserMessageId,
         expectedContent: target.expectedContent,
       })
-      sendMessage(resolvedSessionId, content, target.attachments, {
+      const sent = sendMessage(resolvedSessionId, content, target.attachments, {
         displayContent: content,
         displayAttachments: target.attachments,
         replaceFromMessageId: target.uiMessageId,
       })
+      if (sent === false) return
       setEditingTurn(null)
       addToast({
         type: 'success',

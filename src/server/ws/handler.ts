@@ -289,6 +289,9 @@ type RuntimeOverride = {
   providerId: string | null
   modelId: string
   effort?: string
+  requestId?: string
+  rollback?: RuntimeOverride
+  pending?: boolean
 }
 
 type ActiveUserTurnState = {
@@ -1313,7 +1316,7 @@ function applyDeferredRuntimeRestartAfterActiveTurn(
     ) {
       return
     }
-    await restartSessionWithRuntimeConfig(ws, sessionId)
+    await restartSessionWithRuntimeConfig(ws, sessionId, true)
   })
 }
 
@@ -2325,7 +2328,12 @@ async function handleSetRuntimeConfig(
 ) {
   const { sessionId } = ws.data
   const requestedModelId = typeof message.modelId === 'string' ? message.modelId.trim() : ''
-  if (!requestedModelId) {
+  const requestId = typeof message.requestId === 'string' && message.requestId.length <= 128
+    ? message.requestId : undefined
+  const requested: RuntimeOverride = { providerId: message.providerId ?? null, modelId: requestedModelId, ...(requestId ? { requestId } : {}) }
+  let admitted: RuntimeOverride | undefined
+  if (!requestedModelId || (message.requestId !== undefined && !requestId)) {
+    sendRuntimeConfigFailure(ws, requested, 'RUNTIME_CONFIG_INVALID')
     sendMessage(ws, {
       type: 'error',
       message: 'Runtime model selection is invalid.',
@@ -2347,6 +2355,7 @@ async function handleSetRuntimeConfig(
     if (typeof message.providerId === 'string') {
       const provider = await providerService.getProvider(message.providerId).catch(() => null)
       if (!provider || !providerSupportsRuntimeModel(provider, modelId)) {
+        sendRuntimeConfigFailure(ws, requested, 'RUNTIME_CONFIG_INVALID')
         sendMessage(ws, {
           type: 'error',
           message: 'The selected model is not configured for this provider.',
@@ -2359,6 +2368,7 @@ async function handleSetRuntimeConfig(
       ? { valid: true, effort: undefined }
       : await resolveRuntimeEffort(message.providerId, modelId, requestedEffort)
     if (!effortResolution.valid) {
+      sendRuntimeConfigFailure(ws, requested, 'RUNTIME_CONFIG_INVALID')
       sendMessage(ws, {
         type: 'error',
         message: 'Runtime effort selection is invalid.',
@@ -2367,9 +2377,10 @@ async function handleSetRuntimeConfig(
       return
     }
 
-    const nextOverride = {
+    const nextOverride: RuntimeOverride = {
       providerId: message.providerId ?? null,
       modelId,
+      ...(requestId ? { requestId } : {}),
       ...(effortResolution.effort ? { effort: effortResolution.effort } : {}),
     }
     const prevOverride = runtimeOverrides.get(sessionId)
@@ -2379,49 +2390,90 @@ async function handleSetRuntimeConfig(
       prevOverride.modelId === nextOverride.modelId &&
       prevOverride.effort === nextOverride.effort
     ) {
-      return
+      // A repeated selection still needs its own acknowledgement. A pending
+      // restart retains the first confirmed pair rather than confirming itself.
+      if (!prevOverride.pending) {
+        prevOverride.requestId = requestId
+        broadcastAppliedRuntimeConfig(sessionId)
+        return
+      }
     }
 
+    const previousSettings = prevOverride ? undefined : await getRuntimeSettings(sessionId)
+    nextOverride.rollback = prevOverride ? (prevOverride.pending ? prevOverride.rollback : prevOverride) : (previousSettings?.model ? {
+      providerId: previousSettings.providerId ?? null,
+      modelId: previousSettings.model,
+      ...(previousSettings.effort ? { effort: previousSettings.effort } : {}),
+    } : undefined)
+    nextOverride.pending = true
+    admitted = nextOverride
     runtimeOverrides.set(sessionId, nextOverride)
 
     if (shouldDeferRuntimeRestartForActiveTurn(sessionId)) {
       deferredRuntimeRestarts.set(sessionId, nextOverride)
-      await persistSessionRuntimeConfig(sessionId, nextOverride)
       return
     }
 
     if (conversationService.hasSession(sessionId)) {
-      await persistSessionRuntimeConfig(sessionId, nextOverride)
       await restartSessionWithRuntimeConfig(ws, sessionId)
       return
     }
 
     const pendingStartup = sessionStartupPromises.get(sessionId)
     if (pendingStartup) {
-      await persistSessionRuntimeConfig(sessionId, nextOverride)
       // Startup now owns a coordinator slot. If it is visible while this
       // transition owns the same session, it is queued behind us and will read
       // the override above when its slot starts; awaiting it here would self-lock.
       void pendingStartup.then(
-        () => {
+        () => enqueueRuntimeTransition(sessionId, async () => {
           const currentOverride = runtimeOverrides.get(sessionId)
-          if (
-            currentOverride?.providerId === nextOverride.providerId &&
-            currentOverride.modelId === nextOverride.modelId &&
-            currentOverride.effort === nextOverride.effort &&
-            conversationService.hasSession(sessionId)
-          ) {
+          if (currentOverride === nextOverride && conversationService.hasSession(sessionId)) {
+            try { await persistSessionRuntimeConfig(sessionId, nextOverride) }
+            catch {
+              conversationService.stopSession(sessionId)
+              await rollbackRuntimeConfig(ws, nextOverride)
+              return
+            }
+            delete nextOverride.rollback
+            delete nextOverride.pending
             broadcastAppliedRuntimeConfig(sessionId)
           }
-        },
-        () => undefined,
-      )
+        }),
+        () => enqueueRuntimeTransition(sessionId, () => rollbackRuntimeConfig(ws, nextOverride)),
+      ).catch(() => sendRuntimeConfigFailure(ws, nextOverride, 'CLI_RESTART_FAILED'))
       return
     }
 
     await persistSessionRuntimeConfig(sessionId, nextOverride)
+    delete nextOverride.rollback
+    delete nextOverride.pending
     broadcastAppliedRuntimeConfig(sessionId)
+  }).catch(async () => {
+    if (admitted) await rollbackRuntimeConfig(ws, admitted).catch(() => {})
+    else sendRuntimeConfigFailure(ws, requested, 'CLI_RESTART_FAILED')
+    sendMessage(ws, { type: 'error', code: 'CLI_RESTART_FAILED', message: 'Failed to switch provider/model.' })
   })
+}
+
+function sendRuntimeConfigFailure(ws: ServerWebSocket<WebSocketData>, requested: RuntimeOverride,
+  code: 'RUNTIME_CONFIG_INVALID' | 'CLI_RESTART_FAILED', restored?: RuntimeOverride): void {
+  sendMessage(ws, { type: 'runtime_config_failed', providerId: requested.providerId,
+    modelId: requested.modelId, code, ...(requested.requestId ? { requestId: requested.requestId } : {}),
+    ...(restored ? { restored: { providerId: restored.providerId, modelId: restored.modelId,
+      ...(restored.effort ? { effortLevel: restored.effort } : {}) } } : {}) })
+}
+
+async function rollbackRuntimeConfig(ws: ServerWebSocket<WebSocketData>, requested: RuntimeOverride): Promise<void> {
+  const { sessionId } = ws.data
+  if (runtimeOverrides.get(sessionId) !== requested) return
+  const restored = requested.rollback
+  if (restored) {
+    runtimeOverrides.set(sessionId, restored)
+    try { await persistSessionRuntimeConfig(sessionId, restored) }
+    catch { console.error('[WS] Failed to persist restored runtime configuration') }
+  } else runtimeOverrides.delete(sessionId)
+  if (deferredRuntimeRestarts.get(sessionId) === requested) deferredRuntimeRestarts.delete(sessionId)
+  sendRuntimeConfigFailure(ws, requested, 'CLI_RESTART_FAILED', restored)
 }
 
 async function restartSessionWithPermissionMode(
@@ -2531,6 +2583,7 @@ function broadcastAppliedRuntimeConfig(sessionId: string): void {
     type: RUNTIME_CONFIG_APPLIED_EVENT,
     providerId: runtime.providerId,
     modelId: runtime.modelId,
+    ...(runtime.requestId ? { requestId: runtime.requestId } : {}),
     ...(runtime.effort ? { effortLevel: runtime.effort } : {}),
   })
 }
@@ -2548,7 +2601,9 @@ async function resolveRuntimeRestartWorkDir(sessionId: string): Promise<string> 
 async function restartSessionWithRuntimeConfig(
   ws: ServerWebSocket<WebSocketData>,
   sessionId: string,
+  deferred = false,
 ): Promise<void> {
+  const requested = runtimeOverrides.get(sessionId)
   try {
     const workDir = await resolveRuntimeRestartWorkDir(sessionId)
     markActiveAgentsStopping(sessionId)
@@ -2560,27 +2615,32 @@ async function restartSessionWithRuntimeConfig(
     const runtimeSettings = await getRuntimeSettings(sessionId)
     const sdkUrl = buildSdkWebSocketUrl(ws, sessionId)
     await conversationService.startSession(sessionId, workDir, sdkUrl, runtimeSettings)
+    if (requested && runtimeOverrides.get(sessionId) === requested) {
+      await persistSessionRuntimeConfig(sessionId, requested)
+      delete requested.rollback
+      delete requested.pending
+    }
     runtimeExitStoppedSessions.delete(sessionId)
 
     broadcastAppliedRuntimeConfig(sessionId)
     sendMessage(ws, { type: 'status', state: 'idle' })
     console.log(`[WS] Restarted CLI for ${sessionId} with runtime override`)
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err)
+  } catch {
+    if (requested && runtimeOverrides.get(sessionId) === requested && conversationService.hasSession(sessionId)) {
+      conversationService.stopSession(sessionId)
+    }
+    if (requested) await rollbackRuntimeConfig(ws, requested)
     void diagnosticsService.recordEvent({
       type: 'runtime_config_restart_failed',
       severity: 'error',
       sessionId,
-      summary: errMsg,
-      details: { runtimeOverride: runtimeOverrides.get(sessionId), error: err },
+      summary: 'Runtime configuration restart failed.',
+      details: { providerId: requested?.providerId, modelId: requested?.modelId },
     })
-    console.error(`[WS] Failed to restart CLI for ${sessionId} after runtime override: ${errMsg}`)
+    console.error(`[WS] Failed to restart CLI for ${sessionId} after runtime override`)
     sendMessage(ws, {
       type: 'error',
-      message: await buildSessionStartupDiagnosticMessage(
-        sessionId,
-        `Failed to switch provider/model: ${errMsg}`,
-      ),
+      message: deferred ? 'Provider/model deferred restart failed.' : 'Failed to switch provider/model.',
       code: 'CLI_RESTART_FAILED',
     })
     sendMessage(ws, { type: 'status', state: 'idle' })
@@ -5168,28 +5228,17 @@ async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> 
       const { providers } = await providerService.listProviders()
       const selectedProvider = providers.find((provider) => provider.id === runtimeOverride.providerId)
       if (selectedProvider && !providerSupportsRuntimeModel(selectedProvider, runtimeOverride.modelId)) {
-        const matchingProviders = providers.filter(
-          (provider) => providerSupportsRuntimeModel(provider, runtimeOverride!.modelId),
-        )
-        if (matchingProviders.length === 1) {
-          const correctedRuntime = { ...runtimeOverride, providerId: matchingProviders[0].id }
-          console.warn(
-            `[WS] Corrected mismatched runtime provider for ${sessionId}: ${selectedProvider.id} -> ${correctedRuntime.providerId}`,
-          )
-          runtimeOverride = correctedRuntime
-          runtimeOverrides.set(sessionId!, correctedRuntime)
-          await persistSessionRuntimeConfig(sessionId!, correctedRuntime)
-        } else {
-          console.warn(
-            `[WS] Ignoring mismatched runtime model for ${sessionId}: ${runtimeOverride.modelId} is not configured for ${selectedProvider.id}`,
-          )
-          runtimeOverrides.delete(sessionId!)
-          const defaults = await getDefaultRuntimeSettings()
-          return {
-            ...defaults,
-            permissionMode: sessionPermissionMode ?? defaults.permissionMode,
-          }
+        const main = selectedProvider.models.main?.trim()
+        if (!main || !providerSupportsRuntimeModel(selectedProvider, main)) {
+          throw new Error('The configured provider has no valid main model.')
         }
+        // A model name cannot identify a provider, even when today's catalog
+        // has only one match. Repair within the persisted provider boundary.
+        const correctedRuntime = { ...runtimeOverride, modelId: main }
+        runtimeOverride = correctedRuntime
+        runtimeOverrides.set(sessionId!, correctedRuntime)
+        await persistSessionRuntimeConfig(sessionId!, correctedRuntime)
+        broadcastAppliedRuntimeConfig(sessionId!)
       }
     }
 

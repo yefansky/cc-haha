@@ -444,6 +444,30 @@ describe('ChatInput file mentions', () => {
     expect(screen.queryByTestId('diff-comment-card')).not.toBeInTheDocument()
   })
 
+  it('retains input through a failed runtime switch and sends only after retry confirmation', async () => {
+    render(<ChatInput />)
+    setComposerText('keep this input', 15)
+    const target = { providerId: 'seasun-test', modelId: 'shared-model' }
+    act(() => useChatStore.getState().setSessionRuntime(sessionId, target))
+    const pending = useChatStore.getState().sessions[sessionId]!.pendingRuntimeConfig!
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    expect(getComposerText()).toBe('keep this input')
+    expect(mocks.wsSend.mock.calls.some((call) => call[1]?.type === 'user_message')).toBe(false)
+    act(() => useChatStore.getState().handleServerMessage(sessionId, {
+      type: 'runtime_config_failed', requestId: pending.requestId, ...target,
+      code: 'CLI_RESTART_FAILED', restored: { providerId: 'kscc-test', modelId: 'shared-model' },
+    }))
+    expect(screen.getByRole('alert')).toHaveTextContent('select a model again')
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    expect(getComposerText()).toBe('keep this input')
+    act(() => useChatStore.getState().setSessionRuntime(sessionId, target))
+    const retry = useChatStore.getState().sessions[sessionId]!.pendingRuntimeConfig!
+    act(() => useChatStore.getState().handleServerMessage(sessionId, { type: 'runtime_config_applied', requestId: retry.requestId, ...target }))
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    await waitFor(() => expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, expect.objectContaining({ type: 'user_message', content: 'keep this input' })))
+    expect(getComposerText()).toBe('')
+  })
+
   it('keeps unsent composer drafts isolated when switching between session tabs', async () => {
     const historySessionId = 'history-session'
     useTabStore.setState({

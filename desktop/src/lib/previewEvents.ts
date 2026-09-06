@@ -89,11 +89,15 @@ export async function subscribePreviewEvents(sessionId: string): Promise<() => v
             quote: p.element.selector,
           }]
         : []
-      useChatStore.getState().sendMessage(sessionId, selection.modelText, attachments, {
+      const sent = useChatStore.getState().sendMessage(sessionId, selection.modelText, attachments, {
         displayContent: selection.displayName,
         displayAttachments: attachments,
         hideDisplayContent: attachments.length > 0,
       })
+      if (sent === false) {
+        usePreviewSelectionStore.getState().add(sessionId, p)
+        useUIStore.getState().addToast({ type: 'info', message: t('model.switchFailed') })
+      }
     }
     else if (msg.type === 'picker-exited') {
       store.setPicker(sessionId, false)

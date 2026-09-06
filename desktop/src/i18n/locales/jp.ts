@@ -2439,6 +2439,8 @@ export const jp: Record<TranslationKey, string> = {
   'permMode.label.dontAsk': '確認しない',
 
   // ─── Model Selector ──────────────────────────────────────
+  'model.switching': 'モデルを切り替え中…',
+  'model.switchFailed': 'モデルの切り替えを確認できませんでした。入力は保持されています。モデルを選び直してください。',
   'model.selectModel': 'モデルを選択',
   'model.configureProvider': 'モデルプロバイダーを設定',
   'model.configuration': 'モデル設定',
