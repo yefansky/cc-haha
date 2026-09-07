@@ -4,6 +4,7 @@ export type H5RequestContext = {
   localAccessTokenConfigured?: boolean
   localAccessAuthorized?: boolean
   internalSdkAuthorized?: boolean
+  gatewayForwarderAuthorized?: boolean
 }
 
 const LOCAL_DESKTOP_ORIGINS = new Set(['file://'])
@@ -250,6 +251,11 @@ export function classifyH5Request(
   url: URL,
   context: H5RequestContext,
 ): H5RequestKind {
+  // A gateway forwarder is an authenticated remote-browser transport, never a
+  // source of local or SDK authority. Check it before loopback classification:
+  // the Python client intentionally connects to this server over loopback.
+  if (context.gatewayForwarderAuthorized) return 'h5-browser'
+
   const origin = request.headers.get('Origin')
   const localTrusted = isLocalTrustedRequest(request, url, context, origin)
   if (isFilesystemCapabilityPath(url.pathname)) {
@@ -286,6 +292,10 @@ export function shouldRequireH5Token({
     return false
   }
 
+  if (context.gatewayForwarderAuthorized) {
+    return false
+  }
+
   return classifyH5Request(request, url, context) === 'h5-browser'
 }
 
@@ -307,6 +317,10 @@ export function shouldBlockDisabledH5Access({
   }
 
   if (!isH5ProtectedCapabilityPath(url.pathname)) {
+    return false
+  }
+
+  if (context.gatewayForwarderAuthorized) {
     return false
   }
 

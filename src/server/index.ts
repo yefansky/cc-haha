@@ -10,6 +10,10 @@ import { handleApiRequest } from './router.js'
 import { handleWebSocket, type WebSocketData } from './ws/handler.js'
 import { resolveCors, type CorsResolution } from './middleware/cors.js'
 import { requireAuth, requireH5Token } from './middleware/auth.js'
+import {
+  isGatewayForwarderAuthorized,
+  shouldRejectGatewayForwarderRequest,
+} from './middleware/gatewayForwarderAuth.js'
 import { teamWatcher } from './services/teamWatcher.js'
 import { cronScheduler } from './services/cronScheduler.js'
 import { handleProxyRequest } from './proxy/handler.js'
@@ -177,6 +181,16 @@ function h5AccessDisabledResponse(): Response {
   )
 }
 
+function gatewayForwarderRejectedResponse(): Response {
+  return Response.json(
+    {
+      error: 'Forbidden',
+      message: 'The gateway forwarder cannot access this capability.',
+    },
+    { status: 403 },
+  )
+}
+
 function isH5AccessControlRequest(
   req: Request,
   url: URL,
@@ -251,6 +265,13 @@ export function startServer(port = PORT, host = HOST) {
       async fetch(req, server) {
         const url = new URL(req.url)
 
+        // Never let an invalid forwarder credential fall back to ordinary
+        // loopback trust. A valid credential still cannot enter tunnel-only
+        // control or privileged namespaces.
+        if (shouldRejectGatewayForwarderRequest(req, url.pathname)) {
+          return gatewayForwarderRejectedResponse()
+        }
+
         // Startup probes must not wait on migrations, config reads, or auth.
         // Electron deliberately uses this endpoint to decide when the sidecar
         // is ready, so keep it independent of every other runtime subsystem.
@@ -316,6 +337,7 @@ export function startServer(port = PORT, host = HOST) {
           internalSdkAuthorized: Boolean(
             sdkSessionId && sdkToken && conversationService.authorizeSdkConnection(sdkSessionId, sdkToken),
           ),
+          gatewayForwarderAuthorized: isGatewayForwarderAuthorized(req),
         }
         const h5Settings = await h5AccessService.getSettings()
         const h5PublicOrigin = originFromUrl(h5Settings.publicBaseUrl)

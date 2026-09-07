@@ -558,4 +558,58 @@ describe('h5AccessPolicy', () => {
       context: remoteContext,
     })).toBe(false)
   })
+
+  test('keeps an authorized gateway forwarder in the h5-browser authority class', () => {
+    const gatewayContext = {
+      clientAddress: '127.0.0.1',
+      localAccessTokenConfigured: true,
+      localAccessAuthorized: true,
+      internalSdkAuthorized: true,
+      gatewayForwarderAuthorized: true,
+    }
+
+    for (const pathname of [
+      '/api/status',
+      '/proxy/openai/v1/chat/completions',
+      '/ws/session-1',
+      '/api/h5-access/enable',
+      '/sdk/session-1',
+    ]) {
+      const request = req(`http://127.0.0.1:3456${pathname}`)
+      expect(classifyH5Request(request, new URL(request.url), gatewayContext))
+        .toBe('h5-browser')
+    }
+  })
+
+  test('lets an authorized gateway forwarder replace ordinary H5 enable and token gates', () => {
+    const gatewayContext = {
+      clientAddress: '127.0.0.1',
+      gatewayForwarderAuthorized: true,
+    }
+
+    for (const pathname of [
+      '/api/status',
+      '/preview-fs/session-1/index.html',
+      '/local-file/Users/alice/report.html',
+      '/proxy/openai/v1/chat/completions',
+      '/ws/session-1',
+    ]) {
+      const request = req(`http://127.0.0.1:3456${pathname}`)
+      const url = new URL(request.url)
+
+      expect(shouldRequireH5Token({
+        request,
+        url,
+        h5Enabled: true,
+        context: gatewayContext,
+      })).toBe(false)
+      expect(shouldBlockDisabledH5Access({
+        request,
+        url,
+        h5Enabled: false,
+        explicitAuthRequired: false,
+        context: gatewayContext,
+      })).toBe(false)
+    }
+  })
 })

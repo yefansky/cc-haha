@@ -35,6 +35,13 @@ function healthOkResponse() {
   return Response.json({ status: 'ok' })
 }
 
+function gatewaySessionResponse() {
+  return Response.json({
+    mode: 'gateway-session',
+    protocol_version: 1,
+  })
+}
+
 describe('desktopRuntime browser H5 bootstrap', () => {
   const originalFetch = globalThis.fetch
 
@@ -161,6 +168,83 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     expect(globalThis.fetch).toHaveBeenCalledWith(`${window.location.origin}/api/status`, {
       cache: 'no-store',
     })
+  })
+
+  it('enters gateway-session before reading or rewriting query and stored H5 tokens', async () => {
+    window.history.pushState({}, '', '/?serverUrl=https%3A%2F%2Flegacy.example%2Fapp&h5Token=query-token')
+    window.localStorage.setItem(H5_SERVER_URL_STORAGE_KEY, 'https://legacy.example/app')
+    window.localStorage.setItem(H5_TOKEN_STORAGE_KEY, 'stored-token')
+    const getItem = vi.spyOn(Storage.prototype, 'getItem')
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    globalThis.fetch = vi.fn((input) => {
+      const url = String(input)
+      if (url.endsWith('/_gateway/client-config')) return Promise.resolve(gatewaySessionResponse())
+      if (url.endsWith('/health')) return Promise.resolve(healthOkResponse())
+      if (url.endsWith('/api/status')) return Promise.resolve(Response.json({ ok: true }))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    }) as typeof fetch
+
+    await expect(initializeDesktopServerUrl()).resolves.toBe(window.location.origin)
+
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      1,
+      `${window.location.origin}/_gateway/client-config`,
+      { cache: 'no-store' },
+    )
+    expect(clientMocks.setBaseUrl).toHaveBeenLastCalledWith(window.location.origin)
+    expect(clientMocks.setAuthToken).toHaveBeenLastCalledWith(null)
+    expect(clientMocks.setAuthToken).not.toHaveBeenCalledWith('query-token')
+    expect(clientMocks.setAuthToken).not.toHaveBeenCalledWith('stored-token')
+    expect(clientMocks.postVerify).not.toHaveBeenCalled()
+    expect(getItem).not.toHaveBeenCalledWith(H5_SERVER_URL_STORAGE_KEY)
+    expect(getItem).not.toHaveBeenCalledWith(H5_TOKEN_STORAGE_KEY)
+    expect(setItem).not.toHaveBeenCalledWith(H5_SERVER_URL_STORAGE_KEY, expect.any(String))
+    expect(setItem).not.toHaveBeenCalledWith(H5_TOKEN_STORAGE_KEY, expect.any(String))
+    expect(window.localStorage.getItem(H5_SERVER_URL_STORAGE_KEY)).toBe('https://legacy.example/app')
+    expect(window.localStorage.getItem(H5_TOKEN_STORAGE_KEY)).toBe('stored-token')
+    expect(globalThis.fetch).toHaveBeenCalledWith(`${window.location.origin}/health`, {
+      cache: 'no-store',
+    })
+    expect(globalThis.fetch).toHaveBeenCalledWith(`${window.location.origin}/api/status`, {
+      cache: 'no-store',
+    })
+    getItem.mockRestore()
+    setItem.mockRestore()
+  })
+
+  it.each([
+    ['404', () => Promise.resolve(new Response(null, { status: 404 }))],
+    ['401', () => Promise.resolve(new Response(null, { status: 401 }))],
+    ['network error', () => Promise.reject(new TypeError('Failed to fetch'))],
+    ['malformed JSON', () => Promise.resolve(new Response('{', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))],
+    ['a different mode', () => Promise.resolve(Response.json({
+      mode: 'h5-token',
+      protocol_version: 1,
+    }))],
+    ['a different protocol version', () => Promise.resolve(Response.json({
+      mode: 'gateway-session',
+      protocol_version: 2,
+    }))],
+  ])('falls back to the existing browser flow when gateway detection returns %s', async (_case, probe) => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(probe)
+      .mockResolvedValueOnce(healthOkResponse())
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await expect(initializeDesktopServerUrl()).resolves.toBe(window.location.origin)
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `${window.location.origin}/_gateway/client-config`,
+      { cache: 'no-store' },
+    )
+    expect(clientMocks.setBaseUrl).toHaveBeenLastCalledWith(window.location.origin)
+    expect(clientMocks.setAuthToken).toHaveBeenLastCalledWith(null)
+    expect(clientMocks.postVerify).not.toHaveBeenCalled()
   })
 
   it('uses an injected desktop host server URL before browser fallback', async () => {
@@ -448,6 +532,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
   it('shows the H5 token recovery view when a local browser connects to an auth-required LAN server', async () => {
     window.history.pushState({}, '', '/?serverUrl=http%3A%2F%2F192.168.0.102%3A28670')
     globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce(healthOkResponse())
       .mockResolvedValueOnce(healthOkResponse())
       .mockResolvedValueOnce(new Response(null, { status: 401 })) as typeof fetch
 

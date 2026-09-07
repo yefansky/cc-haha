@@ -186,6 +186,16 @@ export async function initializeDesktopServerUrl() {
 }
 
 async function initializeBrowserServerUrl(fallbackUrl: string) {
+  const gatewaySessionUrl = await detectGatewaySession()
+  if (gatewaySessionUrl) {
+    setBaseUrl(gatewaySessionUrl)
+    setAuthToken(null)
+    await waitForHealth(gatewaySessionUrl)
+    await ensureBrowserApiAccessibleWithoutH5(gatewaySessionUrl)
+    markDesktopServerReady()
+    return gatewaySessionUrl
+  }
+
   const query = typeof window !== 'undefined'
     ? new URLSearchParams(window.location.search)
     : null
@@ -272,6 +282,34 @@ async function initializeBrowserServerUrl(fallbackUrl: string) {
 
   markDesktopServerReady()
   return requestedUrl
+}
+
+async function detectGatewaySession() {
+  const sameOriginUrl = getSameOriginServerUrl()
+  if (!sameOriginUrl) return null
+
+  try {
+    const response = await fetch(`${sameOriginUrl}/_gateway/client-config`, {
+      cache: 'no-store',
+    })
+    if (response.status !== 200) return null
+
+    const body: unknown = await response.clone().json().catch(() => null)
+    if (
+      !body ||
+      typeof body !== 'object' ||
+      !('mode' in body) ||
+      body.mode !== 'gateway-session' ||
+      !('protocol_version' in body) ||
+      body.protocol_version !== 1
+    ) {
+      return null
+    }
+
+    return sameOriginUrl
+  } catch {
+    return null
+  }
 }
 
 async function waitForHealth(serverUrl: string) {
