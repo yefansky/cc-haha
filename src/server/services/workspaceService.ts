@@ -25,6 +25,8 @@ const MAX_PREVIEW_BYTES = 1024 * 1024
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
+const MAX_SVN_BASE_CACHE_BYTES = 16 * 1024 * 1024
+const MAX_SVN_BASE_CACHE_ENTRIES = 64
 const MAX_COMMAND_ERROR_DETAILS_CHARS = 2_048
 // A status walk over a large legacy working copy can take longer than a small
 // Git command. Keep this scoped to status reads so diffs and mutating commands
@@ -432,6 +434,9 @@ export class WorkspaceService {
   private readonly externalReadFilesBySession = new Map<string, Set<string>>()
   private readonly externalWriteGrantsBySession = new Map<string, Set<string>>()
   private readonly workspaceWriteQueues = new Map<string, Promise<void>>()
+  private readonly svnBaseBytesCache = new Map<string, Buffer>()
+  private readonly svnBaseRequestsInFlight = new Map<string, Promise<BufferCommandResult>>()
+  private svnBaseCacheBytes = 0
 
   constructor(
     private readonly resolveSessionWorkDir: (
@@ -1446,7 +1451,7 @@ export class WorkspaceService {
       )
     }
     const args = ['cat', '-r', target.revision, '--', target.target]
-    const result = await this.runSvnBuffer(svnRoot, args)
+    const result = await this.readSvnBaseBytes(svnRoot, target.target, target.revision, args)
     if (result.code !== 0) {
       return this.buildUnavailableComparisonSide(
         'svn_base',
@@ -1468,6 +1473,48 @@ export class WorkspaceService {
       false,
       'SVN BASE baselines are read-only.',
     )
+  }
+
+  private async readSvnBaseBytes(
+    svnRoot: string,
+    target: string,
+    revision: string,
+    args: string[],
+  ): Promise<BufferCommandResult> {
+    // Only a resolved URL and numeric revision identify immutable bytes. The
+    // local working copy's literal BASE changes after update, switch or commit.
+    if (!/^\d+$/.test(revision) || !/^[a-z][a-z\d+.-]*:\/\//i.test(target)) {
+      return this.runSvnBuffer(svnRoot, args)
+    }
+    const key = JSON.stringify([svnRoot, target, revision])
+    const cached = this.svnBaseBytesCache.get(key)
+    if (cached) {
+      this.svnBaseBytesCache.delete(key)
+      this.svnBaseBytesCache.set(key, cached)
+      return { stdout: cached, stderr: '', code: 0 }
+    }
+    const pending = this.svnBaseRequestsInFlight.get(key)
+    if (pending) return pending
+    const request = this.runSvnBuffer(svnRoot, args).then((result) => {
+      if (result.code === 0 && result.stdout.length <= MAX_SVN_BASE_CACHE_BYTES) {
+        this.svnBaseBytesCache.set(key, result.stdout)
+        this.svnBaseCacheBytes += result.stdout.length
+        while (
+          this.svnBaseBytesCache.size > MAX_SVN_BASE_CACHE_ENTRIES
+          || this.svnBaseCacheBytes > MAX_SVN_BASE_CACHE_BYTES
+        ) {
+          const oldestKey = this.svnBaseBytesCache.keys().next().value
+          if (oldestKey === undefined) break
+          this.svnBaseCacheBytes -= this.svnBaseBytesCache.get(oldestKey)!.length
+          this.svnBaseBytesCache.delete(oldestKey)
+        }
+      }
+      return result
+    }).finally(() => {
+      this.svnBaseRequestsInFlight.delete(key)
+    })
+    this.svnBaseRequestsInFlight.set(key, request)
+    return request
   }
 
   private async resolveSvnBaseTarget(

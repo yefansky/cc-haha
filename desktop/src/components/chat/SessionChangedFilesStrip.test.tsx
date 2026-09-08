@@ -117,7 +117,9 @@ describe('SessionChangedFilesStrip', () => {
 
     await waitFor(() => {
       expect(mocks.getWorkspaceFile).toHaveBeenCalledTimes(2)
+      expect(mocks.getWorkspaceDiff).toHaveBeenCalledTimes(2)
     })
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-union']).toBeUndefined()
     fireEvent.click(screen.getByRole('button', { name: 'Open src/app.ts from session changes' }))
 
     await waitFor(() => {
@@ -125,7 +127,8 @@ describe('SessionChangedFilesStrip', () => {
     })
     expect(mocks.getWorkspaceStatus).not.toHaveBeenCalled()
     expect(mocks.getWorkspaceFile).toHaveBeenCalledTimes(2)
-    expect(mocks.getWorkspaceDiff).not.toHaveBeenCalled()
+    expect(mocks.getWorkspaceDiff).toHaveBeenCalledWith('session-union', 'docs/readme.md')
+    expect(mocks.getWorkspaceDiff).toHaveBeenCalledWith('session-union', 'src/app.ts')
     const state = useWorkspacePanelStore.getState()
     expect(state.isPanelOpen('session-union')).toBe(true)
     expect(state.previewTabsBySession['session-union']?.at(-1)).toMatchObject({
@@ -133,6 +136,12 @@ describe('SessionChangedFilesStrip', () => {
       kind: 'file',
       content: 'content:src/app.ts',
     })
+    await act(async () => {
+      await state.openPreview('session-union', 'src/app.ts', 'diff')
+    })
+    expect(mocks.getWorkspaceDiff).toHaveBeenCalledTimes(2)
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['session-union']?.at(-1))
+      .toMatchObject({ state: 'ok', kind: 'diff' })
   })
 
   it('shares a pending session-selection preload across repeated file clicks', async () => {
@@ -208,6 +217,7 @@ describe('SessionChangedFilesStrip', () => {
     await waitFor(() => expect(mocks.getTurnCheckpoints).toHaveBeenCalledTimes(2))
 
     expect(mocks.getWorkspaceFile).toHaveBeenCalledOnce()
+    expect(mocks.getWorkspaceDiff).toHaveBeenCalledOnce()
   })
 
   it('falls back to the latest turn snapshot when a cumulative file no longer exists', async () => {

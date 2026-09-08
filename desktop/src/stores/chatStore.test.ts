@@ -6728,6 +6728,25 @@ describe('chatStore history mapping', () => {
     expect(session?.pendingComputerUsePermissions?.['cu-1']?.request.reason).toBe('NEW request')
   })
 
+  it('keeps permission warning acknowledgement session-local across reconnect and same-mode confirmation', () => {
+    const store = useChatStore.getState()
+    store.connectToSession('warning-a', { minimalBootstrap: true })
+    store.connectToSession('warning-b', { minimalBootstrap: true })
+    store.dismissSessionPermissionWarning('warning-a', 'bypassPermissions')
+    expect(store.getSession('warning-b').dismissedPermissionWarningMode).toBeUndefined()
+    store.handleServerMessage('warning-a', { type: 'permission_mode_changed', mode: 'bypassPermissions' })
+    connectionStateHandlers.get('warning-a')?.('disconnected')
+    store.connectToSession('warning-a', { minimalBootstrap: true })
+    expect(store.getSession('warning-a').dismissedPermissionWarningMode).toBe('bypassPermissions')
+    store.setSessionPermissionMode('warning-b', 'default')
+    expect(store.getSession('warning-a').dismissedPermissionWarningMode).toBe('bypassPermissions')
+    store.setSessionPermissionMode('warning-a', 'bypassPermissions')
+    expect(store.getSession('warning-a').dismissedPermissionWarningMode).toBe('bypassPermissions')
+    store.setSessionPermissionMode('warning-a', 'default')
+    expect(store.getSession('warning-a').dismissedPermissionWarningMode).toBeUndefined()
+    updateSessionPermissionModeMock.mockClear()
+  })
+
   it('sends permission mode updates to the active session only', () => {
     useChatStore.getState().setSessionPermissionMode('nonexistent-session', 'acceptEdits')
     expect(sendMock).not.toHaveBeenCalled()

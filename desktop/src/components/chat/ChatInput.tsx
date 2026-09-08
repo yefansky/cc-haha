@@ -153,7 +153,6 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     permissionMode: PermissionMode
   }>>({})
   const [pendingPermissionBySession, setPendingPermissionBySession] = useState<Record<string, PermissionMode>>({})
-  const [dismissedBypassWarningBySession, setDismissedBypassWarningBySession] = useState<Record<string, boolean>>({})
   const composingRef = useRef(false)
   const composerRef = useRef<MentionComposerHandle>(null)
   const composerContainerRef = useRef<HTMLDivElement>(null)
@@ -279,7 +278,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const pendingModelLabel = runtimeModelLabel ?? t('model.selectModel')
   const runtimeSwitchBlocked = !!(sessionState?.pendingRuntimeConfig || sessionState?.runtimeConfigError)
   const isBypassWarningVisible = activeTabId &&
-    !dismissedBypassWarningBySession[activeTabId] &&
+    sessionState?.dismissedPermissionWarningMode === undefined &&
     (displayedPermissionMode === 'bypassPermissions' || runningConfig?.permissionMode === 'bypassPermissions')
   const workspaceState = getSessionWorkspaceState(activeSession)
   const isWorkspaceMissing = workspaceState !== 'available'
@@ -400,7 +399,6 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const handlePendingPermissionModeChange = useCallback((mode: PermissionMode) => {
     if (!activeTabId) return
     setPendingPermissionBySession((current) => ({ ...current, [activeTabId]: mode }))
-    setDismissedBypassWarningBySession((current) => ({ ...current, [activeTabId]: false }))
     useChatStore.getState().setSessionPermissionMode(activeTabId, mode)
   }, [activeTabId])
 
@@ -1364,7 +1362,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
               <span className="min-w-0 flex-1">{t('chat.bypassPermissionWarning')}</span>
               <button
                 type="button"
-                onClick={() => activeTabId && setDismissedBypassWarningBySession((current) => ({ ...current, [activeTabId]: true }))}
+                onClick={() => activeTabId && useChatStore.getState().dismissSessionPermissionWarning(activeTabId, displayedPermissionMode)}
                 aria-label={t('chat.dismissWarning')}
                 className="material-symbols-outlined text-[16px]"
               >

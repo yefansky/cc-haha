@@ -224,11 +224,19 @@ type WorkspacePreviewCacheEntry = {
 
 const previewPayloadCache = new Map<string, WorkspacePreviewCacheEntry>()
 const previewPayloadRequestsInFlight = new Map<string, Promise<WorkspacePreviewPayload>>()
+const previewCachedListeners = new Map<string, Set<(payload: WorkspacePreviewPayload) => void>>()
 const previewPayloadRequestTokens = new Map<string, number>()
 const previewPersistentSessionClears = new Map<string, Promise<void>>()
 const previewForegroundDemand = new Set<string>()
 let nextPreviewPayloadRequestToken = 0
 const WORKSPACE_PREVIEW_CACHE_SIZE = 16
+const WORKSPACE_COMPARISON_FRESH_MS = 5_000
+const previewInvalidatedAtBySession = new Map<string, number>()
+
+function isFreshComparison(sessionId: string, cachedAt: number) {
+  return cachedAt > (previewInvalidatedAtBySession.get(sessionId) ?? 0)
+    && Date.now() - cachedAt < WORKSPACE_COMPARISON_FRESH_MS
+}
 const WORKSPACE_PREVIEW_REQUEST_CONCURRENCY = 2
 const WORKSPACE_STATUS_CACHE_TTL_MS = 15_000
 
@@ -403,13 +411,18 @@ function setPreviewPayloadCache(
   }
 }
 
-function clearSessionPreviewPayloadCache(sessionId: string) {
+function clearSessionPreviewPayloadCache(sessionId: string, preserveComparisons = false) {
+  if (preserveComparisons) previewInvalidatedAtBySession.set(sessionId, Date.now())
+  else previewInvalidatedAtBySession.delete(sessionId)
   const prefix = `${sessionId}\0`
   for (const key of previewPayloadCache.keys()) {
-    if (key.startsWith(prefix)) previewPayloadCache.delete(key)
+    if (key.startsWith(prefix) && !(preserveComparisons && key.split('\0')[2]?.startsWith('diff|workspace|'))) previewPayloadCache.delete(key)
   }
   for (const key of previewPayloadRequestsInFlight.keys()) {
     if (key.startsWith(prefix)) previewPayloadRequestsInFlight.delete(key)
+  }
+  for (const key of previewCachedListeners.keys()) {
+    if (key.startsWith(prefix)) previewCachedListeners.delete(key)
   }
   for (const key of previewPayloadRequestTokens.keys()) {
     if (key.startsWith(prefix)) previewPayloadRequestTokens.delete(key)
@@ -417,7 +430,7 @@ function clearSessionPreviewPayloadCache(sessionId: string) {
   for (const key of previewForegroundDemand) {
     if (key.startsWith(prefix)) previewForegroundDemand.delete(key)
   }
-  const pendingClear = deleteWorkspacePreviewPersistentCachePrefix(prefix)
+  const pendingClear = deleteWorkspacePreviewPersistentCachePrefix(prefix, preserveComparisons)
     .finally(() => {
       if (previewPersistentSessionClears.get(sessionId) === pendingClear) {
         previewPersistentSessionClears.delete(sessionId)
@@ -436,13 +449,15 @@ function requestWorkspacePreviewPayload(
   options: {
     force?: boolean
     cacheResult?: boolean
+    onCached?: (payload: WorkspacePreviewPayload) => void
     priority?: PreviewRequestPriority
   } = {},
 ) {
   const requestIdentity = makePreviewRequestIdentity(kind, diffSource, textEncoding, comparisonEncodings)
   const cacheKey = makePreviewPayloadCacheKey(sessionId, path, requestIdentity)
   let persistentInvalidation: Promise<void> | null = null
-  if (options.force) {
+  const isLiveComparison = kind === 'diff' && diffSource.kind === 'workspace'
+  if (options.force && !isLiveComparison) {
     previewPayloadCache.delete(cacheKey)
     persistentInvalidation = deleteWorkspacePreviewPersistentCache(cacheKey)
   }
@@ -453,10 +468,17 @@ function requestWorkspacePreviewPayload(
         cachedAt: cached.cachedAt,
         persist: false,
       })
-      return Promise.resolve(cached.payload)
+      if (!options.force && !previewPayloadRequestsInFlight.has(cacheKey)
+        && (!isLiveComparison || isFreshComparison(sessionId, cached.cachedAt))) {
+        return Promise.resolve(cached.payload)
+      }
+      options.onCached?.(cached.payload)
     }
     const existing = previewPayloadRequestsInFlight.get(cacheKey)
-    if (existing) {
+    if (existing && !options.force) {
+      // A click can join a preload before its IndexedDB read has completed.
+      // Deliver that cached snapshot to the new waiter as soon as it arrives.
+      if (options.onCached) previewCachedListeners.get(cacheKey)?.add(options.onCached)
       if (options.priority === 'foreground') {
         previewForegroundDemand.add(cacheKey)
         promoteQueuedPreviewRequest(cacheKey)
@@ -471,6 +493,9 @@ function requestWorkspacePreviewPayload(
   nextPreviewPayloadRequestToken += 1
   const requestToken = nextPreviewPayloadRequestToken
   previewPayloadRequestTokens.set(cacheKey, requestToken)
+  const cachedListeners = new Set<(payload: WorkspacePreviewPayload) => void>()
+  if (options.onCached) cachedListeners.add(options.onCached)
+  previewCachedListeners.set(cacheKey, cachedListeners)
 
   const runRequest = (): Promise<WorkspacePreviewPayload> => kind === 'diff'
     ? (diffSource.kind === 'turn'
@@ -495,7 +520,7 @@ function requestWorkspacePreviewPayload(
     const sessionClear = previewPersistentSessionClears.get(sessionId)
     if (sessionClear) await sessionClear
     if (persistentInvalidation) await persistentInvalidation
-    if (!options.force && canUseWorkspacePreviewPersistentCache()) {
+    if (!options.force && !previewPayloadCache.has(cacheKey) && canUseWorkspacePreviewPersistentCache()) {
       const persisted = await getWorkspacePreviewPersistentCache(cacheKey)
       if (
         persisted
@@ -508,7 +533,8 @@ function requestWorkspacePreviewPayload(
             cachedAt: persisted.cachedAt,
             persist: false,
           })
-          return persisted.payload
+          if (!isLiveComparison || isFreshComparison(sessionId, persisted.cachedAt)) return persisted.payload
+          for (const listener of cachedListeners) listener(persisted.payload)
         }
       }
     }
@@ -538,6 +564,7 @@ function requestWorkspacePreviewPayload(
       if (previewPayloadRequestsInFlight.get(cacheKey) === tracked) {
         previewPayloadRequestsInFlight.delete(cacheKey)
         previewForegroundDemand.delete(cacheKey)
+        previewCachedListeners.delete(cacheKey)
       }
     })
   previewPayloadRequestsInFlight.set(cacheKey, tracked)
@@ -717,7 +744,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     if (!options?.force && existingRequest) return existingRequest
     if (!options?.force && get().statusBySession[sessionId]) return Promise.resolve()
     if (options?.force && options.invalidatePreviews !== false) {
-      clearSessionPreviewPayloadCache(sessionId)
+      clearSessionPreviewPayloadCache(sessionId, true)
       set((state) => ({
         previewTabsBySession: {
           ...state.previewTabsBySession,
@@ -1024,11 +1051,17 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
       ? { ...reveal, nonce: nextRevealNonce() }
       : existing?.reveal
 
-    // Re-selecting a successful tab is navigation, not an implicit refresh.
-    // Keep the exact request identity with the payload so encoding/checkpoint
-    // changes invalidate naturally. External changes are refreshed explicitly
-    // (or after a completed write), which also protects dirty in-memory edits.
-    if (!options?.force && existing?.state === 'ok' && existing.requestIdentity === requestIdentity) {
+    // Coalesce rapid reopens, but revalidate older workspace comparisons without
+    // discarding their last successful payload. Dirty buffers remain user-owned.
+    const cachedComparison = previewPayloadCache.get(makePreviewPayloadCacheKey(sessionId, path, requestIdentity))
+    const comparisonNeedsRefresh = kind === 'diff' && diffSource.kind === 'workspace'
+      && (!cachedComparison || !isFreshComparison(sessionId, cachedComparison.cachedAt)
+        || previewPayloadRequestsInFlight.has(makePreviewPayloadCacheKey(sessionId, path, requestIdentity)))
+    const comparisonCacheChanged = kind === 'diff' && cachedComparison?.payload.kind === 'diff'
+      && (cachedComparison.payload.result.comparison !== existing?.comparison
+        || cachedComparison.payload.result.diff !== existing?.diff)
+    if (!options?.force && existing?.state === 'ok' && existing.requestIdentity === requestIdentity
+      && ((!comparisonNeedsRefresh && !comparisonCacheChanged) || isWorkspaceComparisonSessionDirty(existing.comparisonSession))) {
       set((state) => ({
         previewTabsBySession: {
           ...state.previewTabsBySession,
@@ -1130,20 +1163,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
       }))
     }
 
-    try {
-      const payload = await requestWorkspacePreviewPayload(
-        sessionId,
-        path,
-        kind,
-        diffSource,
-        textEncoding,
-        effectiveComparisonEncodings,
-        {
-          force: options?.force,
-          cacheResult: !isWorkspaceComparisonSessionDirty(existing?.comparisonSession),
-          priority: 'foreground',
-        },
-      )
+    const applyPayload = (payload: WorkspacePreviewPayload, refreshing = false) => {
       if (kind === 'diff') {
         if (payload.kind !== 'diff') return
         const result = payload.result
@@ -1194,7 +1214,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
               ...state.loading,
               previewByTabId: {
                 ...state.loading.previewByTabId,
-                [requestKey]: false,
+                [requestKey]: refreshing,
               },
             },
             errors: {
@@ -1263,6 +1283,24 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
           },
         }
       })
+    }
+
+    try {
+      const payload = await requestWorkspacePreviewPayload(
+        sessionId,
+        path,
+        kind,
+        diffSource,
+        textEncoding,
+        effectiveComparisonEncodings,
+        {
+          force: options?.force,
+          cacheResult: !isWorkspaceComparisonSessionDirty(existing?.comparisonSession),
+          priority: 'foreground',
+          onCached: (cached) => applyPayload(cached, true),
+        },
+      )
+      applyPayload(payload)
     } catch (error) {
       if (!isLatestRequest(previewRequestIds, requestKey, requestId)) return
       if (!get().previewTabsBySession[sessionId]?.some((tab) => tab.id === tabId)) return
@@ -1312,13 +1350,20 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
   },
 
   activatePreview: (sessionId, tabId) => {
-    if (!get().previewTabsBySession[sessionId]?.some((tab) => tab.id === tabId)) return
+    const tab = get().previewTabsBySession[sessionId]?.find((tab) => tab.id === tabId)
+    if (!tab) return
     set((state) => ({
       activePreviewTabIdBySession: {
         ...state.activePreviewTabIdBySession,
         [sessionId]: tabId,
       },
     }))
+    if (tab.kind === 'diff' && tab.diffSource?.kind !== 'turn') {
+      void get().openPreview(
+        sessionId, tab.path, tab.kind, undefined, undefined, tab.diffSource,
+        tab.textEncoding, tab.comparisonEncodings,
+      )
+    }
   },
 
   setComparisonSession: (sessionId, tabId, comparisonSession) => {

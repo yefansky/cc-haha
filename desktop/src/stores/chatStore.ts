@@ -182,6 +182,8 @@ export type PerSessionState = {
   confirmedRuntimeConfig?: RuntimeSelection
   runtimeConfigError?: 'failed' | 'timeout'
   runtimeConfigTimer?: ReturnType<typeof setTimeout>
+  /** Acknowledged for this session until the user selects a different permission mode. */
+  dismissedPermissionWarningMode?: PermissionMode
   /**
    * Characters streamed by the assistant during the current turn (text,
    * thinking, tool input). ÷4 approximates output tokens for the streaming
@@ -882,6 +884,7 @@ type ChatStore = {
   ) => void
   setSessionRuntime: (sessionId: string, selection: RuntimeSelection) => void
   setSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void
+  dismissSessionPermissionWarning: (sessionId: string, mode: PermissionMode) => void
   stopGeneration: (sessionId: string) => void
   stopBackgroundTask: (sessionId: string, taskId: string) => void
   loadHistory: (sessionId: string) => Promise<void>
@@ -2043,6 +2046,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           pendingRuntimeConfig: existing?.pendingRuntimeConfig,
           runtimeConfigError: existing?.runtimeConfigError,
           runtimeConfigTimer: existing?.runtimeConfigTimer,
+          dismissedPermissionWarningMode: existing?.dismissedPermissionWarningMode,
           backgroundAgentTasks: existing?.backgroundAgentTasks ?? {},
           agentTaskNotifications: existing?.agentTaskNotifications ?? {},
         },
@@ -2537,9 +2541,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     })
   },
 
+  dismissSessionPermissionWarning: (sessionId, mode) => {
+    set(state => ({ sessions: updateSessionIn(state.sessions, sessionId, () => ({
+      dismissedPermissionWarningMode: mode,
+    })) }))
+  },
+
   setSessionPermissionMode: (sessionId, mode) => {
     const session = get().sessions[sessionId]
     if (!session) return
+    if (session.dismissedPermissionWarningMode !== undefined && session.dismissedPermissionWarningMode !== mode) {
+      set(state => ({ sessions: updateSessionIn(state.sessions, sessionId, () => ({
+        dismissedPermissionWarningMode: undefined,
+      })) }))
+    }
     // The last explicit choice is also the default for subsequently opened sessions.
     // The WebSocket/server defers application while a turn is still running.
     void useSettingsStore.getState().setPermissionMode(mode)

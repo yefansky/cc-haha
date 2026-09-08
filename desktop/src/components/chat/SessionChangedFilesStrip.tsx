@@ -67,7 +67,7 @@ export function SessionChangedFilesStrip({
     return () => window.clearInterval(timer)
   }, [enabled, live, sessionId])
   const [expanded, setExpanded] = useState(false)
-  const warmedSignatureBySessionRef = useRef(new Map<string, string>())
+  const warmedSignatureBySessionRef = useRef(new Map<string, Map<string, string>>())
   const subscribe = useCallback(
     (listener: () => void) => subscribeSessionTurnCheckpoints(sessionId, listener),
     [sessionId],
@@ -95,13 +95,19 @@ export function SessionChangedFilesStrip({
       .then((checkpoints) => {
         if (cancelled) return
         const filesToWarm = buildSessionChangedFiles(checkpoints, workDir)
-        const signature = filesToWarm.map((file) => (
-          `${pathKey(file.displayPath, workDir)}\0${file.checkpoint.target.targetUserMessageId}\0${file.checkpoint.target.userMessageIndex}`
-        )).join('\n')
-        const previousSignature = warmedSignatureBySessionRef.current.get(sessionId)
-        const force = previousSignature !== undefined && previousSignature !== signature
-        warmedSignatureBySessionRef.current.set(sessionId, signature)
+        const previousSignatures = warmedSignatureBySessionRef.current.get(sessionId)
+        const signatures = new Map<string, string>()
         for (const file of filesToWarm) {
+          const key = pathKey(file.displayPath, workDir)
+          const signature = JSON.stringify([
+            workDir, file.checkpoint.target, file.checkpoint.code,
+          ])
+          const previous = previousSignatures?.get(key)
+          const force = previous !== undefined && previous !== signature
+          signatures.set(key, signature)
+          // Polling unchanged history must not keep every old session file in
+          // the background queue. Actual opens revalidate aged comparisons.
+          if (previous === signature) continue
           void workspace.preloadPreview(
             sessionId,
             file.displayPath,
@@ -111,7 +117,14 @@ export function SessionChangedFilesStrip({
             undefined,
             { force },
           ).catch(() => {})
+          // Prepare both full comparison sides before the user opens the diff.
+          // The store bounds background concurrency and shares click requests.
+          void workspace.preloadPreview(
+            sessionId, file.displayPath, 'diff', { kind: 'workspace' },
+            'auto', undefined, { force },
+          ).catch(() => {})
         }
+        warmedSignatureBySessionRef.current.set(sessionId, signatures)
       })
       .catch(() => {})
     return () => {

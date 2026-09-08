@@ -251,6 +251,23 @@ describe('workspacePreviewPersistentCache', () => {
     })
   })
 
+  it('preserves last-good workspace comparisons across status invalidation and expiry, but clears them with the session', async () => {
+    const key = 'session-retain\0a.ts\0diff|workspace|auto|auto:auto'
+    const fileKey = 'session-retain\0a.ts\0file|workspace|auto|-'
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    await setWorkspacePreviewPersistentCache(key, diffPayload('a.ts'))
+    await setWorkspacePreviewPersistentCache(fileKey, {
+      kind: 'file', result: { state: 'ok', path: 'a.ts', content: 'a', language: 'text', size: 1 },
+    })
+    await deleteWorkspacePreviewPersistentCachePrefix('session-retain\0', true)
+    now.mockReturnValue(1_000 + 8 * 24 * 60 * 60 * 1000)
+    await closeWorkspacePreviewPersistentCacheForTests()
+    await expect(getWorkspacePreviewPersistentCache(key)).resolves.toMatchObject({ cachedAt: 1_000 })
+    await expect(getWorkspacePreviewPersistentCache(fileKey)).resolves.toBeNull()
+    await deleteWorkspacePreviewPersistentCachePrefix('session-retain\0')
+    await expect(getWorkspacePreviewPersistentCache(key)).resolves.toBeNull()
+  })
+
   it('trims least-recently-used entries when the count limit is exceeded', async () => {
     const now = vi.spyOn(Date, 'now')
     for (let index = 0; index <= WORKSPACE_PREVIEW_CACHE_MAX_ENTRIES; index += 1) {

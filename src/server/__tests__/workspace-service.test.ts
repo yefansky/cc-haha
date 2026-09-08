@@ -1683,6 +1683,109 @@ describe('WorkspaceService', () => {
     expect(catCall?.args.every((argument) => /^[\x00-\x7f]*$/.test(argument))).toBe(true)
   })
 
+  it('reuses immutable SVN bytes across comparison refreshes while reading current working content', async () => {
+    const workspaceDir = await createSvnWorkspace()
+    const service = new WorkspaceService(async () => workspaceDir) as WorkspaceService & {
+      resolveSvnBaseTarget: () => Promise<{ kind: 'ok'; target: string; revision: string }>
+      runSvnBuffer: (root: string, args: string[]) => Promise<{ stdout: Buffer; stderr: string; code: number }>
+    }
+    const target = svn(workspaceDir, 'info', '--show-item', 'url', 'tracked.txt').trim()
+    let revision = svn(workspaceDir, 'info', '--show-item', 'revision', 'tracked.txt').trim()
+    service.resolveSvnBaseTarget = async () => ({ kind: 'ok', target, revision })
+    const original = service.runSvnBuffer.bind(service)
+    let reads = 0
+    service.runSvnBuffer = async (root, args) => {
+      reads += 1
+      return original(root, args)
+    }
+    await service.getDiff('session-1', 'tracked.txt')
+    await fs.writeFile(path.join(workspaceDir, 'tracked.txt'), 'changed again\n')
+    const refreshed = await service.getDiff('session-1', 'tracked.txt')
+    expect(refreshed.comparison?.left.content).toBe('before\n')
+    expect(refreshed.comparison?.right.content).toBe('changed again\n')
+    expect(reads).toBe(1)
+    svn(workspaceDir, 'commit', '-m', 'new baseline', 'tracked.txt')
+    revision = svn(workspaceDir, 'info', '--show-item', 'revision', 'tracked.txt').trim()
+    await fs.writeFile(path.join(workspaceDir, 'tracked.txt'), 'after commit\n')
+    const updated = await service.getDiff('session-1', 'tracked.txt')
+    expect(updated.comparison?.left.content).toBe('changed again\n')
+    expect(reads).toBe(2)
+  })
+
+  it('coalesces SVN baseline reads without caching failures or decoded encoding choices', async () => {
+    type Result = { stdout: Buffer; stderr: string; code: number }
+    const service = new WorkspaceService(async () => null) as WorkspaceService & {
+      resolveSvnBaseTarget: () => Promise<{ kind: 'ok'; target: string; revision: string }>
+      readSvnBaseComparisonSide: (root: string, file: string, encoding: 'utf8' | 'gbk') => Promise<{ state: string; content?: string }>
+      runSvnBuffer: () => Promise<Result>
+    }
+    let target = 'https://fixture.invalid/trunk/file.txt'
+    service.resolveSvnBaseTarget = async () => ({ kind: 'ok', target, revision: '3' })
+    let reads = 0
+    let finish!: (result: Result) => void
+    let started!: () => void
+    const requestStarted = new Promise<void>((resolve) => { started = resolve })
+    service.runSvnBuffer = () => {
+      reads += 1
+      started()
+      return new Promise((resolve) => { finish = resolve })
+    }
+    const first = service.readSvnBaseComparisonSide('fixture', 'file.txt', 'gbk')
+    const second = service.readSvnBaseComparisonSide('fixture', 'file.txt', 'utf8')
+    await requestStarted
+    finish({ stdout: Buffer.alloc(0), stderr: 'offline', code: 1 })
+    expect((await Promise.all([first, second])).every((side) => side.state === 'unavailable')).toBe(true)
+    expect(reads).toBe(1)
+    service.runSvnBuffer = async () => {
+      reads += 1
+      return { stdout: Buffer.from([0xd6, 0xd0, 0xce, 0xc4]), stderr: '', code: 0 }
+    }
+    expect((await service.readSvnBaseComparisonSide('fixture', 'file.txt', 'gbk')).content).toBe('中文')
+    expect((await service.readSvnBaseComparisonSide('fixture', 'file.txt', 'utf8')).state).toBe('undecodable')
+    expect(reads).toBe(2)
+    target = 'https://fixture.invalid/branch/file.txt'
+    await service.readSvnBaseComparisonSide('fixture', 'file.txt', 'gbk')
+    await service.readSvnBaseComparisonSide('other-workspace', 'file.txt', 'gbk')
+    expect(reads).toBe(4)
+  })
+
+  it('bounds SVN baseline cache entries and bytes and never caches a mutable BASE identity', async () => {
+    const service = new WorkspaceService(async () => null) as WorkspaceService & {
+      resolveSvnBaseTarget: () => Promise<{ kind: 'ok'; target: string; revision: string }>
+      readSvnBaseComparisonSide: (root: string, file: string, encoding: 'auto') => Promise<unknown>
+      runSvnBuffer: () => Promise<{ stdout: Buffer; stderr: string; code: number }>
+    }
+    let revision = 'BASE'
+    let target = 'tracked.txt'
+    let reads = 0
+    let bytes = Buffer.from('baseline')
+    service.resolveSvnBaseTarget = async () => ({ kind: 'ok', target, revision })
+    service.runSvnBuffer = async () => {
+      reads += 1
+      return { stdout: bytes, stderr: '', code: 0 }
+    }
+    const read = () => service.readSvnBaseComparisonSide('fixture', 'tracked.txt', 'auto')
+    await read()
+    await read()
+    expect(reads).toBe(2)
+    target = 'https://fixture.invalid/file.txt'
+    for (let index = 1; index <= 65; index += 1) {
+      revision = String(index)
+      await read()
+    }
+    revision = '1'
+    await read()
+    expect(reads).toBe(68)
+    bytes = Buffer.alloc(2_000_000, 0x61)
+    for (let index = 100; index < 109; index += 1) {
+      revision = String(index)
+      await read()
+    }
+    revision = '100'
+    await read()
+    expect(reads).toBe(78)
+  })
+
   it('rejects incomplete, ambiguous, or inconsistent SVN baseline entry identities', () => {
     const service = new WorkspaceService(async () => null) as WorkspaceService & {
       resolveSvnBaseIdentityFromInfo: (repoPath: string, infoXml: string) =>

@@ -103,6 +103,7 @@ vi.mock('../controls/ModelSelector', async () => {
 })
 
 import { ChatInput } from './ChatInput'
+import { settingsApi } from '../../api/settings'
 import { getComposerElement, getComposerText, setComposerText } from './composerTestUtils'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -303,6 +304,28 @@ describe('ChatInput file mentions', () => {
     } else {
       Reflect.deleteProperty(Range.prototype, 'getBoundingClientRect')
     }
+  })
+
+  it('keeps a dismissed permission warning across composer remounts until permission changes', async () => {
+    const previousMode = useSettingsStore.getState().permissionMode
+    const permissionUpdate = vi.spyOn(settingsApi, 'setPermissionMode').mockResolvedValue({ ok: true, mode: 'bypassPermissions' })
+    useSettingsStore.setState({ permissionMode: 'bypassPermissions' })
+    let view = render(<ChatInput />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss warning' }))
+    expect(screen.queryByRole('button', { name: 'Dismiss warning' })).not.toBeInTheDocument()
+    view.unmount()
+    view = render(<ChatInput />)
+    expect(screen.queryByRole('button', { name: 'Dismiss warning' })).not.toBeInTheDocument()
+    act(() => useChatStore.getState().setSessionPermissionMode(sessionId, 'bypassPermissions'))
+    expect(screen.queryByRole('button', { name: 'Dismiss warning' })).not.toBeInTheDocument()
+    await act(async () => {
+      useChatStore.getState().setSessionPermissionMode(sessionId, 'default')
+      useChatStore.getState().setSessionPermissionMode(sessionId, 'bypassPermissions')
+    })
+    expect(await screen.findByRole('button', { name: 'Dismiss warning' })).toBeInTheDocument()
+    view.unmount()
+    permissionUpdate.mockRestore()
+    useSettingsStore.setState({ permissionMode: previousMode })
   })
 
   // jsdom lays nothing out, so the composer column's width has to be stated.

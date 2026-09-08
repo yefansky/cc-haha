@@ -140,7 +140,9 @@ function isPersistedEntry(value: unknown, now: number): value is PersistedWorksp
     && Number.isFinite(value.cachedAt)
     && typeof value.expiresAt === 'number'
     && Number.isFinite(value.expiresAt)
-    && value.expiresAt > now
+    // A comparison's age controls revalidation, not last-good recovery. Keep
+    // it until capacity eviction or explicit session removal, even offline.
+    && (value.expiresAt > now || value.key.split('\0')[2]?.startsWith('diff|workspace|') === true)
     && typeof value.lastAccessedAt === 'number'
     && Number.isFinite(value.lastAccessedAt)
     && typeof value.byteSize === 'number'
@@ -258,7 +260,10 @@ export async function deleteWorkspacePreviewPersistentCache(key: string): Promis
   }
 }
 
-export async function deleteWorkspacePreviewPersistentCachePrefix(prefix: string): Promise<void> {
+export async function deleteWorkspacePreviewPersistentCachePrefix(
+  prefix: string,
+  preserveComparisons = false,
+): Promise<void> {
   try {
     const database = await openDatabase()
     if (!database) return
@@ -266,7 +271,8 @@ export async function deleteWorkspacePreviewPersistentCachePrefix(prefix: string
     const store = transaction.objectStore(STORE_NAME)
     const keys = await requestResult(store.getAllKeys())
     for (const key of keys) {
-      if (typeof key === 'string' && key.startsWith(prefix)) store.delete(key)
+      if (typeof key === 'string' && key.startsWith(prefix)
+        && !(preserveComparisons && key.split('\0')[2]?.startsWith('diff|workspace|'))) store.delete(key)
     }
     await transactionDone(transaction)
   } catch {

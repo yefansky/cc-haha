@@ -26,7 +26,7 @@ vi.mock('../api/sessions', () => ({
   },
 }))
 
-import { sessionsApi } from '../api/sessions'
+import { sessionsApi, type WorkspaceComparison, type WorkspaceDiffResult } from '../api/sessions'
 import {
   WORKSPACE_PANEL_DEFAULT_WIDTH,
   WORKSPACE_PANEL_MAX_WIDTH,
@@ -48,6 +48,19 @@ function deferred<T>() {
     reject = rej
   })
   return { promise, resolve, reject }
+}
+
+function cachedComparisonFixture(): WorkspaceComparison {
+  const side = {
+    exists: true, state: 'ok' as const, content: 'old\n', contentFingerprint: 'old', size: 4,
+    requestedEncoding: 'auto' as const, actualEncoding: 'utf8' as const,
+    bom: 'none' as const, lineEnding: 'lf' as const,
+  }
+  return {
+    schemaVersion: 1,
+    left: { ...side, source: { kind: 'svn_base', path: 'a.ts', revision: '1' }, writable: false },
+    right: { ...side, source: { kind: 'working_tree', path: 'a.ts', revision: 'old' }, writable: true },
+  }
 }
 
 describe('workspacePanelStore', () => {
@@ -725,6 +738,88 @@ describe('workspacePanelStore', () => {
     ])
     expect(useWorkspacePanelStore.getState().loading.previewByTabId['session-refresh::diff:src/a.ts']).toBe(false)
     expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession['session-refresh']).toBe('diff:src/a.ts')
+  })
+
+  it('shows the last successful comparison immediately after status invalidation and refreshes it in place', async () => {
+    const store = useWorkspacePanelStore.getState()
+    const refresh = deferred<{ state: 'ok'; path: string; diff: string }>()
+    mocks.getWorkspaceDiffMock.mockResolvedValueOnce({ state: 'ok', path: 'a.ts', diff: 'last good' })
+      .mockReturnValueOnce(refresh.promise)
+    mocks.getWorkspaceStatusMock.mockResolvedValue({ state: 'ok', workDir: '/repo', entries: [] })
+    await store.preloadPreview('swr-status', 'a.ts', 'diff')
+    await store.loadStatus('swr-status', { force: true })
+    const opening = store.openPreview('swr-status', 'a.ts', 'diff')
+    await vi.waitFor(() => expect(useWorkspacePanelStore.getState().previewTabsBySession['swr-status']?.[0])
+      .toMatchObject({ state: 'ok', diff: 'last good' }))
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
+    refresh.resolve({ state: 'ok', path: 'a.ts', diff: 'updated' })
+    await opening
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['swr-status']?.[0]?.diff).toBe('updated')
+  })
+
+  it('retains successful comparison cache after a failed force refresh and closing the tab', async () => {
+    const store = useWorkspacePanelStore.getState()
+    mocks.getWorkspaceDiffMock.mockResolvedValueOnce({ state: 'ok', path: 'a.ts', diff: 'last good' })
+      .mockRejectedValue(new Error('SVN unavailable'))
+    await store.openPreview('swr-offline', 'a.ts', 'diff')
+    await store.openPreview('swr-offline', 'a.ts', 'diff', undefined, undefined, undefined, undefined, undefined, { force: true })
+    store.closePreview('swr-offline', 'diff:a.ts')
+    await store.openPreview('swr-offline', 'a.ts', 'diff')
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['swr-offline']?.[0])
+      .toMatchObject({ state: 'ok', diff: 'last good' })
+  })
+
+  it('revalidates an aged comparison while keeping dirty edits made during the refresh', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+    const store = useWorkspacePanelStore.getState()
+    const refresh = deferred<WorkspaceDiffResult>()
+    const comparison = cachedComparisonFixture()
+    mocks.getWorkspaceDiffMock.mockResolvedValueOnce({ state: 'ok', path: 'a.ts', comparison })
+      .mockReturnValueOnce(refresh.promise)
+    await store.openPreview('swr-dirty', 'a.ts', 'diff')
+    now.mockReturnValue(20_000)
+    const opening = store.openPreview('swr-dirty', 'a.ts', 'diff')
+    const tab = useWorkspacePanelStore.getState().previewTabsBySession['swr-dirty']![0]!
+    expect(tab.state).toBe('ok')
+    store.setComparisonSession('swr-dirty', tab.id, editWorkspaceComparisonSide(tab.comparisonSession!, 'right', 'my edit\n'))
+    refresh.resolve({ state: 'ok', path: 'a.ts', comparison: {
+      ...comparison, right: { ...comparison.right, content: 'new disk\n' },
+    } })
+    await opening
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['swr-dirty']?.[0]?.comparisonSession?.right)
+      .toMatchObject({ content: 'my edit\n', dirty: true })
+  })
+
+  it('updates an already-open clean tab from a newer background preload without fetching again', async () => {
+    const store = useWorkspacePanelStore.getState()
+    mocks.getWorkspaceDiffMock.mockResolvedValueOnce({ state: 'ok', path: 'a.ts', diff: 'old' })
+      .mockResolvedValueOnce({ state: 'ok', path: 'a.ts', diff: 'new' })
+    await store.openPreview('swr-prewarm', 'a.ts', 'diff')
+    await store.preloadPreview('swr-prewarm', 'a.ts', 'diff', undefined, undefined, undefined, { force: true })
+    store.activatePreview('swr-prewarm', 'diff:a.ts')
+    await vi.waitFor(() => expect(useWorkspacePanelStore.getState().previewTabsBySession['swr-prewarm']?.[0]?.diff).toBe('new'))
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('hydrates old persistent comparisons for clicks joining a preload before slow SVN finishes', async () => {
+    const stored = deferred<workspacePreviewPersistentCache.CachedWorkspacePreviewPayload | null>()
+    const remote = deferred<WorkspaceDiffResult>()
+    const comparison = cachedComparisonFixture()
+    vi.spyOn(workspacePreviewPersistentCache, 'canUseWorkspacePreviewPersistentCache').mockReturnValue(true)
+    vi.spyOn(workspacePreviewPersistentCache, 'getWorkspacePreviewPersistentCache').mockReturnValue(stored.promise)
+    mocks.getWorkspaceDiffMock.mockReturnValueOnce(remote.promise)
+    const store = useWorkspacePanelStore.getState()
+    const preload = store.preloadPreview('swr-persisted', 'a.ts', 'diff')
+    const opening = store.openPreview('swr-persisted', 'a.ts', 'diff')
+    stored.resolve({ cachedAt: 1_000, payload: { kind: 'diff', result: { state: 'ok', path: 'a.ts', comparison } } })
+    await vi.waitFor(() => expect(useWorkspacePanelStore.getState().previewTabsBySession['swr-persisted']?.[0])
+      .toMatchObject({ state: 'ok', comparison }))
+    expect(mocks.getWorkspaceDiffMock).toHaveBeenCalledOnce()
+    remote.resolve({ state: 'error', path: 'a.ts', error: 'SVN offline' })
+    await Promise.all([preload, opening])
+    expect(useWorkspacePanelStore.getState().previewTabsBySession['swr-persisted']?.[0])
+      .toMatchObject({ state: 'ok', comparison })
+    expect(useWorkspacePanelStore.getState().errors.previewByTabId['swr-persisted::diff:a.ts']).toBe('SVN offline')
   })
 
   it('preloads one preview without opening UI and shares the in-flight request with the first open', async () => {
