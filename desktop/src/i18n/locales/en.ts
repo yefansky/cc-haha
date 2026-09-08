@@ -187,7 +187,7 @@ export const en = {
   'workspace.compareWorkspace': 'Side-by-side comparison',
   'workspace.encoding': 'Encoding',
   'workspace.textEncoding': 'Text encoding',
-  'workspace.encodingAuto': 'Auto (first 16 KiB)',
+  'workspace.encodingAuto': 'Auto',
   'workspace.openMarkdownSource': 'Open Markdown source',
   'workspace.openMarkdownPreview': 'Open Markdown preview',
   'workspace.openTableSource': 'Open table source',
@@ -2448,8 +2448,8 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'permMode.label.dontAsk': "Don't ask",
 
   // ─── Model Selector ──────────────────────────────────────
-  'model.switching': 'Switching model…',
-  'model.switchFailed': 'Model switch was not confirmed. Your input is kept; select a model again before sending.',
+  'model.switching': 'Switching model. New input can still be queued.',
+  'model.switchFailed': 'Model switch was not confirmed. New input can still be queued; select a model again to resume sending.',
   'model.selectModel': 'Select model',
   'model.configureProvider': 'Configure model provider',
   'model.configuration': 'Model Configuration',

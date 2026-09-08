@@ -188,7 +188,7 @@ export const kr: Record<TranslationKey, string> = {
   'workspace.compareWorkspace': '나란히 비교 보기',
   'workspace.encoding': '인코딩',
   'workspace.textEncoding': '텍스트 인코딩',
-  'workspace.encodingAuto': '자동(처음 16 KiB)',
+  'workspace.encodingAuto': '자동',
   'workspace.openMarkdownSource': 'Markdown 소스 열기',
   'workspace.openMarkdownPreview': 'Markdown 미리 보기 열기',
   'workspace.openTableSource': '표 소스 열기',
@@ -2449,8 +2449,8 @@ export const kr: Record<TranslationKey, string> = {
   'permMode.label.dontAsk': '확인 안 함',
 
   // ─── Model Selector ──────────────────────────────────────
-  'model.switching': '모델 전환 중…',
-  'model.switchFailed': '모델 전환을 확인하지 못했습니다. 입력은 보존됩니다. 모델을 다시 선택해 주세요.',
+  'model.switching': '모델 전환 중입니다. 새 입력은 계속 대기열에 추가할 수 있습니다.',
+  'model.switchFailed': '모델 전환을 확인하지 못했습니다. 새 입력은 대기열에 추가할 수 있습니다. 전송을 재개하려면 모델을 다시 선택하세요.',
   'model.selectModel': '모델 선택',
   'model.configureProvider': '모델 공급자 설정',
   'model.configuration': '모델 구성',

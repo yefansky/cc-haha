@@ -320,7 +320,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const pendingSlashUiAction = !isMemberSession && input.trim().startsWith('/')
     ? resolveSlashUiAction(input.trim().slice(1))
     : null
-  const canSubmit = !runtimeSwitchBlocked && !isWorkspaceMissing &&
+  const canSubmit = !isWorkspaceMissing &&
     !launchTransitioning &&
     (!showLaunchControls || launchReady || !!pendingSlashUiAction) &&
     (input.trim().length > 0 || (!isMemberSession && (attachments.length > 0 || hasWorkspaceReferences)))
@@ -763,8 +763,6 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   }, [activeTabId, replaceEmptySession, t, updateRepositoryLaunchDraft])
 
   const handleSubmit = async () => {
-    const runtimeState = activeTabId ? useChatStore.getState().sessions[activeTabId] : undefined
-    if (runtimeState?.pendingRuntimeConfig || runtimeState?.runtimeConfigError) return
     const text = input.trim()
     if ((!text && ((!attachments.length && !hasWorkspaceReferences) || isMemberSession)) || isWorkspaceMissing) return
 
@@ -886,13 +884,18 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
         : ''
     )
     const targetChatState = useChatStore.getState().sessions[targetSessionId]?.chatState ?? 'idle'
-    if (!isMemberSession && targetChatState !== 'idle') {
-      queueUserMessage(targetSessionId, {
+    if (!isMemberSession) {
+      const queuedId = queueUserMessage(targetSessionId, {
         content: contentForModel,
         attachments: [...uploadAttachmentPayload, ...workspaceAttachmentPayload],
         displayContent,
         displayAttachments: visibleAttachmentPayload,
       })
+      if (targetChatState === 'idle') {
+        const chatStore = useChatStore.getState()
+        const firstQueuedId = chatStore.sessions[targetSessionId]?.queuedUserMessages?.[0]?.id ?? queuedId
+        chatStore.sendQueuedUserMessage(targetSessionId, firstQueuedId)
+      }
     } else {
       const sent = sendMessage(targetSessionId, contentForModel, [...uploadAttachmentPayload, ...workspaceAttachmentPayload], {
         displayContent,

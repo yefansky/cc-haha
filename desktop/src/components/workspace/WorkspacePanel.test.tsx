@@ -3980,6 +3980,55 @@ describe('WorkspacePanel', () => {
     expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession?.right.dirty).toBe(true)
   })
 
+  it('recovers each source encoding after a failed decode with no patch rows through real preview actions', async () => {
+    const sessionId = 'session-encoding-recovery'
+    const path = 'src/edit.ts'
+    const initial = editableComparison(path)
+    getMocks().getWorkspaceDiffMock.mockImplementation(async (
+      _sessionId, _path, _encoding, encodings = { left: 'auto', right: 'auto' },
+    ) => ({
+      state: 'ok', path, diff: '',
+      comparison: {
+        ...initial,
+        ...Object.fromEntries((['left', 'right'] as const).map((sourceSide) => [sourceSide, {
+          ...initial[sourceSide],
+          requestedEncoding: encodings[sourceSide],
+          actualEncoding: encodings[sourceSide] === 'utf8' ? 'utf8' : 'gbk',
+          state: encodings[sourceSide] === 'utf8' ? 'undecodable' : 'ok',
+          content: encodings[sourceSide] === 'utf8' ? undefined : sourceSide === 'left' && encodings.left === 'auto' ? '旧\n' : '中文\n',
+        }])),
+      },
+    }))
+    await act(async () => {
+      await useWorkspacePanelStore.getState().openPreview(sessionId, path, 'diff')
+    })
+    const view = await renderPanel(sessionId)
+    for (const [sourceSide, label] of [['right', 'new'], ['left', 'old']] as const) {
+      await act(async () => {
+        fireEvent.change(view.getByRole('combobox', { name: `${label} source encoding` }), {
+          target: { value: 'utf8' },
+        })
+      })
+      await waitFor(() => {
+        const tab = useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]
+        expect(tab?.comparison?.[sourceSide].state).toBe('undecodable')
+        expect(tab?.comparisonSession).toBeUndefined()
+      })
+      const recovery = view.getByRole('combobox', { name: `${label} source encoding` })
+      expect((recovery as HTMLSelectElement).value).toBe('utf8')
+      await act(async () => { fireEvent.change(recovery, { target: { value: 'gbk' } }) })
+      await waitFor(() => {
+        const session = useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession
+        expect(session?.[sourceSide].content).toBe('中文\n')
+        expect(session?.[sourceSide].requestedEncoding).toBe('gbk')
+      })
+      expect(view.getAllByRole('combobox', { name: /source encoding/ })).toHaveLength(2)
+    }
+    expect(getMocks().getWorkspaceDiffMock).toHaveBeenLastCalledWith(
+      sessionId, path, 'auto', { left: 'gbk', right: 'gbk' },
+    )
+  })
+
   it('guards per-side encoding reload with Cancel and Discard before requesting fresh bytes', async () => {
     const sessionId = 'session-dirty-encoding'
     const comparison = editableComparison()

@@ -26,7 +26,6 @@ const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
 const MAX_COMMAND_ERROR_DETAILS_CHARS = 2_048
-const AUTO_ENCODING_SAMPLE_BYTES = 16 * 1024
 // A status walk over a large legacy working copy can take longer than a small
 // Git command. Keep this scoped to status reads so diffs and mutating commands
 // still fail quickly when SVN is unavailable.
@@ -95,12 +94,11 @@ function decodeCommandOutput(value: string | Buffer | undefined): string {
 }
 
 function detectWorkspaceTextEncoding(buffer: Buffer): WorkspaceTextEncoding {
-  // Inspect enough of legacy source files to get past long ASCII headers. When
-  // the sample stops in the middle of a UTF-8 character, streaming validation
-  // keeps that incomplete trailing sequence from becoming a false GBK signal.
-  const sample = buffer.subarray(0, AUTO_ENCODING_SAMPLE_BYTES)
+  if (buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) return 'utf8'
+  // Validate every available byte: legacy files can have arbitrarily long ASCII
+  // headers before their first GBK character. The buffer is already in memory.
   try {
-    new TextDecoder('utf-8', { fatal: true }).decode(sample, { stream: sample.length < buffer.length })
+    new TextDecoder('utf-8', { fatal: true }).decode(buffer)
     return 'utf8'
   } catch {
     return 'gbk'

@@ -1899,11 +1899,12 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     sourceSide: WorkspaceComparisonSourceSide,
     encoding: WorkspaceTextEncoding,
   ) => {
-    if (!activePreviewTab?.comparisonSession || activePreviewTab.kind !== 'diff') return
-    if (activePreviewTab.comparisonSession[sourceSide].requestedEncoding === encoding) return
+    if (!activePreviewTab || activePreviewTab.kind !== 'diff') return
+    const comparison = activePreviewTab.comparisonSession ?? activePreviewTab.comparison
+    if (!comparison || comparison[sourceSide].requestedEncoding === encoding) return
     const comparisonEncodings = {
-      left: activePreviewTab.comparisonSession.left.requestedEncoding,
-      right: activePreviewTab.comparisonSession.right.requestedEncoding,
+      left: comparison.left.requestedEncoding,
+      right: comparison.right.requestedEncoding,
       [sourceSide]: encoding,
     }
     const proceed = async () => {

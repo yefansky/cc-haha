@@ -192,8 +192,8 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(scroll).toHaveClass('overflow-auto')
     expect(screen.getByTestId('workspace-side-by-side-diff-content')).toHaveClass('w-full', 'min-w-0')
     expect(screen.getByRole('grid', { name: 'src/a.ts diff' })).toBeInTheDocument()
-    expect(screen.getByText(/^old ·/)).toBeInTheDocument()
-    expect(screen.getByText(/^new ·/)).toBeInTheDocument()
+    expect(screen.getByText(/^old$/)).toBeInTheDocument()
+    expect(screen.getByText(/^new$/)).toBeInTheDocument()
     expect(screen.getByText('11', { selector: '[data-diff-line-number][data-side="old"]' })).toBeInTheDocument()
     expect(screen.getByText('11', { selector: '[data-diff-line-number][data-side="new"]' })).toBeInTheDocument()
     expect(screen.getByText('const answer = 41')).toBeInTheDocument()
@@ -684,8 +684,8 @@ describe('WorkspaceSideBySideDiffSurface', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Swap left and right views' }))
-    const headers = screen.getAllByText(/^(old|new) ·/)
-    expect(headers[0]).toHaveTextContent(/^new ·/)
+    const headers = screen.getAllByText(/^(old|new)$/)
+    expect(headers[0]).toHaveTextContent(/^new$/)
     fireEvent.click(screen.getByRole('button', { name: 'Comment on src/a.ts new line 3' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Review comment' }), { target: { value: 'new-side note' } })
     fireEvent.click(screen.getByRole('button', { name: 'Submit review comment' }))
@@ -701,7 +701,7 @@ describe('WorkspaceSideBySideDiffSurface', () => {
       />,
     )
     expect(screen.getByRole('radio', { name: 'All' })).toBeChecked()
-    expect(screen.getAllByText(/^(old|new) ·/)[0]).toHaveTextContent(/^new ·/)
+    expect(screen.getAllByText(/^(old|new)$/)[0]).toHaveTextContent(/^new$/)
   })
 
   it('edits the final version directly in the comparison rows, realigns multiline input, and supports undo', () => {
@@ -832,7 +832,7 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(screen.getByText('0 of 1 differences')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit old line 2 directly' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Swap left and right views' }))
-    expect(screen.getAllByText(/^(old|new) ·/)[0]).toHaveTextContent(/^new ·/)
+    expect(screen.getAllByText(/^(old|new)$/)[0]).toHaveTextContent(/^new$/)
 
     const inlineEditor = screen.getByRole('textbox', { name: 'Edit final version line 2' })
     fireEvent.focus(inlineEditor)
@@ -867,7 +867,7 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(newToOld.querySelector('[data-merge-arrow-direction]')).toHaveAttribute('data-merge-arrow-direction', 'left')
 
     fireEvent.click(screen.getByRole('button', { name: 'Swap left and right views' }))
-    expect(screen.getAllByText(/^(old|new) ·/)[0]).toHaveTextContent(/^new ·/)
+    expect(screen.getAllByText(/^(old|new)$/)[0]).toHaveTextContent(/^new$/)
     expect(oldToNew.querySelector('[data-merge-arrow-direction]')).toHaveAttribute('data-merge-arrow-direction', 'left')
     expect(newToOld.querySelector('[data-merge-arrow-direction]')).toHaveAttribute('data-merge-arrow-direction', 'right')
     fireEvent.click(screen.getByRole('button', { name: 'old → new' }))
@@ -943,7 +943,7 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(screen.getByTestId('workspace-diff-existence-row')).toHaveAttribute('data-active-diff-section')
 
     fireEvent.click(screen.getByRole('button', { name: 'Swap left and right views' }))
-    expect(screen.getAllByText(/^(old|new) ·/)[0]).toHaveTextContent(/^new ·/)
+    expect(screen.getAllByText(/^(old|new)$/)[0]).toHaveTextContent(/^new$/)
     fireEvent.click(screen.getByRole('button', { name: 'old → new' }))
     expect(screen.getByTestId('existence-state')).toHaveTextContent('{"left":false,"right":false}')
     expect(screen.getByText('0 of 0 differences')).toBeInTheDocument()

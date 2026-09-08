@@ -188,7 +188,7 @@ export const jp: Record<TranslationKey, string> = {
   'workspace.compareWorkspace': '左右比較ビュー',
   'workspace.encoding': '文字コード',
   'workspace.textEncoding': 'テキストの文字コード',
-  'workspace.encodingAuto': '自動（先頭 16 KiB）',
+  'workspace.encodingAuto': '自動',
   'workspace.openMarkdownSource': 'Markdown ソースを開く',
   'workspace.openMarkdownPreview': 'Markdown プレビューを開く',
   'workspace.openTableSource': '表のソースを開く',
@@ -2449,8 +2449,8 @@ export const jp: Record<TranslationKey, string> = {
   'permMode.label.dontAsk': '確認しない',
 
   // ─── Model Selector ──────────────────────────────────────
-  'model.switching': 'モデルを切り替え中…',
-  'model.switchFailed': 'モデルの切り替えを確認できませんでした。入力は保持されています。モデルを選び直してください。',
+  'model.switching': 'モデルを切り替え中です。新しい入力は引き続きキューに追加できます。',
+  'model.switchFailed': 'モデルの切り替えを確認できませんでした。新しい入力はキューに追加できます。送信を再開するにはモデルを選び直してください。',
   'model.selectModel': 'モデルを選択',
   'model.configureProvider': 'モデルプロバイダーを設定',
   'model.configuration': 'モデル設定',

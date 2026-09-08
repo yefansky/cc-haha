@@ -444,14 +444,15 @@ describe('ChatInput file mentions', () => {
     expect(screen.queryByTestId('diff-comment-card')).not.toBeInTheDocument()
   })
 
-  it('retains input through a failed runtime switch and sends only after retry confirmation', async () => {
+  it('retains submitted input in the queue through a failed runtime switch and sends only after retry confirmation', async () => {
     render(<ChatInput />)
     setComposerText('keep this input', 15)
     const target = { providerId: 'seasun-test', modelId: 'shared-model' }
     act(() => useChatStore.getState().setSessionRuntime(sessionId, target))
     const pending = useChatStore.getState().sessions[sessionId]!.pendingRuntimeConfig!
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
-    expect(getComposerText()).toBe('keep this input')
+    expect(getComposerText()).toBe('')
+    expect(screen.getByTestId('pending-user-message')).toHaveTextContent('keep this input')
     expect(mocks.wsSend.mock.calls.some((call) => call[1]?.type === 'user_message')).toBe(false)
     act(() => useChatStore.getState().handleServerMessage(sessionId, {
       type: 'runtime_config_failed', requestId: pending.requestId, ...target,
@@ -459,11 +460,11 @@ describe('ChatInput file mentions', () => {
     }))
     expect(screen.getByRole('alert')).toHaveTextContent('select a model again')
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
-    expect(getComposerText()).toBe('keep this input')
+    expect(getComposerText()).toBe('')
+    expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(1)
     act(() => useChatStore.getState().setSessionRuntime(sessionId, target))
     const retry = useChatStore.getState().sessions[sessionId]!.pendingRuntimeConfig!
     act(() => useChatStore.getState().handleServerMessage(sessionId, { type: 'runtime_config_applied', requestId: retry.requestId, ...target }))
-    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
     await waitFor(() => expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, expect.objectContaining({ type: 'user_message', content: 'keep this input' })))
     expect(getComposerText()).toBe('')
   })
@@ -2120,6 +2121,92 @@ describe('ChatInput file mentions', () => {
     render(<ChatInput compact />)
 
     expect(screen.getByTestId('chat-input-toolbar')).toHaveClass('-mx-3')
+  })
+
+  it.each((['pending', 'failed', 'timeout'] as const).flatMap(blockedState =>
+    [false, true].map(running => ({ blockedState, running })),
+  ))(
+    'accepts Ctrl+Enter into the visible queue with $blockedState runtime selection (running=$running) and sends once after confirmation',
+    async ({ blockedState, running }) => {
+      useSettingsStore.setState({ chatSendBehavior: 'modifierEnter' })
+      render(<ChatInput />)
+      await waitFor(() => expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId))
+      const store = useChatStore.getState()
+      if (running) act(() => store.handleServerMessage(sessionId, { type: 'status', state: 'tool_executing' }))
+      const selection = { providerId: 'queue-provider', modelId: 'queue-model' }
+      act(() => store.setSessionRuntime(sessionId, selection))
+      const pending = useChatStore.getState().sessions[sessionId]!.pendingRuntimeConfig!
+      if (blockedState === 'failed') {
+        act(() => store.handleServerMessage(sessionId, {
+          type: 'runtime_config_failed', requestId: pending.requestId, ...selection, code: 'CLI_RESTART_FAILED',
+        }))
+      } else if (blockedState === 'timeout') {
+        vi.useFakeTimers()
+        act(() => store.setSessionRuntime(sessionId, selection))
+        act(() => vi.advanceTimersByTime(45_000))
+        vi.useRealTimers()
+      }
+      setComposerText('Keep this correction queued')
+      fireEvent.keyDown(getComposerElement(), { key: 'Enter', ctrlKey: true })
+      await waitFor(() => expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(1))
+      expect(getComposerText()).toBe('')
+      expect(screen.getByText('Keep this correction queued')).toBeInTheDocument()
+      const userSends = () => mocks.wsSend.mock.calls.filter(call => call[1]?.type === 'user_message')
+      expect(userSends()).toHaveLength(0)
+      const queued = useChatStore.getState().sessions[sessionId]!.queuedUserMessages![0]!
+      act(() => store.sendQueuedUserMessage(sessionId, queued.id))
+      expect(userSends()).toHaveLength(0)
+      expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(1)
+      if (running) act(() => store.handleServerMessage(sessionId, { type: 'status', state: 'idle' }))
+      act(() => store.setSessionRuntime(sessionId, selection))
+      const retry = useChatStore.getState().sessions[sessionId]!.pendingRuntimeConfig!
+      const ack = { type: 'runtime_config_applied' as const, requestId: retry.requestId, ...selection }
+      act(() => store.handleServerMessage(sessionId, ack))
+      expect(userSends()).toHaveLength(1)
+      expect(userSends()[0]![1]).toMatchObject({ content: 'Keep this correction queued', messageUuid: queued.messageUuid })
+      expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(0)
+      act(() => store.handleServerMessage(sessionId, ack))
+      expect(userSends()).toHaveLength(1)
+    },
+  )
+
+  it('accepts the send button during a runtime block and preserves queue order through completion', async () => {
+    render(<ChatInput />)
+    await waitFor(() => expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId))
+    const store = useChatStore.getState()
+    const selection = { providerId: 'queue-provider', modelId: 'queue-model' }
+    act(() => store.setSessionRuntime(sessionId, selection))
+    const pending = useChatStore.getState().sessions[sessionId]!.pendingRuntimeConfig!
+    for (const text of ['First correction', 'Second correction']) {
+      setComposerText(text)
+      const send = screen.getByRole('button', { name: 'Run' })
+      expect(send).toBeEnabled()
+      fireEvent.click(send)
+    }
+    const userSends = () => mocks.wsSend.mock.calls.filter(call => call[1]?.type === 'user_message')
+    expect(userSends()).toHaveLength(0)
+    expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages?.map(message => message.content))
+      .toEqual(['First correction', 'Second correction'])
+    act(() => store.handleServerMessage(sessionId, {
+      type: 'runtime_config_applied', requestId: pending.requestId, ...selection,
+    }))
+    expect(userSends().map(call => call[1].content)).toEqual(['First correction'])
+    act(() => store.handleServerMessage(sessionId, {
+      type: 'message_complete', usage: { input_tokens: 1, output_tokens: 1 },
+    }))
+    expect(userSends().map(call => call[1].content)).toEqual(['First correction', 'Second correction'])
+    expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(0)
+  })
+
+  it('dispatches accepted input immediately when idle and unblocked', async () => {
+    render(<ChatInput />)
+    await waitFor(() => expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId))
+    setComposerText('Ready to send')
+    fireEvent.keyDown(getComposerElement(), { key: 'Enter' })
+    expect(mocks.wsSend.mock.calls.filter(call => call[1]?.type === 'user_message')).toHaveLength(1)
+    expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, expect.objectContaining({ content: 'Ready to send' }))
+    expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(0)
+    expect(getComposerText()).toBe('')
   })
 
   it('uses Shift+Enter for a newline when Enter is the configured send shortcut', async () => {

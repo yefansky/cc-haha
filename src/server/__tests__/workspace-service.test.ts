@@ -1903,6 +1903,53 @@ describe('WorkspaceService', () => {
     }
   })
 
+  it('detects late GBK bytes and recovers comparison content after a wrong manual encoding', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(async () => repoDir)
+    const prefix = 'a'.repeat(16 * 1024 + 32)
+    await fs.writeFile(path.join(repoDir, 'late-gbk.txt'), Buffer.concat([
+      Buffer.from(prefix), Buffer.from('c4e3bac30a', 'hex'),
+    ]))
+
+    const automatic = await service.getDiff('session-1', 'late-gbk.txt')
+    expect(automatic.comparison?.right).toMatchObject({
+      state: 'ok', content: `${prefix}你好\n`, requestedEncoding: 'auto', actualEncoding: 'gbk',
+    })
+
+    const wrong = await service.getDiff('session-1', 'late-gbk.txt', 'utf8')
+    expect(wrong.comparison?.right).toMatchObject({ state: 'undecodable', actualEncoding: 'utf8' })
+    expect(wrong.comparison?.right).not.toHaveProperty('content')
+    const corrected = await service.getDiff('session-1', 'late-gbk.txt', 'gbk')
+    expect(corrected.comparison?.right).toMatchObject({
+      state: 'ok', content: `${prefix}你好\n`, requestedEncoding: 'gbk', actualEncoding: 'gbk',
+      contentFingerprint: wrong.comparison?.right.contentFingerprint,
+    })
+  })
+
+  it('keeps UTF-8 characters spanning the former sampling boundary intact', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(async () => repoDir)
+    const content = `${'a'.repeat(16 * 1024 - 1)}中文\n`
+    await fs.writeFile(path.join(repoDir, 'boundary-utf8.txt'), content)
+
+    const result = await service.getDiff('session-1', 'boundary-utf8.txt')
+    expect(result.comparison?.right).toMatchObject({
+      state: 'ok', content, requestedEncoding: 'auto', actualEncoding: 'utf8',
+    })
+  })
+
+  it('keeps the UTF-8 BOM authoritative when later bytes are malformed', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(async () => repoDir)
+    await fs.writeFile(path.join(repoDir, 'malformed-bom.txt'), Buffer.from('efbbbfc4e3', 'hex'))
+
+    const result = await service.getDiff('session-1', 'malformed-bom.txt')
+    expect(result.comparison?.right).toMatchObject({
+      state: 'undecodable', requestedEncoding: 'auto', actualEncoding: 'utf8', bom: 'utf8',
+    })
+    expect(result.comparison?.right).not.toHaveProperty('content')
+  })
+
   it('reloads Git comparison sides independently from their original bytes', async () => {
     const repoDir = await makeTempDir('workspace-service-encoding-reload-git-')
     git(repoDir, 'init')

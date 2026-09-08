@@ -1401,6 +1401,59 @@ export function WorkspaceSideBySideDiffSurface({
   )
 
   const visualSides = swapped ? (['new', 'old'] as const) : (['old', 'new'] as const)
+  const renderSourceHeaders = (oldPath?: string | null, newPath?: string | null) => (
+    <div
+      className="sticky top-10 z-[var(--z-raised)] grid w-full min-w-0 border-b border-[var(--color-border)] bg-[var(--color-surface-glass)] text-[11px] font-semibold text-[var(--color-text-secondary)] backdrop-blur"
+      style={paneGridStyle}
+    >
+      {visualSides.map((side) => (
+        <div key={side} data-visual-header={side} className="flex min-w-0 items-center gap-2 overflow-hidden border-r border-[var(--color-border)] px-3 py-1.5">
+          <span
+            className="min-w-0 flex-1 truncate"
+            title={`${sideLabel(side)} · ${side === 'old' ? oldPath ?? '/dev/null' : newPath ?? '/dev/null'}`}
+          >
+            {sideLabel(side)}
+          </span>
+          {effectiveComparison && (() => {
+            const sourceSide = side === 'old' ? 'left' : 'right'
+            return (
+              <>
+                <select
+                  aria-label={t('workspace.diffEncoding.sideLabel', {
+                    side: sourceSideLabel(sourceSide),
+                  })}
+                  value={effectiveComparison[sourceSide].requestedEncoding}
+                  disabled={!onEncodingChange || encodingChangingSide === sourceSide}
+                  onChange={(event) => void onEncodingChange?.(
+                    sourceSide,
+                    event.target.value as WorkspaceTextEncoding,
+                  )}
+                  className="ml-auto h-7 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 text-[10px] font-normal text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+                >
+                  <option value="auto">{t('workspace.encodingAuto')}</option>
+                  <option value="utf8">UTF-8</option>
+                  <option value="gbk">GBK</option>
+                </select>
+                {canRequestSideWriteAccess(sourceSide) && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={writeAccessChangingSide === sourceSide}
+                    onClick={() => void onRequestWriteAccess?.(sourceSide)}
+                  >
+                    {writeAccessChangingSide === sourceSide
+                      ? t('workspace.diffEdit.writeAccessLoading')
+                      : t('workspace.diffEdit.requestWriteAccess')}
+                  </Button>
+                )}
+              </>
+            )
+          })()}
+        </div>
+      ))}
+    </div>
+  )
+
   const unavailableMessage = !recomputing && model.fullViewUnavailableReason
     ? t(`workspace.diffView.unavailable.${model.fullViewUnavailableReason}`)
     : null
@@ -1741,6 +1794,7 @@ export function WorkspaceSideBySideDiffSurface({
           aria-label={`${path} diff`}
           className="m-0 w-full min-w-0 font-mono text-[13px] leading-5 text-[var(--color-code-fg)]"
         >
+          {effectiveComparison && renderSourceHeaders(effectiveComparison.left.source.path, effectiveComparison.right.source.path)}
           {projectedFiles.map(({ file, items }) => {
             if (!items.some((item) => item.kind === 'row' && visibleRowIds.has(item.row.id))) return null
             const displayPath = file.newPath ?? file.oldPath ?? path
@@ -1755,56 +1809,7 @@ export function WorkspaceSideBySideDiffSurface({
                     <span>{displayDirectory && <span className="text-[var(--color-text-tertiary)]">{displayDirectory}</span>}<strong>{displayName}</strong></span>
                   </div>
                 )}
-                <div
-                  className="sticky top-10 z-[var(--z-raised)] grid w-full min-w-0 border-b border-[var(--color-border)] bg-[var(--color-surface-glass)] text-[11px] font-semibold text-[var(--color-text-secondary)] backdrop-blur"
-                  style={paneGridStyle}
-                >
-                  {visualSides.map((side) => (
-                    <div key={side} data-visual-header={side} className="flex min-w-0 items-center gap-2 overflow-hidden border-r border-[var(--color-border)] px-3 py-1.5">
-                      <span
-                        className="min-w-0 flex-1 truncate"
-                        title={`${sideLabel(side)} · ${side === 'old' ? file.oldPath ?? '/dev/null' : file.newPath ?? '/dev/null'}`}
-                      >
-                        {sideLabel(side)} · {side === 'old' ? file.oldPath ?? '/dev/null' : file.newPath ?? '/dev/null'}
-                      </span>
-                      {comparisonSession && (() => {
-                        const sourceSide = side === 'old' ? 'left' : 'right'
-                        return (
-                          <>
-                            <select
-                              aria-label={t('workspace.diffEncoding.sideLabel', {
-                                side: sourceSideLabel(sourceSide),
-                              })}
-                              value={comparisonSession[sourceSide].requestedEncoding}
-                              disabled={!onEncodingChange || encodingChangingSide === sourceSide}
-                              onChange={(event) => void onEncodingChange?.(
-                                sourceSide,
-                                event.target.value as WorkspaceTextEncoding,
-                              )}
-                              className="ml-auto h-7 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 text-[10px] font-normal text-[var(--color-text-primary)]"
-                            >
-                              <option value="auto">{t('workspace.encodingAuto')}</option>
-                              <option value="utf8">UTF-8</option>
-                              <option value="gbk">GBK</option>
-                            </select>
-                            {canRequestSideWriteAccess(sourceSide) && (
-                              <Button
-                                variant="secondary"
-                                size="sm"
-                                loading={writeAccessChangingSide === sourceSide}
-                                onClick={() => void onRequestWriteAccess?.(sourceSide)}
-                              >
-                                {writeAccessChangingSide === sourceSide
-                                  ? t('workspace.diffEdit.writeAccessLoading')
-                                  : t('workspace.diffEdit.requestWriteAccess')}
-                              </Button>
-                            )}
-                          </>
-                        )
-                      })()}
-                    </div>
-                  ))}
-                </div>
+                {!effectiveComparison && renderSourceHeaders(file.oldPath, file.newPath)}
                 {items.map(renderProjectedItem)}
               </section>
             )

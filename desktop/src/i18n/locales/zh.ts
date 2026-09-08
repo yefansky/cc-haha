@@ -188,7 +188,7 @@ export const zh: Record<TranslationKey, string> = {
   'workspace.compareWorkspace': '横向对比视图',
   'workspace.encoding': '编码',
   'workspace.textEncoding': '文本编码',
-  'workspace.encodingAuto': '自动（前 16 KiB）',
+  'workspace.encodingAuto': '自动',
   'workspace.openMarkdownSource': '打开 Markdown 源码',
   'workspace.openMarkdownPreview': '打开 Markdown 预览',
   'workspace.openTableSource': '打开表格源码',
@@ -2448,8 +2448,8 @@ export const zh: Record<TranslationKey, string> = {
   'permMode.label.dontAsk': '不询问',
 
   // ─── Model Selector ──────────────────────────────────────
-  'model.switching': '正在切换模型…',
-  'model.switchFailed': '模型切换未确认。输入已保留，请重新选择模型后发送。',
+  'model.switching': '正在切换模型，新输入仍可提交排队。',
+  'model.switchFailed': '模型切换未确认。新输入仍可排队，请重新选择模型以恢复发送。',
   'model.selectModel': '选择模型',
   'model.configureProvider': '配置模型供应商',
   'model.configuration': '模型配置',
