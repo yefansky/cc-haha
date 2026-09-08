@@ -2,6 +2,16 @@ import type { TranslationKey } from './en'
 import { contextAuditKr } from '../contextAuditTranslations'
 
 export const kr: Record<TranslationKey, string> = {
+  "chat.subagentProgress.waiting": "하위 에이전트 대기 중",
+  "chat.subagentProgress.running": "하위 에이전트",
+  "chat.subagentProgress.phase.waiting": "모델 응답 대기",
+  "chat.subagentProgress.phase.thinking": "생각 중",
+  "chat.subagentProgress.phase.responding": "출력 중",
+  "chat.subagentProgress.phase.tool": "도구 실행 중",
+  "chat.subagentProgress.phase.finished": "실행 종료",
+  "chat.subagentProgress.phase.disconnected": "연결 끊김",
+  "chat.subagentProgress.estimate": "출력 약 {count} tokens",
+
   ...contextAuditKr,
   // ─── Common ──────────────────────────────────────
   'common.cancel': '취소',

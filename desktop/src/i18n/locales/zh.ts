@@ -2,6 +2,16 @@ import type { TranslationKey } from './en'
 import { contextAuditZh } from '../contextAuditTranslations'
 
 export const zh: Record<TranslationKey, string> = {
+  "chat.subagentProgress.waiting": "正在等待子代理",
+  "chat.subagentProgress.running": "子代理",
+  "chat.subagentProgress.phase.waiting": "等待模型响应",
+  "chat.subagentProgress.phase.thinking": "思考中",
+  "chat.subagentProgress.phase.responding": "输出中",
+  "chat.subagentProgress.phase.tool": "执行工具",
+  "chat.subagentProgress.phase.finished": "本次运行已结束",
+  "chat.subagentProgress.phase.disconnected": "连接已断开",
+  "chat.subagentProgress.estimate": "输出约 {count} tokens",
+
   ...contextAuditZh,
   // ─── Common ──────────────────────────────────────
   'common.cancel': '取消',

@@ -6,6 +6,8 @@ import { useTabStore } from '../../stores/tabStore'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { formatTokenCount } from '../../lib/formatTokenCount'
 import { formatDurationSeconds } from '../../lib/backgroundTasks'
+import { SubagentProgressStatus } from './SubagentProgressStatus'
+import { getRunningSubagentProgress } from '../../lib/subagentProgress'
 
 function translateServerVerb(
   t: (key: TranslationKey) => string,
@@ -40,6 +42,7 @@ export function StreamingIndicator() {
   const elapsedSeconds = sessionState?.elapsedSeconds ?? 0
   // chars ÷ 4 estimates output tokens for this turn, mirroring the CLI spinner.
   const streamingTokens = Math.round((sessionState?.streamingResponseChars ?? 0) / 4)
+  const runningAgents = getRunningSubagentProgress(sessionState)
 
   useEffect(() => {
     if (!apiRetry) return undefined
@@ -112,6 +115,17 @@ export function StreamingIndicator() {
             {formatDurationSeconds(elapsedSeconds, t)}
           </span>
         )}
+      </div>
+    )
+  }
+
+  if (runningAgents.length > 0 && activeTabId) {
+    return (
+      <div className="mb-2 flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-4 py-2">
+        {runningAgents.map(progress => (
+          <SubagentProgressStatus key={progress.toolUseId} progress={progress} sessionId={activeTabId}
+            waiting={!sessionState?.messages.some(message => message.type === 'tool_result' && message.toolUseId === progress.toolUseId)} />
+        ))}
       </div>
     )
   }

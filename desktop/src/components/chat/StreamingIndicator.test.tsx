@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 
 vi.mock('../../api/websocket', () => ({
   wsManager: {
@@ -57,6 +57,18 @@ function makeSession(overrides: Partial<PerSessionState> = {}): PerSessionState 
 }
 
 describe('StreamingIndicator', () => {
+  it('updates child output while parent output is frozen and switches to ended without a stale wait', () => {
+    const progress = { toolUseId: 'parent-tool', agentId: 'child', description: 'Review Lua', startedAt: 1, updatedAt: 2, outputTokensEstimate: 40, phase: 'thinking' as const }
+    useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSession({ streamingResponseChars: 3464, subagentProgress: { 'parent-tool': progress } }) } })
+    render(<StreamingIndicator />)
+    expect(screen.getByText('Waiting for subagent: Review Lua')).toBeTruthy()
+    expect(screen.getByText('≈ 40 output tokens')).toBeTruthy()
+    act(() => useChatStore.getState().handleServerMessage(ACTIVE_TAB, { type: 'system_notification', subtype: 'agent_stream_progress', data: { ...progress, updatedAt: 3, outputTokensEstimate: 90 } }))
+    expect(screen.getByText('≈ 90 output tokens')).toBeTruthy()
+    expect(useChatStore.getState().sessions[ACTIVE_TAB]?.streamingResponseChars).toBe(3464)
+    act(() => useChatStore.getState().handleServerMessage(ACTIVE_TAB, { type: 'system_notification', subtype: 'agent_stream_progress', data: { ...progress, updatedAt: 4, phase: 'finished' } }))
+    expect(screen.queryByText('Waiting for subagent: Review Lua')).toBeNull()
+  })
   beforeEach(() => {
     useSettingsStore.setState({ locale: 'en' })
     useTabStore.setState({

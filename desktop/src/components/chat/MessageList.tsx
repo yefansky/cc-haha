@@ -29,6 +29,7 @@ import { ToolResultBlock } from './ToolResultBlock'
 import { PermissionDialog } from './PermissionDialog'
 import { AskUserQuestion } from './AskUserQuestion'
 import { StreamingIndicator } from './StreamingIndicator'
+import { getRunningSubagentProgress } from '../../lib/subagentProgress'
 import { InlineTaskSummary } from './InlineTaskSummary'
 import { CurrentTurnChangeCard } from './CurrentTurnChangeCard'
 import {
@@ -3393,7 +3394,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
               - tool_executing: background work is running
               - thinking but no active ThinkingBlock yet: the gap between
                 sending a message and receiving the first thinking delta */}
-          {(chatState === 'tool_executing' || (chatState === 'thinking' && !activeThinkingId)) && (
+          {(getRunningSubagentProgress(sessionState).length > 0 || chatState === 'tool_executing' || (chatState === 'thinking' && !activeThinkingId)) && (
             <StreamingIndicator />
           )}
 

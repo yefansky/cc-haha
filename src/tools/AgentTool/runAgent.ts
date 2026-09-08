@@ -1,4 +1,6 @@
 import { feature } from 'bun:bundle'
+import { createAgentStreamProgress } from './agentStreamProgress.js'
+import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
@@ -776,6 +778,12 @@ export async function* runAgent({
     ...(spawningToolUseId && { toolUseId: spawningToolUseId }),
   }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
+  // Streaming messages are intentionally not yielded into the parent transcript.
+  // Publish bounded activity metadata before that filter so long thinking stays visible.
+  const streamProgress = spawningToolUseId ? createAgentStreamProgress({
+    toolUseId: spawningToolUseId, agentId, description: description ?? agentDefinition.agentType,
+  }, progress => enqueueSdkEvent({ type: 'system', subtype: 'agent_stream_progress', progress })) : undefined
+
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
 
@@ -791,6 +799,7 @@ export async function* runAgent({
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })) {
       onQueryProgress?.()
+      streamProgress?.observe(message)
       // Forward subagent API request starts to parent's metrics display
       // so TTFT/OTPS update during subagent execution.
       if (
@@ -850,6 +859,7 @@ export async function* runAgent({
     }
   } finally {
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
+    streamProgress?.finish()
     await mcpCleanup()
     // Clean up agent's session hooks
     if (agentDefinition.hooks) {

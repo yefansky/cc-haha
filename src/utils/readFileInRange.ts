@@ -15,9 +15,8 @@
 //   the range are counted (for totalLines) but discarded, so reading line
 //   1 of a 100 GB file won't balloon RSS.
 //
-//   All event handlers (streamOnOpen/Data/End) are module-level named
-//   functions with zero closures.  State lives in a StreamState object;
-//   handlers access it via `this`, bound at registration time.
+//   Line accumulation lives in StreamState. A per-stream decoder retains
+//   incomplete multibyte characters across chunk boundaries.
 //
 //   Lifecycle: `open`, `end`, and `error` use .once() (auto-remove).
 //   `data` fires until the stream ends or is destroyed — either way the
@@ -40,6 +39,8 @@
 import { createReadStream, fstat } from 'fs'
 import { stat as fsStat, readFile } from 'fs/promises'
 import { formatFileSize } from './format.js'
+import { decodeTextFile } from './textEncoding.js'
+import iconv from 'iconv-lite'
 
 const FAST_PATH_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
 
@@ -92,7 +93,7 @@ export async function readFileInRange(
     )
   }
 
-  if (stats.isFile() && stats.size < FAST_PATH_MAX_SIZE) {
+  if (stats.isFile() && stats.size < FAST_PATH_MAX_SIZE && maxLines === undefined) {
     if (
       !truncateOnByteLimit &&
       maxBytes !== undefined &&
@@ -101,7 +102,7 @@ export async function readFileInRange(
       throw new FileTooLargeError(stats.size, maxBytes)
     }
 
-    const text = await readFile(filePath, { encoding: 'utf8', signal })
+    const text = decodeTextFile(await readFile(filePath, { signal })).content
     return readFileInRangeFast(
       text,
       stats.mtimeMs,
@@ -111,15 +112,26 @@ export async function readFileInRange(
     )
   }
 
-  return readFileInRangeStreaming(
+  const readStreaming = (encoding: 'utf8' | 'gbk') => readFileInRangeStreaming(
     filePath,
     offset,
     maxLines,
     maxBytes,
     truncateOnByteLimit,
     signal,
+    encoding,
   )
+  try {
+    return await readStreaming('utf8')
+  } catch (error) {
+    // Restart from byte zero when a later chunk disproves an ASCII/UTF-8 head.
+    // Keep the large-file path bounded in memory, including for GBK files.
+    if (!(error instanceof InvalidUtf8StreamError) || !stats.isFile()) throw error
+    return readStreaming('gbk')
+  }
 }
+
+class InvalidUtf8StreamError extends Error {}
 
 // ---------------------------------------------------------------------------
 // Fast path — readFile + in-memory split
@@ -348,11 +360,11 @@ function readFileInRangeStreaming(
   maxBytes: number | undefined,
   truncateOnByteLimit: boolean,
   signal?: AbortSignal,
+  encoding: 'utf8' | 'gbk' = 'utf8',
 ): Promise<ReadFileRangeResult> {
   return new Promise((resolve, reject) => {
     const state: StreamState = {
       stream: createReadStream(filePath, {
-        encoding: 'utf8',
         highWaterMark: 512 * 1024,
         ...(signal ? { signal } : undefined),
       }),
@@ -376,8 +388,35 @@ function readFileInRangeStreaming(
     })
 
     state.stream.once('open', streamOnOpen.bind(state))
-    state.stream.on('data', streamOnData.bind(state))
-    state.stream.once('end', streamOnEnd.bind(state))
+    let utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+    let firstBytes = true
+    const gbk = iconv.getDecoder('gbk')
+    const decode = (chunk?: Buffer) => {
+      if (encoding === 'utf8') {
+        if (firstBytes && chunk) {
+          firstBytes = false
+          if (chunk[0] === 0xff && chunk[1] === 0xfe) {
+            utf8 = new TextDecoder('utf-16le', { fatal: true, ignoreBOM: true })
+          }
+        }
+        try { return utf8.decode(chunk, { stream: chunk !== undefined }) }
+        catch { throw new InvalidUtf8StreamError('Invalid UTF-8 stream') }
+      }
+      const text = (chunk ? gbk.write(chunk) : gbk.end()) ?? ''
+      if (text.includes('\uFFFD')) throw new Error('File contains invalid GBK bytes; refusing a lossy read.')
+      return text
+    }
+    state.stream.on('data', (chunk: Buffer) => {
+      try { streamOnData.call(state, decode(chunk)) }
+      catch (error) { state.stream.destroy(error as Error) }
+    })
+    state.stream.once('end', () => {
+      try {
+        const tail = decode()
+        if (tail) streamOnData.call(state, tail)
+        streamOnEnd.call(state)
+      } catch (error) { reject(error) }
+    })
     state.stream.once('error', reject)
   })
 }

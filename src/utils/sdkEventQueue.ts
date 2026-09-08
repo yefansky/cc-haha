@@ -2,6 +2,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
 import type { SdkWorkflowProgress } from '../types/tools.js'
+import type { AgentStreamProgress } from '../tools/AgentTool/agentStreamProgress.js'
 
 type TaskStartedEvent = {
   type: 'system'
@@ -101,6 +102,7 @@ type AgentToolActivityEvent = {
 }
 
 export type SdkEvent =
+  | { type: 'system'; subtype: 'agent_stream_progress'; progress: AgentStreamProgress }
   | TaskStartedEvent
   | TaskProgressEvent
   | TaskNotificationSdkEvent
@@ -109,6 +111,12 @@ export type SdkEvent =
 
 const MAX_QUEUE_SIZE = 1000
 const queue: SdkEvent[] = []
+const listeners = new Set<() => void>()
+
+export function subscribeSdkEvents(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
 
 export function enqueueSdkEvent(event: SdkEvent): void {
   // SDK events are only consumed (drained) in headless/streaming mode.
@@ -120,6 +128,7 @@ export function enqueueSdkEvent(event: SdkEvent): void {
     queue.shift()
   }
   queue.push(event)
+  for (const listener of listeners) listener()
 }
 
 export function drainSdkEvents(): Array<

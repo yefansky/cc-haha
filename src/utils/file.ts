@@ -23,6 +23,7 @@ import {
   type LineEndingType,
 } from './fileRead.js'
 import { fileReadCache } from './fileReadCache.js'
+import { encodeTextFile, type TextFileEncoding } from './textEncoding.js'
 import { getFsImplementation, safeResolvePath } from './fsOperations.js'
 import { logError } from './log.js'
 import { expandPath } from './path.js'
@@ -84,7 +85,7 @@ export async function getFileModificationTimeAsync(
 export function writeTextContent(
   filePath: string,
   content: string,
-  encoding: BufferEncoding,
+  encoding: TextFileEncoding,
   endings: LineEndingType,
 ): void {
   let toWrite = content
@@ -94,10 +95,10 @@ export function writeTextContent(
     toWrite = content.replaceAll('\r\n', '\n').split('\n').join('\r\n')
   }
 
-  writeFileSyncAndFlush_DEPRECATED(filePath, toWrite, { encoding })
+  writeFileSyncAndFlush_DEPRECATED(filePath, encodeTextFile(toWrite, encoding))
 }
 
-export function detectFileEncoding(filePath: string): BufferEncoding {
+export function detectFileEncoding(filePath: string): TextFileEncoding {
   try {
     const fs = getFsImplementation()
     const { resolvedPath } = safeResolvePath(fs, filePath)
@@ -119,14 +120,15 @@ export function detectFileEncoding(filePath: string): BufferEncoding {
 
 export function detectLineEndings(
   filePath: string,
-  encoding: BufferEncoding = 'utf8',
+  _encoding: TextFileEncoding = 'utf8',
 ): LineEndingType {
   try {
     const fs = getFsImplementation()
     const { resolvedPath } = safeResolvePath(fs, filePath)
     const { buffer, bytesRead } = fs.readSync(resolvedPath, { length: 4096 })
-
-    const content = buffer.toString(encoding, 0, bytesRead)
+    // Line separators are ASCII in UTF-8 and GBK; decoding the entire file
+    // would add unnecessary I/O just to count them.
+    const content = buffer.subarray(0, bytesRead).toString(_encoding === 'utf16le' ? 'utf16le' : 'latin1')
     return detectLineEndingsForString(content)
   } catch (error) {
     logError(error)
@@ -361,7 +363,7 @@ export function readFileSyncCached(filePath: string): string {
  */
 export function writeFileSyncAndFlush_DEPRECATED(
   filePath: string,
-  content: string,
+  content: string | Buffer,
   options: { encoding: BufferEncoding; mode?: number } = { encoding: 'utf-8' },
 ): void {
   const fs = getFsImplementation()

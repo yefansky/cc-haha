@@ -352,7 +352,7 @@ import { unassignTeammateTasks } from '../utils/tasks.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { stopTask } from '../tasks/stopTask.js'
-import { drainSdkEvents } from '../utils/sdkEventQueue.js'
+import { drainSdkEvents, subscribeSdkEvents } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
@@ -1934,6 +1934,12 @@ function runHeadlessStreaming(
     // queue re-checks at the bottom of run().
     const isMainThread = (cmd: QueuedCommand) => cmd.agentId === undefined
 
+    // A foreground Agent may not yield a parent message for minutes. Drain
+    // activity independently of ask() so its streaming metadata stays live.
+    const unsubscribeSdkEvents = subscribeSdkEvents(() => {
+      for (const event of drainSdkEvents()) output.enqueue(event)
+    })
+
     try {
       let command: QueuedCommand | undefined
       let waitingForAgents = false
@@ -2425,6 +2431,7 @@ function runHeadlessStreaming(
       return
     } finally {
       runPhase = 'finally_flush'
+      unsubscribeSdkEvents()
       // Flush pending internal events before going idle
       await structuredIO.flushInternalEvents()
       runPhase = 'finally_post_flush'

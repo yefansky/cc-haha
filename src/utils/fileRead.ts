@@ -14,38 +14,29 @@
 
 import { logForDebugging } from './debug.js'
 import { getFsImplementation, safeResolvePath } from './fsOperations.js'
+import { decodeTextFile, type TextFileEncoding } from './textEncoding.js'
 
 export type LineEndingType = 'CRLF' | 'LF'
 
 export function detectEncodingForResolvedPath(
   resolvedPath: string,
-): BufferEncoding {
-  const { buffer, bytesRead } = getFsImplementation().readSync(resolvedPath, {
-    length: 4096,
-  })
-
-  // Empty files should default to utf8, not ascii
-  // This fixes a bug where writing emojis/CJK to empty files caused corruption
-  if (bytesRead === 0) {
+): TextFileEncoding {
+  const { buffer, bytesRead } = getFsImplementation().readSync(resolvedPath, { length: 64 * 1024 })
+  const sample = buffer.subarray(0, bytesRead)
+  if (sample[0] === 0xff && sample[1] === 0xfe) return 'utf16le'
+  if (sample[0] === 0xef && sample[1] === 0xbb && sample[2] === 0xbf) return 'utf8-bom'
+  // A sample can end inside a multibyte character. This is only a hint:
+  // mutations use readFileSyncWithMetadata's already-required content instead.
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(sample, { stream: true })
     return 'utf8'
+  } catch {
+    for (const trim of [0, 1]) {
+      try { return decodeTextFile(sample.subarray(0, Math.max(0, bytesRead - trim))).encoding }
+      catch { /* A GBK pair may straddle the sample boundary. */ }
+    }
+    throw new Error('Unable to read file without data loss; file was not modified.')
   }
-
-  if (bytesRead >= 2) {
-    if (buffer[0] === 0xff && buffer[1] === 0xfe) return 'utf16le'
-  }
-
-  if (
-    bytesRead >= 3 &&
-    buffer[0] === 0xef &&
-    buffer[1] === 0xbb &&
-    buffer[2] === 0xbf
-  ) {
-    return 'utf8'
-  }
-
-  // For non-empty files, default to utf8 since it's a superset of ascii
-  // and handles all Unicode characters properly
-  return 'utf8'
 }
 
 export function detectLineEndingsForString(content: string): LineEndingType {
@@ -74,7 +65,7 @@ export function detectLineEndingsForString(content: string): LineEndingType {
  */
 export function readFileSyncWithMetadata(filePath: string): {
   content: string
-  encoding: BufferEncoding
+  encoding: TextFileEncoding
   lineEndings: LineEndingType
 } {
   const fs = getFsImplementation()
@@ -84,8 +75,7 @@ export function readFileSyncWithMetadata(filePath: string): {
     logForDebugging(`Reading through symlink: ${filePath} -> ${resolvedPath}`)
   }
 
-  const encoding = detectEncodingForResolvedPath(resolvedPath)
-  const raw = fs.readFileSync(resolvedPath, { encoding })
+  const { encoding, content: raw } = decodeTextFile(fs.readFileBytesSync(resolvedPath))
   // Detect line endings from the raw head before CRLF normalization erases
   // the distinction. 4096 code units is ≥ detectLineEndings's 4096-byte
   // readSync sample (line endings are ASCII, so the unit mismatch is moot).

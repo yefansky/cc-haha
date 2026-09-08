@@ -1404,7 +1404,8 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             <SessionChangedFilesStrip
               sessionId={activeTabId}
               workDir={resolvedWorkDir ?? null}
-              enabled={!isActive && !hasRunningSubagents}
+              enabled
+              live={isActive || hasRunningSubagents}
               refreshNonce={loadedMessageCount}
             />
           )}

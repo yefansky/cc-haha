@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -38,6 +38,25 @@ function checkpoint(
 }
 
 describe('SessionChangedFilesStrip', () => {
+  it('refreshes confirmed child changes while running, keeps expanded state, and stops polling on completion', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.getTurnCheckpoints.mockResolvedValueOnce({ checkpoints: [checkpoint('turn', 0, ['/repo/process.md'])] })
+        .mockResolvedValue({ checkpoints: [checkpoint('turn', 0, ['/repo/process.md', '/other/child.lua'])] })
+      const view = render(<SessionChangedFilesStrip sessionId="live-child" workDir="/repo" enabled live refreshNonce={1} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      fireEvent.click(screen.getByRole('button', { name: 'Session file changes: 1' }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+      expect(screen.getByRole('button', { name: 'Session file changes: 2' })).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByText('child.lua')).toBeInTheDocument()
+      view.rerender(<SessionChangedFilesStrip sessionId="live-child" workDir="/repo" enabled live={false} refreshNonce={1} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      const requests = mocks.getTurnCheckpoints.mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(9000) })
+      expect(mocks.getTurnCheckpoints).toHaveBeenCalledTimes(requests)
+      view.unmount()
+    } finally { vi.useRealTimers() }
+  })
   const initialWorkspaceState = useWorkspacePanelStore.getInitialState()
 
   beforeEach(() => {

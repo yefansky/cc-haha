@@ -17,6 +17,7 @@ import {
   VISUAL_SELECTION_PROMPT_FOOTER,
 } from '../lib/selectionComposer'
 import { hasRunningBackgroundTasks, hasRunningSubagentTasks } from '../lib/backgroundTasks'
+import { parseSubagentProgress, updateSubagentProgress, type SubagentProgress } from '../lib/subagentProgress'
 import { AGENT_LIFECYCLE_TYPES } from '../types/team'
 import type { ComposerAttachment } from '../lib/composerAttachments'
 import type { ComposerMention } from '../lib/composerMentions'
@@ -187,6 +188,7 @@ export type PerSessionState = {
    * indicator — same estimation the CLI spinner uses. Reset on each send.
    */
   streamingResponseChars: number
+  subagentProgress?: Record<string, SubagentProgress>
   /** Boundary used to discard one failed, side-effect-free stream attempt. */
   streamAttemptStartIndex?: number
   streamAttemptStartResponseChars?: number
@@ -4437,6 +4439,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               ],
             }))
           }
+        }
+        if (msg.subtype === 'agent_stream_progress') {
+          const progress = parseSubagentProgress(msg.data)
+          if (progress) update(session => ({ subagentProgress: updateSubagentProgress(session.subagentProgress ?? {}, progress) }))
         }
         if ((msg.subtype === 'task_started' || msg.subtype === 'task_progress') && msg.data && typeof msg.data === 'object') {
           const taskEvent = normalizeBackgroundAgentTaskEvent(msg.data, msg.subtype)

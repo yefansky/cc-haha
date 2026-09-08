@@ -14,6 +14,7 @@ import { useTranslation } from '../i18n'
 import { mapHistoryMessagesToUiMessages, useChatStore } from '../stores/chatStore'
 import { SUBAGENT_TAB_PREFIX, useTabStore } from '../stores/tabStore'
 import type { AgentTaskNotification, UIMessage } from '../types/chat'
+import { SubagentProgressStatus } from '../components/chat/SubagentProgressStatus'
 
 type TranslationFn = ReturnType<typeof useTranslation>
 const LIVE_RUN_REFRESH_MS = 2000
@@ -41,6 +42,7 @@ export function SubagentRunPage({
     return liveTask?.taskId ?? session?.agentTaskNotifications?.[toolUseId]?.taskId
   })
   const resolvedTaskId = taskId ?? discoveredTaskId
+  const liveProgress = useChatStore(state => state.sessions[sourceSessionId]?.subagentProgress?.[toolUseId])
 
   const handleReturn = () => {
     const store = useTabStore.getState()
@@ -110,6 +112,7 @@ export function SubagentRunPage({
             <p className="mt-1 truncate font-mono text-[11px] text-[var(--color-text-tertiary)]">
               {sourceSessionId} / {toolUseId}
             </p>
+            {liveProgress && <div className="mt-2"><SubagentProgressStatus progress={liveProgress} sessionId={sourceSessionId} /></div>}
           </div>
         </div>
         {/* The icon spins in place while loading rather than using IconButton's

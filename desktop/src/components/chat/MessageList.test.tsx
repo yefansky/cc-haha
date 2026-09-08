@@ -344,6 +344,17 @@ async function selectAcrossMessageText(
 }
 
 describe('MessageList nested tool calls', () => {
+  it('keeps child stream progress visible when the parent thinking block is collapsed', () => {
+    useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSessionState({
+      chatState: 'thinking', activeThinkingId: 'parent-thinking', connectionState: 'connected',
+      messages: [{ id: 'parent-thinking', type: 'thinking', content: 'Parent is waiting.', timestamp: 1 }],
+      subagentProgress: { agent: { toolUseId: 'agent', agentId: 'child', description: 'Child review', startedAt: 1, updatedAt: 2, phase: 'thinking', outputTokensEstimate: 250 } },
+    }) } })
+    render(<MessageList />)
+    expect(screen.getByText('Waiting for subagent: Child review')).toBeTruthy()
+    expect(screen.getByText('≈ 250 output tokens')).toBeTruthy()
+    expect(screen.queryByText('Parent is waiting.')).toBeNull()
+  })
   beforeEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()

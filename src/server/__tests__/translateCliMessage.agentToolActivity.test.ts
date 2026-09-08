@@ -8,6 +8,12 @@ import { translateCliMessage } from '../ws/handler.js'
 // like a synchronous subagent (childToolCallsByParent). Regression guard for
 // the "background subagents stuck on 'no tool activity'" bug.
 describe('translateCliMessage: agent_tool_activity', () => {
+  it('forwards child stream metadata without adding parent text or changing parent status', () => {
+    const progress = { toolUseId: 'parent', agentId: 'child', phase: 'thinking', outputTokensEstimate: 73, startedAt: 1, updatedAt: 2, description: 'Review' }
+    expect(translateCliMessage({ type: 'system', subtype: 'agent_stream_progress', progress }, 'session-stream')).toEqual([
+      { type: 'system_notification', subtype: 'agent_stream_progress', data: progress },
+    ])
+  })
   it('re-emits a background tool_use as tool_use_complete with the parent id', () => {
     const out = translateCliMessage(
       {

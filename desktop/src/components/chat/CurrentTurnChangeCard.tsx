@@ -11,6 +11,8 @@ import { isAbsoluteLocalPath, localFileUrl } from '../../lib/handlePreviewLink'
 import { shouldOfferStaticHtmlPreview } from '../../lib/htmlPreviewPolicy'
 import { getServerBaseUrl } from '../../lib/desktopRuntime'
 import { getDesktopHost } from '../../lib/desktopHost'
+import { copyTextToClipboard } from '../../lib/clipboard'
+import { useUIStore } from '../../stores/uiStore'
 import { useOpenTargetStore } from '../../stores/openTargetStore'
 import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
@@ -124,6 +126,32 @@ export function CurrentTurnChangeCard({
     })()
   }, [openWith, sessionId, t, files])
 
+  const handleFileContextMenu = (event: ReactMouseEvent<HTMLDivElement>, fileEntry: ChangedFileEntry) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const baseDir = checkpoint.workDir ?? workDir
+    const path = isAbsoluteLocalPath(fileEntry.apiPath.replace(/\\/g, '/')) || !baseDir
+      ? fileEntry.apiPath
+      : `${baseDir.replace(/[\\/]+$/, '')}/${fileEntry.apiPath}`
+    setOpenWith({
+      anchor: new DOMRect(event.clientX, event.clientY, 0, 0),
+      triggerEl: event.currentTarget,
+      items: [{
+        id: 'copy-path',
+        label: t('openWith.copyPath'),
+        icon: 'copy',
+        onSelect: () => {
+          void copyTextToClipboard(path).then((copied) => {
+            useUIStore.getState().addToast({
+              type: copied ? 'success' : 'error',
+              message: copied ? t('workspace.pathCopied') : t('common.copyFailed'),
+            })
+          })
+        },
+      }],
+    })
+  }
+
   const cardLabel = isLatest
     ? t('chat.turnChangesLatestCardLabel')
     : t('chat.turnChangesHistoricalCardLabel')
@@ -193,7 +221,7 @@ export function CurrentTurnChangeCard({
           const typeInfo = describeFileType(fileEntry.displayPath)
           const previewable = isPreviewableChangedFile(fileEntry.displayPath)
           return (
-            <div key={fileEntry.apiPath} className="flex items-center gap-2">
+            <div key={fileEntry.apiPath} className="flex items-center gap-2" onContextMenu={(event) => handleFileContextMenu(event, fileEntry)}>
               <button
                 type="button"
                 id={`turn-change-opener-${checkpoint.target.targetUserMessageId}-${encodeURIComponent(fileEntry.apiPath)}`}

@@ -17,6 +17,7 @@ type SessionChangedFilesStripProps = {
   sessionId: string
   workDir: string | null
   enabled: boolean
+  live?: boolean
   refreshNonce: number
 }
 
@@ -55,9 +56,16 @@ export function SessionChangedFilesStrip({
   sessionId,
   workDir,
   enabled,
+  live = false,
   refreshNonce,
 }: SessionChangedFilesStripProps) {
   const t = useTranslation()
+  const [liveRefresh, setLiveRefresh] = useState(0)
+  useEffect(() => {
+    if (!enabled || !live) return
+    const timer = window.setInterval(() => setLiveRefresh(value => value + 1), 3000)
+    return () => window.clearInterval(timer)
+  }, [enabled, live, sessionId])
   const [expanded, setExpanded] = useState(false)
   const warmedSignatureBySessionRef = useRef(new Map<string, string>())
   const subscribe = useCallback(
@@ -109,7 +117,7 @@ export function SessionChangedFilesStrip({
     return () => {
       cancelled = true
     }
-  }, [enabled, refreshNonce, sessionId, workDir])
+  }, [enabled, live, liveRefresh, refreshNonce, sessionId, workDir])
 
   const openChangedFile = useCallback(async (file: SessionChangedFile) => {
     const workspace = useWorkspacePanelStore.getState()

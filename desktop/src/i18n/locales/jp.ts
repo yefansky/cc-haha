@@ -2,6 +2,16 @@ import type { TranslationKey } from './en'
 import { contextAuditJp } from '../contextAuditTranslations'
 
 export const jp: Record<TranslationKey, string> = {
+  "chat.subagentProgress.waiting": "サブエージェントを待機中",
+  "chat.subagentProgress.running": "サブエージェント",
+  "chat.subagentProgress.phase.waiting": "モデルの応答待ち",
+  "chat.subagentProgress.phase.thinking": "思考中",
+  "chat.subagentProgress.phase.responding": "出力中",
+  "chat.subagentProgress.phase.tool": "ツール実行中",
+  "chat.subagentProgress.phase.finished": "実行終了",
+  "chat.subagentProgress.phase.disconnected": "接続が切断されました",
+  "chat.subagentProgress.estimate": "出力 約 {count} tokens",
+
   ...contextAuditJp,
   // ─── Common ──────────────────────────────────────
   'common.cancel': 'キャンセル',

@@ -3,6 +3,8 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { act } from 'react'
 
+vi.mock('../../lib/clipboard', () => ({ copyTextToClipboard: vi.fn().mockResolvedValue(true) }))
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Hoisted mocks (vi.hoisted runs before module evaluation)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -85,6 +87,8 @@ vi.mock('../../i18n', () => ({
 // Import after mocks
 // ──────────────────────────────────────────────────────────────────────────────
 import { CurrentTurnChangeCard } from './CurrentTurnChangeCard'
+import { copyTextToClipboard } from '../../lib/clipboard'
+import { useUIStore } from '../../stores/uiStore'
 import { localFileUrl } from '../../lib/handlePreviewLink'
 import type { SessionTurnCheckpoint } from '../../api/sessions'
 import { en } from '../../i18n/locales/en'
@@ -147,6 +151,37 @@ function renderCard(
 // ──────────────────────────────────────────────────────────────────────────────
 afterEach(() => {
   cleanup()
+})
+
+describe('CurrentTurnChangeCard – copy file path from context menu', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(copyTextToClipboard).mockResolvedValue(true)
+    useUIStore.setState({ toasts: [] })
+  })
+
+  it.each([
+    ['G:\\Jx3 Classic\\scripts\\淬体成锋.lua', 'G:\\Jx3 Classic\\scripts\\淬体成锋.lua'],
+    ['\\\\server\\share\\文件.lua', '\\\\server\\share\\文件.lua'],
+    ['src/main.lua', '/w/proj/src/main.lua'],
+    ['/outside/file.lua', '/outside/file.lua'],
+  ])('copies the full path for %s without opening the file', async (file, expected) => {
+    renderCard([file])
+    fireEvent.contextMenu(screen.getByRole('button', { name: /turnChangesOpenInWorkspaceAria/ }), { clientX: 120, clientY: 180 })
+    expect(openPreviewSpy).not.toHaveBeenCalled()
+    await act(async () => { fireEvent.click(screen.getByRole('menuitem', { name: 'openWith.copyPath' })) })
+    expect(copyTextToClipboard).toHaveBeenCalledWith(expected)
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(useUIStore.getState().toasts.at(-1)).toMatchObject({ type: 'success', message: 'workspace.pathCopied' })
+  })
+
+  it('reports a clipboard failure instead of success', async () => {
+    vi.mocked(copyTextToClipboard).mockResolvedValue(false)
+    renderCard(['/w/proj/main.lua'])
+    fireEvent.contextMenu(screen.getByText('main.lua'))
+    await act(async () => { fireEvent.click(screen.getByRole('menuitem', { name: 'openWith.copyPath' })) })
+    expect(useUIStore.getState().toasts.at(-1)).toMatchObject({ type: 'error', message: 'common.copyFailed' })
+  })
 })
 
 describe('CurrentTurnChangeCard – rich file row (icon / name / type)', () => {

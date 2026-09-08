@@ -11,7 +11,7 @@ vi.mock('../api/subagents', () => ({
 }))
 
 import { subagentsApi } from '../api/subagents'
-import { useChatStore } from '../stores/chatStore'
+import { useChatStore, type PerSessionState } from '../stores/chatStore'
 import { useTabStore } from '../stores/tabStore'
 import { SubagentRunPage } from './SubagentRunPage'
 
@@ -57,6 +57,26 @@ function deferred<T>() {
 }
 
 describe('SubagentRunPage', () => {
+  it('shows live output above a collapsed transcript and updates without a transcript refresh', async () => {
+    vi.mocked(subagentsApi.getRunByTool).mockResolvedValue(subagentRun({ status: 'running' }))
+    const store = useChatStore.getState()
+    useChatStore.setState({ sessions: { 'session-1': {
+      messages: [], chatState: 'tool_executing', connectionState: 'connected',
+      streamingResponseChars: 0, backgroundAgentTasks: {}, agentTaskNotifications: {},
+      streamingText: '', streamingToolInput: '', activeToolUseId: null, activeToolName: null,
+      activeThinkingId: null, pendingPermission: null, pendingComputerUsePermission: null,
+      tokenUsage: { input_tokens: 0, output_tokens: 0 }, elapsedSeconds: 0,
+      statusVerb: '', slashCommands: [], elapsedTimer: null,
+    } satisfies PerSessionState } })
+    const progress = { toolUseId: 'tool-1', agentId: 'abc123', description: 'Review', startedAt: 1, updatedAt: 2, phase: 'thinking', outputTokensEstimate: 40 }
+    store.handleServerMessage('session-1', { type: 'system_notification', subtype: 'agent_stream_progress', data: progress })
+    const view = render(<SubagentRunPage sourceSessionId="session-1" toolUseId="tool-1" title="Review" />)
+    expect(await screen.findByText('≈ 40 output tokens')).toBeInTheDocument()
+    act(() => useChatStore.getState().handleServerMessage('session-1', { type: 'system_notification', subtype: 'agent_stream_progress', data: { ...progress, updatedAt: 3, outputTokensEstimate: 90 } }))
+    expect(screen.getByText('≈ 90 output tokens')).toBeInTheDocument()
+    expect(subagentsApi.getRunByTool).toHaveBeenCalledTimes(1)
+    view.unmount()
+  })
   beforeEach(() => {
     useSettingsStore.setState({ locale: 'en' })
     useChatStore.setState({ sessions: {} })

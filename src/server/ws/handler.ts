@@ -4254,6 +4254,9 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
           },
         ]
       }
+      if (subtype === 'agent_stream_progress') {
+        return [{ type: 'system_notification', subtype, data: cliMsg.progress }]
+      }
       if (subtype === 'agent_tool_activity') {
         // Tool activity streamed from a background (async) agent. Re-emit as a
         // normal tool_use_complete / tool_result carrying the parent Agent

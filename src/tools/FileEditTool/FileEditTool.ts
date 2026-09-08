@@ -1,4 +1,5 @@
 import { dirname, isAbsolute, sep } from 'path'
+import { decodeTextFile, type TextFileEncoding } from '../../utils/textEncoding.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
@@ -206,13 +207,7 @@ export const FileEditTool = buildTool({
     let fileContent: string | null
     try {
       const fileBuffer = await fs.readFileBytes(fullFilePath)
-      const encoding: BufferEncoding =
-        fileBuffer.length >= 2 &&
-        fileBuffer[0] === 0xff &&
-        fileBuffer[1] === 0xfe
-          ? 'utf16le'
-          : 'utf8'
-      fileContent = fileBuffer.toString(encoding).replaceAll('\r\n', '\n')
+      fileContent = decodeTextFile(fileBuffer).content.replaceAll('\r\n', '\n')
     } catch (e) {
       if (isENOENT(e)) {
         fileContent = null
@@ -606,7 +601,7 @@ export const FileEditTool = buildTool({
 function readFileForEdit(absoluteFilePath: string): {
   content: string
   fileExists: boolean
-  encoding: BufferEncoding
+  encoding: TextFileEncoding
   lineEndings: LineEndingType
 } {
   try {

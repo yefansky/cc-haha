@@ -1,6 +1,16 @@
 import { contextAuditEn } from '../contextAuditTranslations'
 
 export const en = {
+  "chat.subagentProgress.waiting": "Waiting for subagent",
+  "chat.subagentProgress.running": "Subagent",
+  "chat.subagentProgress.phase.waiting": "Waiting for model",
+  "chat.subagentProgress.phase.thinking": "Thinking",
+  "chat.subagentProgress.phase.responding": "Responding",
+  "chat.subagentProgress.phase.tool": "Using tool",
+  "chat.subagentProgress.phase.finished": "Run ended",
+  "chat.subagentProgress.phase.disconnected": "Disconnected",
+  "chat.subagentProgress.estimate": "≈ {count} output tokens",
+
   ...contextAuditEn,
   // ─── Common ──────────────────────────────────────
   'common.cancel': 'Cancel',
