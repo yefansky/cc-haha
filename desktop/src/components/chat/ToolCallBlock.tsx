@@ -1,4 +1,7 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useContext, useMemo, useState } from 'react'
+import { Button } from '@/components/ui/Button'
+import { useWorkspacePanelStore } from '@/stores/workspacePanelStore'
+import { ToolCallSessionContext } from './toolCallSessionContext'
 import { CircleStop, LoaderCircle } from 'lucide-react'
 import { CodeViewer } from './CodeViewer'
 import { DiffViewer } from './DiffViewer'
@@ -18,6 +21,7 @@ import {
 } from './PlanModePreview'
 
 type Props = {
+  sessionId?: string | null
   toolName: string
   originId?: string
   input: unknown
@@ -120,7 +124,9 @@ type ContentStats = {
   windowed?: boolean
 }
 
-export const ToolCallBlock = memo(function ToolCallBlock({ toolName, originId, input, result, compact = false, isPending = false, status, partialInput, defaultExpanded = false, durationMs }: Props) {
+export const ToolCallBlock = memo(function ToolCallBlock({ sessionId, toolName, originId, input, result, compact = false, isPending = false, status, partialInput, defaultExpanded = false, durationMs }: Props) {
+  const contextSessionId = useContext(ToolCallSessionContext)
+  const owningSessionId = sessionId ?? contextSessionId
   const isExitPlanTool = isExitPlanModeTool(toolName)
   const isEnterPlanTool = isEnterPlanModeTool(toolName)
   const [expanded, setExpanded] = useState(defaultExpanded || isExitPlanTool)
@@ -208,14 +214,16 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, originId, i
     <div className={`overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] ${
       compact ? 'mb-0' : 'mb-2'
     }`}>
+      <div className="flex flex-wrap items-center">
       <button
         type="button"
+        aria-expanded={expandable ? expanded : undefined}
         onClick={() => {
           if (expandable) {
             setExpanded((value) => !value)
           }
         }}
-        className={`flex w-full items-center text-left transition-colors hover:bg-[var(--color-surface-hover)] ${
+        className={`flex min-w-0 flex-1 items-center text-left transition-colors hover:bg-[var(--color-surface-hover)] ${
           compact ? 'gap-[11px] px-3.5 py-2.5' : 'gap-3 px-4 py-3'
         }`}
       >
@@ -286,15 +294,36 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, originId, i
         {result?.isError && (
           <span className="material-symbols-outlined shrink-0 text-[15px] text-[var(--color-error)]">error</span>
         )}
+        {toolName === 'Read' && hasResultDetails && (
+          <span className="shrink-0 text-[12px] text-[var(--color-text-secondary)]">
+            {t(expanded ? 'tool.collapseReadContent' : 'tool.viewReadContent')}
+          </span>
+        )}
         {expandable && (
           <span className="shrink-0 text-[11px] leading-none text-[var(--color-text-tertiary)]" aria-hidden="true">
             {expanded ? '▴' : '▾'}
           </span>
         )}
       </button>
+      {toolName === 'Read' && filePath && owningSessionId && (
+        <Button size="sm" variant="secondary" className="m-2 shrink-0" onClick={() => {
+          void useWorkspacePanelStore.getState().openPreview(
+            owningSessionId, filePath, 'file', undefined,
+            typeof obj.offset === 'number' && obj.offset > 0 ? { line: obj.offset } : undefined,
+          )
+        }}>
+          {t('tool.openCurrentFile')}
+        </Button>
+      )}
+      </div>
 
       {expandable && expanded && (
         <div className="space-y-2.5 border-t border-[var(--color-border)] px-4 py-3.5">
+          {toolName === 'Read' && (
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-[var(--color-text-tertiary)]">
+              <span>{t('tool.readSnapshotNote')}</span>
+            </div>
+          )}
           {preview}
           {details}
         </div>
@@ -513,10 +542,8 @@ function getVisibleResultText(
   // that renderer will actually run.
   if (echoesInTerminal) return null
   if (result.isError) return text
-  // Read/Edit/Write stay suppressed: Edit/Write results are a single
-  // "file updated" line with no information, and Read is file content the user
-  // can already open, and by far the bulkiest tool output.
-  if (toolName === 'Read' || toolName === 'Edit' || toolName === 'Write') return null
+  // Read results are shown only inside the explicitly expanded tool card.
+  if (toolName === 'Edit' || toolName === 'Write') return null
   return text
 }
 

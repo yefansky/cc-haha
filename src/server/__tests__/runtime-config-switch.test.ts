@@ -75,6 +75,29 @@ function select(providerId: string, modelId: string, requestId?: string) {
 }
 const applied = (id: string) => socket.sent.some((m: any) => m.type === 'runtime_config_applied' && m.requestId === id)
 
+it('acknowledges the actual startup model during an active turn without waiting for its result', async () => {
+  metadata.set(socket.data.sessionId, { workDir: directory, runtimeProviderId: 'a', runtimeModelId: 'shared' })
+  handleWebSocket.message(socket, JSON.stringify({ type: 'user_message', content: 'continue restored session', messageUuid: crypto.randomUUID() }))
+  await settle(() => sentUserMessages === 1)
+  expect(starts).toHaveLength(1)
+  expect(starts[0]).toMatchObject({ providerId: 'a', model: 'shared' })
+
+  // Metadata can change after startup; it does not identify the running CLI.
+  metadata.set(socket.data.sessionId, { workDir: directory, runtimeProviderId: 'b', runtimeModelId: 'shared' })
+  select('a', 'shared', 'reconnect-same')
+  await settle(() => applied('reconnect-same'))
+  expect(starts).toHaveLength(1)
+
+  select('b', 'shared', 'actually-different')
+  await new Promise(resolve => setTimeout(resolve, 35))
+  expect(applied('actually-different')).toBe(false)
+  expect(starts).toHaveLength(1)
+  for (const callback of [...callbacks]) callback({ type: 'result', subtype: 'success', result: '', usage: {} })
+  await settle(() => applied('actually-different'))
+  expect(starts).toHaveLength(2)
+  expect(starts[1]).toMatchObject({ providerId: 'b', model: 'shared' })
+})
+
 it('switches same-name models as explicit pairs and acknowledges repeated selections and legacy clients', async () => {
   select('a', 'shared', 'a1'); await settle(() => applied('a1'))
   running = true

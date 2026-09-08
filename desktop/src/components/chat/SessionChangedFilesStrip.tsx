@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
+import { useAnchoredPosition } from '@/hooks/useAnchoredPosition'
+import { useDismissable } from '@/hooks/useDismissable'
+import { copyTextToClipboard } from '@/lib/clipboard'
+import { useUIStore } from '@/stores/uiStore'
 import { ChevronDown, ChevronRight, FileCode2, Files } from 'lucide-react'
 import type { SessionTurnCheckpoint } from '../../api/sessions'
 import { useTranslation } from '../../i18n'
@@ -67,6 +72,28 @@ export function SessionChangedFilesStrip({
     return () => window.clearInterval(timer)
   }, [enabled, live, sessionId])
   const [expanded, setExpanded] = useState(false)
+  const [contextMenu, setContextMenu] = useState<{ file: SessionChangedFile; x: number; y: number } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const closeMenu = useCallback(() => setContextMenu(null), [])
+  useDismissable({ open: Boolean(contextMenu), refs: [menuRef], onDismiss: closeMenu })
+  const menuPosition = useAnchoredPosition({
+    open: Boolean(contextMenu), floatingRef: menuRef,
+    anchorRect: { left: contextMenu?.x ?? 0, right: contextMenu?.x ?? 0, top: contextMenu?.y ?? 0, bottom: contextMenu?.y ?? 0 },
+    offset: 0,
+  })
+  const copyPath = async (file: SessionChangedFile, absolute: boolean) => {
+    let path = file.displayPath
+    if (absolute) {
+      path = file.sourcePath
+      const root = file.checkpoint.workDir ?? workDir
+      if (root && !/^(?:[a-zA-Z]:[\\/]|[\\/])/.test(path)) {
+        path = `${root.replace(/[\\/]+$/, '')}/${path}`
+      }
+    }
+    closeMenu()
+    const copied = await copyTextToClipboard(path)
+    useUIStore.getState().addToast({ type: copied ? 'success' : 'error', message: t(copied ? 'workspace.pathCopied' : 'common.copyFailed') })
+  }
   const warmedSignatureBySessionRef = useRef(new Map<string, Map<string, string>>())
   const subscribe = useCallback(
     (listener: () => void) => subscribeSessionTurnCheckpoints(sessionId, listener),
@@ -84,7 +111,8 @@ export function SessionChangedFilesStrip({
 
   useEffect(() => {
     setExpanded(false)
-  }, [sessionId])
+    closeMenu()
+  }, [sessionId, closeMenu])
 
   useEffect(() => {
     if (!enabled) return
@@ -164,7 +192,7 @@ export function SessionChangedFilesStrip({
         aria-expanded={expanded}
         aria-controls={listId}
         aria-label={t('chat.sessionChangedFilesToggle', { count: files.length })}
-        onClick={() => setExpanded((current) => !current)}
+        onClick={() => { closeMenu(); setExpanded((current) => !current) }}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]"
       >
         {expanded
@@ -189,7 +217,12 @@ export function SessionChangedFilesStrip({
                 type="button"
                 title={file.displayPath}
                 aria-label={t('chat.sessionChangedFilesOpen', { path: file.displayPath })}
-                onClick={() => { void openChangedFile(file) }}
+                onClick={() => { closeMenu(); void openChangedFile(file) }}
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  setContextMenu({ file, x: event.clientX, y: event.clientY })
+                }}
                 className="flex w-full min-w-0 items-center gap-2.5 px-3 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]"
               >
                 <FileCode2 size={15} strokeWidth={1.8} aria-hidden="true" className="shrink-0 text-[var(--color-text-tertiary)]" />
@@ -201,6 +234,20 @@ export function SessionChangedFilesStrip({
             )
           })}
         </div>
+      )}
+      {contextMenu && createPortal(
+        <div ref={menuRef} role="menu"
+          style={{ ...menuPosition.style, visibility: menuPosition.ready ? 'visible' : 'hidden' }}
+          className="glass-panel fixed z-[var(--z-dropdown)] min-w-[156px] rounded-[var(--radius-md)] py-1 text-[12px]"
+          onClick={(event) => event.stopPropagation()}>
+          {[false, true].map((absolute) => (
+            <button key={String(absolute)} type="button" role="menuitem"
+              onClick={() => void copyPath(contextMenu.file, absolute)}
+              className="flex w-full items-center px-3 py-1.5 text-left text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]">
+              {t(absolute ? 'workspace.copyAbsolutePath' : 'workspace.copyPath')}
+            </button>
+          ))}
+        </div>, document.body,
       )}
     </section>
   )

@@ -1,3 +1,4 @@
+import { decodeTextFile } from '../../utils/textEncoding.js'
 import type { UUID } from 'crypto'
 import { constants } from 'node:fs'
 import { access, lstat, mkdir, open, readFile, realpath, unlink, type FileHandle } from 'node:fs/promises'
@@ -495,16 +496,25 @@ function normalizeUnverifiedChangeSources(sources: Iterable<string>): string[] {
   return [...new Set(sources)].sort().slice(0, MAX_UNVERIFIED_CHANGE_SOURCES)
 }
 
-async function readFileOrNull(filePath: string): Promise<string | null> {
+type SnapshotContent = { bytes: Buffer; text: string }
+function snapshotContent(bytes: Buffer): SnapshotContent {
+  try { return { bytes, text: decodeTextFile(bytes).content } }
+  catch { return { bytes, text: bytes.toString('utf8') } }
+}
+function sameSnapshotContent(left: SnapshotContent | null | undefined, right: SnapshotContent | null | undefined): boolean {
+  return left == null || right == null ? left === right : left.bytes.equals(right.bytes)
+}
+
+async function readFileOrNull(filePath: string): Promise<SnapshotContent | null> {
   try {
-    return await readFile(filePath, 'utf-8')
+    return snapshotContent(await readFile(filePath))
   } catch {
     return null
   }
 }
 
-function countInsertedLines(content: string): number {
-  return diffLines('', content).reduce((total, change) => (
+function countInsertedLines(content: SnapshotContent): number {
+  return diffLines('', content.text).reduce((total, change) => (
     change.added ? total + (change.count || 0) : total
   ), 0)
 }
@@ -533,23 +543,23 @@ function buildCheckpointDiff(
 async function readBackupContent(
   sessionId: string,
   backupFileName: string | null | undefined,
-): Promise<string | null | undefined> {
+): Promise<SnapshotContent | null | undefined> {
   if (backupFileName === undefined) return undefined
   if (backupFileName === null) return null
   try {
-    return (await readBackupFileSafely(backupFileName, sessionId)).content.toString('utf-8')
+    return snapshotContent((await readBackupFileSafely(backupFileName, sessionId)).content)
   } catch {
     return undefined
   }
 }
 
 function countTurnDiffStats(
-  beforeContent: string | null,
-  afterContent: string | null,
+  beforeContent: SnapshotContent | null,
+  afterContent: SnapshotContent | null,
 ): { insertions: number; deletions: number } {
   let insertions = 0
   let deletions = 0
-  for (const change of diffLines(beforeContent ?? '', afterContent ?? '')) {
+  for (const change of diffLines(beforeContent?.text ?? '', afterContent?.text ?? '')) {
     if (change.added) insertions += change.count || 0
     if (change.removed) deletions += change.count || 0
   }
@@ -850,6 +860,7 @@ function isKnownNonFileTool(toolName: string): boolean {
     'skill',
     'sleep',
     'task',
+    'trackfilechanges',
     'taskget',
     'tasklist',
     'taskupdate',
@@ -1154,8 +1165,8 @@ async function getTurnBoundaryContents(
   targetSnapshot: FileHistorySnapshot,
   nextSnapshot: FileHistorySnapshot | null,
 ): Promise<{
-  beforeContent: string | null
-  afterContent: string | null
+  beforeContent: SnapshotContent | null
+  afterContent: SnapshotContent | null
   afterBoundaryAvailable: boolean
   restorePointAvailable: boolean
 }> {
@@ -1166,7 +1177,7 @@ async function getTurnBoundaryContents(
     targetBackup?.backupFileName,
   )
   const restorePointAvailable = targetBackup?.backupFileName === null ||
-    (typeof targetBackup?.backupFileName === 'string' && beforeContent !== null)
+    (typeof targetBackup?.backupFileName === 'string' && beforeContent != null)
 
   if (!nextSnapshot) {
     return {
@@ -1253,7 +1264,7 @@ async function buildTurnCodePreview(
       restorablePathIdentities.add(identityPath)
     }
     if (afterBoundaryAvailable) coveredPathIdentities.add(identityPath)
-    if (beforeContent === afterContent) continue
+    if (sameSnapshotContent(beforeContent, afterContent)) continue
 
     filesChanged.push(expandTrackingPath(checkpointBaseDir, trackingPath))
     if (!restorePointAvailable || !safeTrackedPath) {
@@ -1606,11 +1617,11 @@ async function buildCodePreview(
       restoreAvailable = false
       continue
     }
-    if (currentContent === backupContent) continue
+    if (sameSnapshotContent(currentContent, backupContent)) continue
 
     filesChanged.push(absolutePath)
     const fileStats = { insertions: 0, deletions: 0 }
-    for (const change of diffLines(currentContent ?? '', backupContent ?? '')) {
+    for (const change of diffLines(currentContent?.text ?? '', backupContent?.text ?? '')) {
       if (change.added) {
         insertions += change.count || 0
         fileStats.insertions += change.count || 0
@@ -1948,7 +1959,7 @@ export async function getSessionTurnCheckpointDiff(
           path: displayPath,
         }
       }
-      if (beforeContent === afterContent) {
+      if (sameSnapshotContent(beforeContent, afterContent)) {
         return {
           ...missingResult,
           path: displayPath,
@@ -1962,8 +1973,8 @@ export async function getSessionTurnCheckpointDiff(
         state: 'ok',
         diff: buildCheckpointDiff(
           displayPath,
-          beforeContent ?? '',
-          afterContent ?? '',
+          beforeContent?.text ?? '',
+          afterContent?.text ?? '',
           beforeContent !== null,
           afterContent !== null,
         ),

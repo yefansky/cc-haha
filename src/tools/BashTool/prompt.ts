@@ -1,3 +1,4 @@
+import { FILE_CHANGE_TRACKING_INSTRUCTION } from '../../constants/fileChangeTracking.js'
 import { feature } from 'bun:bundle'
 import { prependBullets } from '../../constants/prompts.js'
 import { getAttributionTexts } from '../../utils/attribution.js'
@@ -362,6 +363,7 @@ export function getSimplePrompt(): string {
     `While the ${BASH_TOOL_NAME} tool can do similar things, it’s better to use the built-in tools as they provide a better user experience and make it easier to review tool calls and give permission.`,
     '',
     '# Instructions',
+    FILE_CHANGE_TRACKING_INSTRUCTION,
     ...prependBullets(instructionItems),
     getSimpleSandboxSection(),
     ...(getCommitAndPRInstructions() ? ['', getCommitAndPRInstructions()] : []),

@@ -10,6 +10,7 @@ import {
   rm,
   symlink,
   unlink,
+  utimes,
   writeFile,
 } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -23,6 +24,7 @@ import {
 } from '../bootstrap/state.js'
 import {
   fileHistoryMakeSnapshot,
+  fileHistoryGetDiffStats,
   fileHistoryRewind,
   fileHistoryTrackEdit,
   type FileHistoryState,
@@ -60,6 +62,25 @@ afterEach(async () => {
 })
 
 describe('file history rewind link safety', () => {
+  test.each([
+    ['text', Buffer.from('before'), Buffer.from('after!')],
+    ['gbk', Buffer.from([0xd6, 0xd0]), Buffer.from([0xb9, 0xfa])],
+    ['invalid-utf8', Buffer.from([0x80]), Buffer.from([0x81])],
+  ] as const)('detects and restores %s bytes even when a command preserves an older timestamp', async (_name, before, after) => {
+    const targetMessageId = randomUUID() as UUID
+    const trackedPath = join(getOriginalCwd(), 'tracked.txt')
+    await writeFile(trackedPath, before)
+    const { getState, updateState } = createHistoryState(targetMessageId)
+    await fileHistoryTrackEdit(updateState, trackedPath, targetMessageId)
+    expect((await fileHistoryGetDiffStats(getState(), targetMessageId))?.filesChanged).toEqual([])
+
+    await writeFile(trackedPath, after)
+    await utimes(trackedPath, new Date('2000-01-01'), new Date('2000-01-01'))
+    expect((await fileHistoryGetDiffStats(getState(), targetMessageId))?.filesChanged).toEqual([trackedPath])
+    await fileHistoryRewind(updateState, targetMessageId)
+    expect(await readFile(trackedPath)).toEqual(before)
+  })
+
   test('refuses to create a backup through a symlinked backup directory', async () => {
     const targetMessageId = randomUUID() as UUID
     const trackedPath = join(getOriginalCwd(), 'tracked.txt')

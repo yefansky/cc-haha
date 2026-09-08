@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
+import { normalizeProjectFolderKey, useProjectFoldersStore } from '@/stores/projectFoldersStore'
+
+vi.mock('@/components/composite/DirectoryPicker', () => ({
+  DirectoryPicker: ({ onChange }: { onChange: (path: string) => void }) => <button onClick={() => onChange('/fixtures/attached')}>Choose fixture folder</button>,
+}))
 
 const desktopUiPreferencesApiMock = vi.hoisted(() => ({
   getPreferences: vi.fn(),
@@ -206,6 +211,7 @@ describe('Sidebar', () => {
   const addToast = vi.fn()
 
   beforeEach(() => {
+    useProjectFoldersStore.setState({ projects: {} })
     connectToSession.mockReset()
     disconnectSession.mockReset()
     fetchSessions.mockReset()
@@ -274,6 +280,25 @@ describe('Sidebar', () => {
     window.localStorage.removeItem(PROJECT_HIDDEN_STORAGE_KEY)
     window.localStorage.removeItem(PROJECT_ORGANIZATION_STORAGE_KEY)
     window.localStorage.removeItem(PROJECT_SORT_STORAGE_KEY)
+  })
+
+  it('manages attached folders through the project row context menu using the actual project root', () => {
+    const projectPath = '/fixtures/context-project'
+    useSessionStore.setState({ sessions: [{
+      ...makeSession('folders-session', 'Folders session', projectPath, '2026-09-09T00:00:00.000Z'),
+      projectPath: '-fixtures-context-project',
+      workDir: '/fixtures/context-project/.claude/worktrees/branch',
+    }] })
+    render(<Sidebar />)
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Collapse context-project' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'workspace.manageAttachedFolders' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(projectPath)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Choose fixture folder' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'workspace.addAttachedFolder' }))
+    expect(useProjectFoldersStore.getState().projects[normalizeProjectFolderKey(projectPath)]?.mountedRoots).toEqual([{ path: '/fixtures/attached', label: 'attached' }])
+    fireEvent.click(within(dialog).getByRole('button', { name: 'workspace.removeAttachedFolder' }))
+    expect(useProjectFoldersStore.getState().projects[normalizeProjectFolderKey(projectPath)]?.mountedRoots).toEqual([])
   })
 
   it('opens a new tab when creating a session from the sidebar', async () => {
@@ -629,6 +654,7 @@ describe('Sidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Project actions for alpha' }))
 
     expect(screen.getByRole('menuitem', { name: 'Pin Project' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'workspace.manageAttachedFolders' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Open in Finder' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Hide from Sidebar' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Create Permanent Worktree' })).not.toBeInTheDocument()

@@ -4,6 +4,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { BrandSeal } from '@/components/composite/BrandSeal'
+import { ProjectFoldersDialog } from '@/components/workspace/ProjectFoldersDialog'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -91,6 +92,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   const disconnectSession = useChatStore((s) => s.disconnectSession)
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [projectContextMenu, setProjectContextMenu] = useState<{ key: string; x: number; y: number } | null>(null)
+  const [managedProjectPath, setManagedProjectPath] = useState<string | null>(null)
   const [projectHeaderMenu, setProjectHeaderMenu] = useState<{ type: SidebarHeaderMenuType; x: number; y: number } | null>(null)
   const [projectHeaderSubmenu, setProjectHeaderSubmenu] = useState<{ type: 'organize' | 'sort'; x: number; y: number } | null>(null)
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null)
@@ -1047,6 +1049,12 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                         onDragStart={(event) => handleProjectDragStart(event, project.key)}
                         onDragEnd={clearProjectDragState}
                         onClick={() => toggleProjectCollapsed(project.key)}
+                        onContextMenu={(event) => {
+                          if (isBatchMode) return
+                          event.preventDefault()
+                          setContextMenu(null)
+                          setProjectContextMenu({ key: project.key, x: event.clientX, y: event.clientY })
+                        }}
                         data-state={projectCollapsed ? 'closed' : 'open'}
                         className={`flex min-w-0 flex-1 cursor-grab items-center gap-2 rounded-[var(--radius-md)] px-1.5 text-left transition-[background,color] active:cursor-grabbing hover:bg-[var(--color-sidebar-item-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] ${isMobile ? 'min-h-11 py-2.5' : 'py-2'}`}
                         aria-expanded={!projectCollapsed}
@@ -1336,6 +1344,15 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
             >
               {t('sidebar.openInFinder')}
             </ProjectMenuItem>
+            {project.workDir && <ProjectMenuItem
+              icon={<FolderPlus size={18} aria-hidden="true" />}
+              onClick={() => {
+                setManagedProjectPath(project.workDir!)
+                setProjectContextMenu(null)
+              }}
+            >
+              {t('workspace.manageAttachedFolders')}
+            </ProjectMenuItem>}
             <ProjectMenuItem
               icon={hidden ? <RotateCcw size={18} aria-hidden="true" /> : <X size={18} aria-hidden="true" />}
               onClick={() => toggleHiddenProject(project)}
@@ -1346,6 +1363,8 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
           </div>
         )
       })()}
+
+      {managedProjectPath && <ProjectFoldersDialog projectPath={managedProjectPath} onClose={() => setManagedProjectPath(null)} />}
 
       {projectHeaderMenu && (
         <ProjectHeaderMenu

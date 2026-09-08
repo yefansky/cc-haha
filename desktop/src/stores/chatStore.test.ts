@@ -3703,6 +3703,68 @@ describe('chatStore history mapping', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('accepts a late confirmation of automatic runtime sync and drains the queue once', () => {
+    vi.useFakeTimers()
+    try {
+      useChatStore.setState({ sessions: {} })
+      useSessionRuntimeStore.getState().setSelection(TEST_SESSION_ID, { providerId: 'a', modelId: 'shared' })
+      const store = useChatStore.getState()
+      store.connectToSession(TEST_SESSION_ID, { prewarm: false, minimalBootstrap: true })
+      const onMessage = vi.mocked(wsManager.onMessage).mock.calls.at(-1)![1]
+      onMessage({ type: 'connected', sessionId: TEST_SESSION_ID })
+      onMessage({ type: 'status', state: 'idle' })
+      const pending = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+      store.queueUserMessage(TEST_SESSION_ID, { content: 'late sync', displayContent: 'late sync' })
+      vi.advanceTimersByTime(45_000)
+      expect(store.sendMessage(TEST_SESSION_ID, 'blocked until confirmed')).toBe(false)
+      onMessage({ type: 'runtime_config_applied', requestId: pending.requestId, ...pending.selection })
+      onMessage({ type: 'runtime_config_applied', requestId: pending.requestId, ...pending.selection })
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.runtimeConfigError).toBeUndefined()
+      expect(useSessionRuntimeStore.getState().pendingKeys[TEST_SESSION_ID]).toBe(false)
+      expect(sendMock.mock.calls.filter(call => call[1]?.type === 'user_message')).toHaveLength(1)
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.queuedUserMessages).toHaveLength(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('retries timed out runtime sync when guiding and delivers the selected queued message during a running turn', () => {
+    vi.useFakeTimers()
+    try {
+      useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ chatState: 'idle' }) } })
+      const store = useChatStore.getState()
+      store.handleServerMessage(TEST_SESSION_ID, { type: 'status', state: 'thinking' })
+      store.setSessionRuntime(TEST_SESSION_ID, { providerId: 'a', modelId: 'shared' })
+      const old = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+      store.queueUserMessage(TEST_SESSION_ID, { content: 'leave queued', displayContent: 'leave queued' })
+      const guideId = store.queueUserMessage(TEST_SESSION_ID, { content: 'guide now', displayContent: 'guide now' })
+      vi.advanceTimersByTime(45_000)
+      store.sendQueuedUserMessage(TEST_SESSION_ID, guideId)
+      const retry = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+      expect(retry.requestId).not.toBe(old.requestId)
+      store.sendQueuedUserMessage(TEST_SESSION_ID, guideId)
+      expect(sendMock.mock.calls.filter(call => call[1]?.type === 'set_runtime_config')).toHaveLength(2)
+      store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: old.requestId, ...old.selection })
+      expect(sendMock.mock.calls.filter(call => call[1]?.type === 'user_message')).toHaveLength(0)
+      store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: retry.requestId, ...retry.selection })
+      expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, expect.objectContaining({ type: 'user_message', content: 'guide now' }))
+      expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.queuedUserMessages?.map(message => message.content)).toEqual(['leave queued'])
+    } finally { vi.useRealTimers() }
+  })
+
+  it.each([false, true])('remembers pending guide intent without sending cancelled input (cancel=%s)', (cancel) => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ chatState: 'idle' }) } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'status', state: 'thinking' })
+    store.setSessionRuntime(TEST_SESSION_ID, { providerId: 'a', modelId: 'shared' })
+    const pending = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
+    const id = store.queueUserMessage(TEST_SESSION_ID, { content: 'pending guide', displayContent: 'pending guide' })
+    store.sendQueuedUserMessage(TEST_SESSION_ID, id)
+    if (cancel) store.removeQueuedUserMessage(TEST_SESSION_ID, id)
+    expect(sendMock.mock.calls.filter(call => call[1]?.type === 'user_message')).toHaveLength(0)
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: pending.requestId, ...pending.selection })
+    expect(sendMock.mock.calls.filter(call => call[1]?.type === 'user_message')).toHaveLength(cancel ? 0 : 1)
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.runtimeGuideMessageId).toBeUndefined()
+  })
+
   it('sends explicit runtime overrides over websocket', () => {
     useChatStore.getState().setSessionRuntime(TEST_SESSION_ID, {
       providerId: null,

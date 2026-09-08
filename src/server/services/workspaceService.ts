@@ -1075,7 +1075,6 @@ export class WorkspaceService {
       return { entry, absoluteEntryPath, isDirectory, isSymlink }
     }))
     const visibleEntries = entriesWithMetadata
-      .filter(({ entry, isDirectory }) => !(isDirectory && isVcsMetadataDirectoryName(entry.name)))
       .sort((a, b) => {
         if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
         return a.entry.name.localeCompare(b.entry.name)

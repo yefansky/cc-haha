@@ -1,3 +1,4 @@
+import { useProjectFoldersStore } from '../../stores/projectFoldersStore'
 // @vitest-environment jsdom
 
 // @ts-expect-error jsdom is installed in this workspace without local type declarations
@@ -42,6 +43,9 @@ type WorkspaceApiMocks = {
 
 var mocks: WorkspaceApiMocks | undefined
 const workspacePreviewLineLimitForTests = vi.hoisted(() => 20)
+const filesystemSearchMock = vi.hoisted(() => vi.fn())
+
+vi.mock('../../api/filesystem', () => ({ filesystemApi: { search: filesystemSearchMock, browse: vi.fn() } }))
 
 function getMocks() {
   if (!mocks) {
@@ -362,6 +366,8 @@ describe('WorkspacePanel', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    filesystemSearchMock.mockReset().mockResolvedValue({ currentPath: '', parentPath: '', entries: [] })
+    useProjectFoldersStore.setState({ projects: {}, legacyClaimedBy: '/claimed' })
     ensureMermaidSvgMeasurementStubs()
     await setWorkspaceState(workspaceInitialState)
     useBrowserPanelStore.setState(browserInitialState, true)
@@ -470,6 +476,7 @@ describe('WorkspacePanel', () => {
     })
 
     expect(view.getByPlaceholderText('Filter changed files...')).toBeTruthy()
+    await clickElement(view.getByRole('button', { name: 'Expand all' }))
 
     await waitFor(() => {
       expect(view.container.querySelector('[data-workspace-file-path="src/app.ts"]')).toBeTruthy()
@@ -733,14 +740,14 @@ describe('WorkspacePanel', () => {
 
   it('restores and renders an extra mounted folder alongside the current workspace tree', async () => {
     const sessionId = 'session-mounted-root'
-    const root = 'G:\\project-brain'
+    const root = 'G:/project-brain'
+    useProjectFoldersStore.getState().addMountedRoot('/repo', root)
     await setWorkspaceState((state) => ({
       ...state,
       panelBySession: {
         ...state.panelBySession,
         [sessionId]: { isOpen: true, activeView: 'all', hasUserSelectedView: true },
       },
-      mountedRoots: [{ path: root, label: 'project-brain' }],
       treeBySessionPath: {
         [sessionId]: {
           '': { state: 'ok', path: '', entries: [{ name: 'src', path: 'src', isDirectory: true }] },
@@ -753,6 +760,127 @@ describe('WorkspacePanel', () => {
     expect(await view.findByText('project-brain')).not.toBeNull()
     expect(await view.findByText('index.md')).not.toBeNull()
     await waitFor(() => expect(getMocks().registerWorkspaceRootMock).toHaveBeenCalledWith(sessionId, root))
+  })
+
+  it.each(['G:/fixtures/attached', '//fixture-server/share/attached'])('pins an attached subdirectory under %s and opens its file through the shortcut', async (root) => {
+    const sessionId = `attached-pin-${root}`
+    const directory = `${root}/docs`
+    const file = `${directory}/guide.md`
+    useProjectFoldersStore.getState().addMountedRoot('/repo', root)
+    getMocks().getWorkspaceFileMock.mockResolvedValue({ state: 'ok', path: file, content: '# Attached guide', language: 'markdown', size: 16 })
+    await setWorkspaceState((state) => ({ ...state,
+      panelBySession: { [sessionId]: { isOpen: true, activeView: 'all', hasUserSelectedView: true } },
+      treeBySessionPath: { [sessionId]: {
+        '': { state: 'ok', path: '', entries: [{ name: 'local.txt', path: 'local.txt', isDirectory: false }] },
+        [root]: { state: 'ok', path: root, entries: [{ name: 'docs', path: directory, isDirectory: true }] },
+        [directory]: { state: 'ok', path: directory, entries: [{ name: 'guide.md', path: file, isDirectory: false }] },
+      } },
+    }))
+    const view = await renderPanel(sessionId)
+    fireEvent.contextMenu((await view.findByText('docs')).closest('button')!)
+    fireEvent.click(view.getByRole('menuitem', { name: 'Pin to top' }))
+    const favorites = await view.findByRole('region', { name: 'Pinned folders' })
+    expect(useProjectFoldersStore.getState().projects['/repo']?.pinnedFolders).toEqual([{ path: directory, label: 'docs' }])
+    expect(favorites.compareDocumentPosition(view.getByText('local.txt')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await clickElement(within(favorites).getByText('docs').closest('button')!)
+    await clickElement((await within(favorites).findByText('guide.md')).closest('button')!)
+    await waitFor(() => expect(getMocks().getWorkspaceFileMock.mock.calls.some((call) => call[0] === sessionId && call[1] === file)).toBe(true))
+    expect(getMocks().registerWorkspaceRootMock).toHaveBeenCalledWith(sessionId, root)
+    expect((await view.findByTestId('workspace-preview-header')).textContent).toContain(file)
+  })
+
+  it('shows a failed attached root registration without loading its tree', async () => {
+    const sessionId = 'attached-registration-error'
+    const root = '/fixtures/unavailable'
+    useProjectFoldersStore.getState().addMountedRoot('/repo', root)
+    getMocks().registerWorkspaceRootMock.mockRejectedValueOnce(new Error('Fixture folder unavailable'))
+    await setWorkspaceState((state) => ({ ...state, panelBySession: { [sessionId]: { isOpen: true, activeView: 'all', hasUserSelectedView: true } } }))
+    const view = await renderPanel(sessionId)
+    expect(await view.findByText('Fixture folder unavailable')).toBeTruthy()
+    expect(getMocks().getWorkspaceTreeMock).not.toHaveBeenCalledWith(sessionId, root)
+  })
+
+  it('reports no matching files when all search matches are hidden and updates the count when shown', async () => {
+    const sessionId = 'hidden-only-search'
+    getMocks().searchWorkspaceMock.mockResolvedValue({ state: 'ok', query: 'guide', truncated: false, entries: [
+      { name: 'guide.md', path: '.cache/guide.md', isDirectory: false },
+      { name: 'guide.txt', path: '_local/guide.txt', isDirectory: false },
+    ] })
+    await setWorkspaceState((state) => ({ ...state, panelBySession: { [sessionId]: { isOpen: true, activeView: 'all', hasUserSelectedView: true } } }))
+    const view = await renderPanel(sessionId)
+    fireEvent.change(view.getByPlaceholderText('Search all files...'), { target: { value: 'guide' } })
+    expect(await view.findByText('No matching files')).toBeTruthy()
+    expect(view.queryByText('guide.md')).toBeNull()
+    expect(view.queryByText('2 search results')).toBeNull()
+    fireEvent.click(view.getByRole('button', { name: 'Show hidden folders' }))
+    expect(await view.findByText('2 search results')).toBeTruthy()
+    expect(view.getByText('guide.md')).toBeTruthy()
+    expect(view.getByText('guide.txt')).toBeTruthy()
+    fireEvent.click(view.getByRole('button', { name: 'Hide special folders' }))
+    expect(await view.findByText('No matching files')).toBeTruthy()
+  })
+
+  it('searches attached roots through the filesystem API and merges their matches with workspace results', async () => {
+    const sessionId = 'attached-global-search'
+    const root = '/fixtures/attached-search'
+    useProjectFoldersStore.getState().addMountedRoot('/repo', root)
+    getMocks().searchWorkspaceMock.mockResolvedValue({ state: 'ok', query: 'guide', truncated: false, entries: [
+      { name: 'guide-local.md', path: 'guide-local.md', isDirectory: false },
+    ] })
+    filesystemSearchMock.mockResolvedValue({ currentPath: root, parentPath: '/fixtures', entries: [
+      { name: 'guide-external.md', path: `${root}/docs/guide-external.md`, relativePath: 'docs/guide-external.md', isDirectory: false },
+      { name: 'guide-folder', path: `${root}/guide-folder`, isDirectory: true },
+    ] })
+    await setWorkspaceState((state) => ({ ...state, panelBySession: { [sessionId]: { isOpen: true, activeView: 'all', hasUserSelectedView: true } } }))
+    const view = await renderPanel(sessionId)
+    fireEvent.change(view.getByPlaceholderText('Search all files...'), { target: { value: 'guide' } })
+    expect(await view.findByText('2 search results')).toBeTruthy()
+    expect(view.getByText('guide-external.md')).toBeTruthy()
+    expect(view.getByText('guide-local.md')).toBeTruthy()
+    expect(view.queryByText('guide-folder')).toBeNull()
+    expect(filesystemSearchMock).toHaveBeenCalledWith('guide', root)
+    expect(getMocks().searchWorkspaceMock).toHaveBeenCalledWith(sessionId, 'guide')
+    expect(getMocks().registerWorkspaceRootMock).toHaveBeenCalledWith(sessionId, root)
+  })
+
+  it('hides special directories, pins a folder at the top and retains preferences on remount', async () => {
+    const sessionId = 'folder-shortcuts'
+    await setWorkspaceState((state) => ({ ...state,
+      panelBySession: { [sessionId]: { isOpen: true, activeView: 'all', hasUserSelectedView: true } },
+      treeBySessionPath: { [sessionId]: {
+        '': { state: 'ok', path: '', entries: [
+          { name: 'docs', path: 'docs', isDirectory: true },
+          { name: '.cache', path: '.cache', isDirectory: true },
+          { name: '_local', path: '_local', isDirectory: true },
+          { name: '.env', path: '.env', isDirectory: false },
+        ] },
+        '/repo/docs': { state: 'ok', path: '/repo/docs', entries: [
+          { name: 'guide.md', path: '/repo/docs/guide.md', isDirectory: false },
+          { name: '_nested', path: '/repo/docs/_nested', isDirectory: true },
+        ] },
+      } },
+    }))
+    const view = await renderPanel(sessionId)
+    expect(await view.findByText('docs')).not.toBeNull()
+    expect(view.queryByText('.cache')).toBeNull()
+    expect(view.queryByText('_local')).toBeNull()
+    expect(view.getByText('.env')).not.toBeNull()
+    fireEvent.contextMenu(view.getByText('docs').closest('button')!)
+    fireEvent.click(view.getByRole('menuitem', { name: 'Pin to top' }))
+    const favorites = await view.findByRole('region', { name: 'Pinned folders' })
+    fireEvent.click(within(favorites).getByText('docs').closest('button')!)
+    expect(await within(favorites).findByText('guide.md')).not.toBeNull()
+    expect(within(favorites).queryByText('_nested')).toBeNull()
+    fireEvent.click(view.getByRole('button', { name: 'Show hidden folders' }))
+    expect(await view.findByText('_local')).not.toBeNull()
+    expect(within(favorites).getByText('_nested')).not.toBeNull()
+    view.unmount()
+    const reopened = await renderPanel(sessionId)
+    expect(await reopened.findByRole('region', { name: 'Pinned folders' })).not.toBeNull()
+    expect(reopened.getByText('_local')).not.toBeNull()
+    fireEvent.contextMenu(within(reopened.getByRole('region', { name: 'Pinned folders' })).getByText('docs').closest('button')!)
+    fireEvent.click(reopened.getByRole('menuitem', { name: 'Unpin folder' }))
+    await waitFor(() => expect(reopened.queryByRole('region', { name: 'Pinned folders' })).toBeNull())
   })
 
   it.each([
@@ -797,6 +925,7 @@ describe('WorkspacePanel', () => {
     }))
 
     const view = await renderPanel(sessionId)
+    await clickElement(view.getByRole('button', { name: 'Expand all' }))
     const row = view.container.querySelector('[data-workspace-file-path="src/app.ts"]')
     if (!row) throw new Error('Changed file row was not rendered')
     expect(row.getAttribute('aria-current')).toBe('true')
@@ -925,10 +1054,24 @@ describe('WorkspacePanel', () => {
     const view = await renderPanel(sessionId)
 
     expect(view.getByText('desktop')).toBeTruthy()
+    expect(view.queryByText('src')).toBeNull()
+    expect(view.queryByText('App.tsx')).toBeNull()
+    fireEvent.click(view.getByRole('button', { name: 'Expand all' }))
     expect(view.getByText('src')).toBeTruthy()
     expect(view.getByText('docs')).toBeTruthy()
     expect(view.getByText('App.tsx')).toBeTruthy()
     expect(view.getByText('theme.css')).toBeTruthy()
+
+    fireEvent.click(view.getByRole('button', { name: 'Collapse all' }))
+    expect(view.getByText('desktop')).toBeTruthy()
+    expect(view.getByText('docs')).toBeTruthy()
+    expect(view.queryByText('src')).toBeNull()
+    expect(view.queryByText('theme.css')).toBeNull()
+    await clickElement(view.getByRole('button', { name: 'Expand all' }))
+    await act(() => useWorkspacePanelStore.getState().closePanel(sessionId))
+    await act(() => useWorkspacePanelStore.getState().openPanel(sessionId))
+    expect(view.getByText('desktop')).toBeTruthy()
+    expect(view.queryByText('src')).toBeNull()
 
     fireEvent.change(view.getByPlaceholderText('Filter changed files...'), { target: { value: 'theme' } })
 
@@ -1087,6 +1230,7 @@ describe('WorkspacePanel', () => {
     }))
 
     const view = await renderPanel(sessionId)
+    await clickElement(view.getByRole('button', { name: 'Expand all' }))
     const oldPath = view.getByText('desktop/src/components/workspace/LegacyWorkspacePanelWithALongName.tsx')
     const renamedRow = oldPath.closest('button')
 
@@ -1178,6 +1322,8 @@ describe('WorkspacePanel', () => {
     })
 
     const view = await renderPanel('session-running-open')
+    await view.findByText('src')
+    await clickElement(view.getByRole('button', { name: 'Expand all' }))
 
     await waitFor(() => {
       expect(getMocks().getWorkspaceStatusMock).toHaveBeenCalledWith('session-running-open')
@@ -1219,6 +1365,8 @@ describe('WorkspacePanel', () => {
     })
 
     const view = await renderPanel('session-non-git')
+    await view.findByText('src')
+    await clickElement(view.getByRole('button', { name: 'Expand all' }))
 
     await waitFor(() => {
       expect(view.container.querySelector('[data-workspace-file-path="src/app.ts"]')).toBeTruthy()
@@ -1927,6 +2075,8 @@ describe('WorkspacePanel', () => {
     }))
 
     const view = await renderPanel('session-preview-focused')
+    await view.findByText('src')
+    await clickElement(view.getByRole('button', { name: 'Expand all' }))
 
     expect(view.getByTestId('workspace-code').textContent).toContain('new')
     expect(view.getByRole('button', { name: 'Changed files' })).toBeTruthy()

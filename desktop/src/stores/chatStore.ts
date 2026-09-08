@@ -182,6 +182,7 @@ export type PerSessionState = {
   confirmedRuntimeConfig?: RuntimeSelection
   runtimeConfigError?: 'failed' | 'timeout'
   runtimeConfigTimer?: ReturnType<typeof setTimeout>
+  runtimeGuideMessageId?: string
   /** Acknowledged for this session until the user selects a different permission mode. */
   dismissedPermissionWarningMode?: PermissionMode
   /**
@@ -2046,6 +2047,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           pendingRuntimeConfig: existing?.pendingRuntimeConfig,
           runtimeConfigError: existing?.runtimeConfigError,
           runtimeConfigTimer: existing?.runtimeConfigTimer,
+          runtimeGuideMessageId: existing?.runtimeGuideMessageId,
           dismissedPermissionWarningMode: existing?.dismissedPermissionWarningMode,
           backgroundAgentTasks: existing?.backgroundAgentTasks ?? {},
           agentTaskNotifications: existing?.agentTaskNotifications ?? {},
@@ -2526,7 +2528,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const timer = setTimeout(() => {
       set(state => ({ sessions: updateSessionIn(state.sessions, sessionId, session =>
         session.pendingRuntimeConfig?.requestId === requestId
-          ? { pendingRuntimeConfig: undefined, runtimeConfigTimer: undefined, runtimeConfigError: 'timeout' as const }
+          // Retain correlation: a slow runtime may still acknowledge this request.
+          ? { runtimeConfigTimer: undefined, runtimeConfigError: 'timeout' as const }
           : {}) }))
     }, 45_000)
     set(state => ({ sessions: { ...state.sessions, [sessionId]: {
@@ -3032,15 +3035,25 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set((state) => ({
       sessions: updateSessionIn(state.sessions, sessionId, (session) => ({
         queuedUserMessages: (session.queuedUserMessages ?? []).filter((message) => message.id !== messageId),
+        ...(session.runtimeGuideMessageId === messageId ? { runtimeGuideMessageId: undefined } : {}),
       })),
     }))
   },
 
   sendQueuedUserMessage: (sessionId, messageId) => {
     const session = get().sessions[sessionId]
-    if (session?.pendingRuntimeConfig || session?.runtimeConfigError) return
     const queuedMessage = (session?.queuedUserMessages ?? []).find((message) => message.id === messageId)
     if (!session || !queuedMessage) return
+    if (session.pendingRuntimeConfig || session.runtimeConfigError) {
+      set(state => ({ sessions: updateSessionIn(state.sessions, sessionId, () => ({
+        runtimeGuideMessageId: messageId,
+      })) }))
+      if (session.runtimeConfigError) {
+        const selection = useSessionRuntimeStore.getState().selections[sessionId]
+        if (selection) get().setSessionRuntime(sessionId, selection)
+      }
+      return
+    }
 
     if (session.chatState === 'idle') {
       get().removeQueuedUserMessage(sessionId, messageId)
@@ -3068,6 +3081,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           messages: appendOptimisticQueuedUserMessage(baseMessages, queuedMessage, now),
           queuedUserMessages: (currentSession.queuedUserMessages ?? [])
             .filter((message) => message.id !== messageId),
+          runtimeGuideMessageId: undefined,
           ...(pendingText.trim() ? { streamingText: '' } : {}),
           suppressNextTaskNotificationResponse: false,
           replaceHistoryOnCompletion: false,
@@ -3331,8 +3345,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             runtimeConfigReadyCount: (session.runtimeConfigReadyCount ?? 0) + 1,
           }))
         }
-        if (pending && matchesCurrentSelection && get().sessions[sessionId]?.chatState === 'idle') {
-          const queued = get().sessions[sessionId]?.queuedUserMessages?.[0]
+        if (pending && matchesCurrentSelection) {
+          const current = get().sessions[sessionId]
+          const queued = current?.queuedUserMessages?.find(message => message.id === current.runtimeGuideMessageId)
+            ?? (current?.chatState === 'idle' ? current.queuedUserMessages?.[0] : undefined)
           if (queued) get().sendQueuedUserMessage(sessionId, queued.id)
         }
         break

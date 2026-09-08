@@ -470,6 +470,18 @@ export async function fileHistoryGetDiffStats(
         if (stats?.insertions || stats?.deletions) {
           return { filePath, stats }
         }
+        if (backupFileName !== null) {
+          // Distinct non-UTF-8 bytes can decode to identical replacement characters.
+          // Keep actual byte changes even when text line statistics report 0/0.
+          const beforeBytes = await readFile(resolveBackupPath(backupFileName))
+          const afterBytes = await readFile(filePath).catch(error => {
+            if (isENOENT(error)) return null
+            throw error
+          })
+          if (afterBytes === null || !beforeBytes.equals(afterBytes)) {
+            return { filePath, stats }
+          }
+        }
         if (backupFileName === null && (await pathExists(filePath))) {
           // Zero-byte file created after snapshot: counts as changed even
           // though diffLines reports 0/0.
@@ -653,10 +665,10 @@ export async function checkOriginFileChanged(
   return compareStatsAndContent(originalStats, backupStats, async () => {
     try {
       const [originalContent, backupContent] = await Promise.all([
-        readFile(originalFile, 'utf-8'),
-        readFile(backupPath, 'utf-8'),
+        readFile(originalFile),
+        readFile(backupPath),
       ])
-      return originalContent !== backupContent
+      return !originalContent.equals(backupContent)
     } catch {
       // File deleted between stat and read -> treat as changed.
       return true
@@ -688,13 +700,6 @@ function compareStatsAndContent<T extends boolean | Promise<boolean>>(
     originalStats.size !== backupStats.size
   ) {
     return true
-  }
-
-  // This is an optimization that depends on the correct setting of the modified
-  // time. If the original file's modified time was before the backup time, then
-  // we can skip the file content comparison.
-  if (originalStats.mtimeMs < backupStats.mtimeMs) {
-    return false
   }
 
   // Use the more expensive file content comparison. The callback handles its

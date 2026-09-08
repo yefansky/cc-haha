@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
-import { CircleAlert, Code2, Eye, FileText, FolderOpen, FolderPlus, GitCompareArrows, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X } from 'lucide-react'
+import { CircleAlert, Code2, Eye, EyeOff, Pin, FileText, FolderOpen, FolderPlus, GitCompareArrows, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X } from 'lucide-react'
 import { Highlight } from 'prism-react-renderer'
 import {
   sessionsApi,
@@ -28,7 +28,11 @@ import { IconButton } from '@/components/ui/IconButton'
 import { ActionDialog } from '@/components/ui/ActionDialog'
 import { useDismissable } from '@/hooks/useDismissable'
 import { copyTextToClipboard } from '@/lib/clipboard'
-import { getDesktopHost } from '../../lib/desktopHost'
+import { filesystemApi } from '@/api/filesystem'
+import { useSessionStore } from '@/stores/sessionStore'
+import { EMPTY_PROJECT_FOLDERS, normalizeProjectFolderKey, useProjectFoldersStore } from '@/stores/projectFoldersStore'
+import { ProjectFoldersDialog } from '@/components/workspace/ProjectFoldersDialog'
+import { isWorkspaceFolderEntryVisible, isWorkspacePathVisible } from '@/lib/workspaceFolderVisibility'
 import { clearWindowSelection, getSelectionPopoverPosition, useSelectionPopoverDismiss } from '../../hooks/useSelectionPopoverDismiss'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { createWorkspaceMarkdownImageResolver } from '../../lib/markdownImages'
@@ -95,6 +99,7 @@ type TreeNodeProps = {
   onOpenFile: (path: string) => void
   onFileContextMenu: (event: ReactMouseEvent, path: string, isDirectory: boolean) => void
   activePath: string | null
+  showHiddenFolders: boolean
   variant?: 'tree' | 'changed'
 }
 
@@ -234,7 +239,7 @@ function getFileBadgeMeta(name: string) {
 }
 
 function resolveWorkspaceAttachmentPath(workDir: string | undefined, filePath: string) {
-  if (!workDir || filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath)) return filePath
+  if (!workDir || filePath.startsWith('/') || filePath.startsWith('\\\\') || /^[a-zA-Z]:[\\/]/.test(filePath)) return filePath
   return `${workDir.replace(/[\\/]+$/, '')}/${filePath.replace(/^[/\\]+/, '')}`
 }
 
@@ -612,11 +617,15 @@ function ChangedFilesFilterBar({
   versionFilter,
   onPlainTextOnlyChange,
   onVersionFilterChange,
+  onExpandAll,
+  onCollapseAll,
 }: {
   plainTextOnly: boolean
   versionFilter: ChangedVersionFilter
   onPlainTextOnlyChange: (value: boolean) => void
   onVersionFilterChange: (value: ChangedVersionFilter) => void
+  onExpandAll: () => void
+  onCollapseAll: () => void
 }) {
   const t = useTranslation()
   const versionOptions: Array<{ value: ChangedVersionFilter; label: string }> = [
@@ -626,7 +635,7 @@ function ChangedFilesFilterBar({
   ]
 
   return (
-    <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--color-text-primary)]/10 px-3 py-2">
+    <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-[var(--color-text-primary)]/10 px-3 py-2">
       <button
         type="button"
         aria-pressed={plainTextOnly}
@@ -640,6 +649,12 @@ function ChangedFilesFilterBar({
         <FileText size={12} aria-hidden="true" />
         {t('workspace.filterPlaintext')}
       </button>
+      <Button size="xs" variant="ghost" onClick={onExpandAll}>
+        {t('workspace.expandAll')}
+      </Button>
+      <Button size="xs" variant="ghost" onClick={onCollapseAll}>
+        {t('workspace.collapseAll')}
+      </Button>
       <div
         role="group"
         aria-label={t('workspace.filterVersionStatus')}
@@ -1258,6 +1273,7 @@ function TreeNode({
   onOpenFile,
   onFileContextMenu,
   activePath,
+  showHiddenFolders,
   variant = 'tree',
 }: TreeNodeProps) {
   const t = useTranslation()
@@ -1371,9 +1387,10 @@ function TreeNode({
           )}
 
           {!childLoading && !childError && childTree?.state === 'ok' && childTree.entries
-            .filter((childEntry) => treeEntryMatchesFilter(childEntry, filterQuery, treeByPath))
+            .filter((childEntry) => isWorkspaceFolderEntryVisible(childEntry, showHiddenFolders) && treeEntryMatchesFilter(childEntry, filterQuery, treeByPath))
             .map((childEntry) => (
               <TreeNode
+                showHiddenFolders={showHiddenFolders}
                 key={childEntry.path}
                 sessionId={sessionId}
                 entry={childEntry}
@@ -1443,7 +1460,12 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const treeErrorsByPath = useWorkspacePanelStore(
     useShallow((state) => getSessionScopedRecord(state.errors.treeBySessionPath, sessionId)),
   )
-  const mountedRoots = useWorkspacePanelStore((state) => state.mountedRoots)
+  const sessionRecord = useSessionStore((state) => state.sessions.find((session) => session.id === sessionId))
+  const projectPath = sessionRecord?.projectRoot || sessionRecord?.workDir || status?.workDir || ''
+  const projectFolders = useProjectFoldersStore((state) => state.projects[normalizeProjectFolderKey(projectPath)] ?? EMPTY_PROJECT_FOLDERS)
+  const { mountedRoots, pinnedFolders, showHiddenFolders } = projectFolders
+  const [projectFoldersOpen, setProjectFoldersOpen] = useState(false)
+  const [mountedRootErrors, setMountedRootErrors] = useState<Record<string, string>>({})
   const setActiveView = useWorkspacePanelStore((state) => state.setActiveView)
   const loadStatus = useWorkspacePanelStore((state) => state.loadStatus)
   const loadTree = useWorkspacePanelStore((state) => state.loadTree)
@@ -1455,11 +1477,13 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const activatePreview = useWorkspacePanelStore((state) => state.activatePreview)
   const setComparisonSession = useWorkspacePanelStore((state) => state.setComparisonSession)
   const closePanel = useWorkspacePanelStore((state) => state.closePanel)
-  const addMountedRoot = useWorkspacePanelStore((state) => state.addMountedRoot)
-  const removeMountedRoot = useWorkspacePanelStore((state) => state.removeMountedRoot)
+  const removeMountedRoot = (path: string) => useProjectFoldersStore.getState().removeMountedRoot(projectPath, path)
   const addWorkspaceReference = useWorkspaceChatContextStore((state) => state.addReference)
   const chatState = useChatStore((state) => state.sessions[sessionId]?.chatState ?? 'idle')
   const shouldRender = forceVisible || isOpen
+  useEffect(() => {
+    if (shouldRender && projectPath) useProjectFoldersStore.getState().initializeProject(projectPath)
+  }, [projectPath, shouldRender])
   const refreshLifecycleRef = useRef({
     sessionId,
     isOpen: false,
@@ -1500,7 +1524,14 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     && normalizeFilterQuery(workspaceSearch.query) === normalizedFilterQuery
     ? workspaceSearch
     : null
+  const searchEntryVisible = (entry: WorkspaceTreeEntry) => {
+    const normalized = normalizeProjectFolderKey(entry.path)
+    const root = mountedRoots.find((folder) => normalized.startsWith(normalizeProjectFolderKey(folder.path) + '/'))
+    const relativePath = root ? entry.path.replace(/\\/g, '/').slice(root.path.length + 1) : entry.path
+    return isWorkspacePathVisible(relativePath, entry.isDirectory, showHiddenFolders)
+  }
   const displayedWorkspaceSearch = activeWorkspaceSearch ?? workspaceSearch
+  const visibleSearchEntries = displayedWorkspaceSearch?.entries.filter(searchEntryVisible) ?? []
   const expandedPathSet = new Set(expandedPaths)
   const activeTreePath = activePreviewTab?.path ?? null
   const activeChangedFile = activePreviewTab
@@ -1510,7 +1541,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     ? activePreviewTab?.path
     : status?.changedFiles.find((file) => !file.isDirectory)?.path
   const filteredChangedFiles = useMemo(() => {
-    const allChangedFiles = status?.changedFiles ?? []
+    const allChangedFiles = (status?.changedFiles ?? []).filter((file) => isWorkspacePathVisible(file.path, Boolean(file.isDirectory), showHiddenFolders))
     const matchingFiles = allChangedFiles.filter((file) => (
       !file.isDirectory
       && changedFileMatchesFilter(file, normalizedFilterQuery)
@@ -1530,7 +1561,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     })
     return [...matchingDirectories, ...matchingFiles]
       .sort((left, right) => left.path.localeCompare(right.path))
-  }, [changedVersionFilter, normalizedFilterQuery, plainTextOnly, status?.changedFiles])
+  }, [changedVersionFilter, normalizedFilterQuery, plainTextOnly, status?.changedFiles, showHiddenFolders])
   const changedFilesByPath = useMemo(
     () => new Map((status?.changedFiles ?? []).map((file) => [normalizeWorkspacePathKey(file.path), file])),
     [status?.changedFiles],
@@ -1548,31 +1579,22 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     () => buildChangedTree(filteredChangedFiles),
     [filteredChangedFiles],
   )
-  const changedLinkedRootPaths = useMemo(
-    () => (status?.changedFiles ?? [])
-      .filter((file) => file.isDirectory && file.isSymlink)
-      .map((file) => normalizeWorkspacePathKey(file.path)),
-    [status?.changedFiles],
-  )
-  const changedExpandedPathSet = useMemo(() => {
-    const expanded = new Set<string>()
-    for (const [parentPath, tree] of Object.entries(changedTreeByPath)) {
-      if (!parentPath || tree?.state !== 'ok' || tree.entries.length === 0) continue
-      const normalizedParentPath = normalizeWorkspacePathKey(parentPath)
-      const isInsideLinkedRoot = changedLinkedRootPaths.some((rootPath) => (
-        normalizedParentPath === rootPath || normalizedParentPath.startsWith(`${rootPath}/`)
-      ))
-      const defaultExpanded = !isInsideLinkedRoot
-      const overridden = changedDirectoryOverrides.has(parentPath)
-      if (defaultExpanded !== overridden) expanded.add(parentPath)
-    }
-    return expanded
-  }, [changedDirectoryOverrides, changedLinkedRootPaths, changedTreeByPath])
+  const changedDirectoryPaths = useMemo(() => Object.entries(changedTreeByPath)
+    .filter(([path, tree]) => path && tree?.state === 'ok' && tree.entries.length > 0)
+    .map(([path]) => path), [changedTreeByPath])
+  // Search reveals matching descendants; the unfiltered tree starts at level one.
+  const changedDefaultExpanded = normalizedFilterQuery.length > 0
+  const changedExpandedPathSet = useMemo(() => new Set(changedDirectoryPaths.filter(
+    (path) => changedDefaultExpanded !== changedDirectoryOverrides.has(path),
+  )), [changedDirectoryOverrides, changedDirectoryPaths, changedDefaultExpanded])
+  useEffect(() => {
+    setChangedDirectoryOverrides(new Set())
+  }, [sessionId, navigatorView, isNavigatorOpen, isOpen, normalizedFilterQuery])
   const filteredRootEntries = useMemo(
     () => rootTree?.state === 'ok'
-      ? rootTree.entries.filter((entry) => treeEntryMatchesFilter(entry, normalizedFilterQuery, treeByPath))
+      ? rootTree.entries.filter((entry) => isWorkspaceFolderEntryVisible(entry, showHiddenFolders) && treeEntryMatchesFilter(entry, normalizedFilterQuery, treeByPath))
       : [],
-    [normalizedFilterQuery, rootTree, treeByPath],
+    [normalizedFilterQuery, rootTree, treeByPath, showHiddenFolders],
   )
   const visibleEntryCount = filteredChangedFiles.filter((file) => !file.isDirectory).length
   const totalEntryCount = status?.changedFiles.filter((file) => !file.isDirectory).length ?? 0
@@ -1585,8 +1607,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       : workspaceSearchLoading || !activeWorkspaceSearch
         ? t('workspace.searching')
         : activeWorkspaceSearch.truncated
-          ? t('workspace.searchResultsTruncated', { count: activeWorkspaceSearch.entries.length })
-          : t('workspace.searchResultsCount', { count: activeWorkspaceSearch.entries.length })
+          ? t('workspace.searchResultsTruncated', { count: visibleSearchEntries.length })
+          : t('workspace.searchResultsCount', { count: visibleSearchEntries.length })
   const activePreviewRequestKey = activePreviewTab
     ? makePreviewStateKey(sessionId, activePreviewTab.id)
     : null
@@ -1668,14 +1690,16 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
 
   useEffect(() => {
     if (!shouldRender || navigatorView !== 'all') return
+    let active = true
+    setMountedRootErrors({})
     for (const root of mountedRoots) {
       void sessionsApi.registerWorkspaceRoot(sessionId, root.path)
-        .then(() => loadTree(sessionId, root.path))
-        .catch(() => {
-          // Keep the persisted root visible: it may be a temporarily missing
-          // network drive and the tree row will show its existing load state.
+        .then(() => { if (active) return loadTree(sessionId, root.path) })
+        .catch((error) => {
+          if (active) setMountedRootErrors((errors) => ({ ...errors, [root.path]: error instanceof Error ? error.message : String(error) }))
         })
     }
+    return () => { active = false }
   }, [loadTree, mountedRoots, navigatorView, sessionId, shouldRender])
 
   useEffect(() => {
@@ -1693,7 +1717,25 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
     setWorkspaceSearchError(null)
     let cancelled = false
     const timer = window.setTimeout(() => {
-      void sessionsApi.searchWorkspace(sessionId, filterQuery.trim()).then((result) => {
+      void (async () => {
+        const query = filterQuery.trim()
+        const results = await Promise.allSettled([
+          sessionsApi.searchWorkspace(sessionId, query),
+          ...mountedRoots.map(async (root): Promise<WorkspaceSearchResult> => {
+            await sessionsApi.registerWorkspaceRoot(sessionId, root.path)
+            const result = await filesystemApi.search(query, root.path)
+            return { state: 'ok', query, truncated: result.entries.length >= 200, entries: result.entries.filter((entry) => !entry.isDirectory) }
+          }),
+        ])
+        const failures = results.filter((result) => result.status === 'rejected')
+        const successes = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+        if (!successes.length) throw failures[0]?.reason
+        if (failures.length && !cancelled && workspaceSearchRequestIdRef.current === requestId) {
+          setWorkspaceSearchError(failures.map((result) => String(result.reason)).join('; '))
+        }
+        const entries = [...new Map(successes.flatMap((result) => result.entries).map((entry) => [entry.path.replace(/\\/g, '/'), entry])).values()]
+        return { state: 'ok' as const, query, truncated: successes.some((result) => result.truncated), entries }
+      })().then((result) => {
         if (cancelled || workspaceSearchRequestIdRef.current !== requestId) return
         setWorkspaceSearch(result)
         setWorkspaceSearchLoading(false)
@@ -1708,7 +1750,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [filterQuery, navigatorView, normalizedFilterQuery, sessionId, shouldRender, t, workspaceSearchRevision])
+  }, [filterQuery, mountedRoots, navigatorView, normalizedFilterQuery, sessionId, shouldRender, t, workspaceSearchRevision])
 
   const closeContextMenus = useCallback(() => {
     setPreviewTabContextMenu(null)
@@ -1951,27 +1993,6 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       }))
     } finally {
       setWriteAccessChangingSide(null)
-    }
-  }
-
-  const handleAddWorkspaceFolder = async () => {
-    const host = getDesktopHost()
-    if (!host.capabilities.dialogs) {
-      addToast({ type: 'error', message: '仅桌面版可以选择额外文件夹。' })
-      return
-    }
-    try {
-      const selected = await host.dialogs.open({
-        directory: true,
-        multiple: false,
-        title: '加入文件视图',
-      })
-      if (typeof selected !== 'string' || !selected.trim()) return
-      const root = await sessionsApi.registerWorkspaceRoot(sessionId, selected)
-      addMountedRoot(root.path)
-      await loadTree(sessionId, root.path)
-    } catch (error) {
-      addToast({ type: 'error', message: error instanceof Error ? error.message : t('workspace.addFolderFailed') })
     }
   }
 
@@ -2251,6 +2272,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       <div className="space-y-1">
         {rootEntries.map((entry) => (
           <TreeNode
+                showHiddenFolders={showHiddenFolders}
             key={entry.path}
             sessionId={sessionId}
             entry={entry}
@@ -2303,7 +2325,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       if (!displayedWorkspaceSearch) {
         return <PanelMessage announce={false} icon="progress_activity" message={t('workspace.searching')} />
       }
-      if (!workspaceSearchLoading && activeWorkspaceSearch?.entries.length === 0) {
+      if (!workspaceSearchLoading && visibleSearchEntries.length === 0) {
         return <PanelMessage announce={false} icon="search_off" message={t('workspace.noMatchingFiles')} />
       }
 
@@ -2329,7 +2351,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               </Button>
             </div>
           )}
-          {displayedWorkspaceSearch.entries.map((entry) => (
+          {visibleSearchEntries.map((entry) => (
             <WorkspaceSearchResultRow
               key={entry.path}
               entry={entry}
@@ -2363,18 +2385,38 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       return <PanelMessage icon="progress_activity" message={t('common.loading')} />
     }
 
-    if (rootTree.entries.length === 0 && mountedRoots.length === 0) {
+    if (rootTree.entries.length === 0 && mountedRoots.length === 0 && pinnedFolders.length === 0) {
       return <PanelMessage icon="folder_open" message={t('workspace.noFiles')} />
     }
 
-    if (filteredRootEntries.length === 0 && mountedRoots.length === 0) {
+    if (filteredRootEntries.length === 0 && mountedRoots.length === 0 && pinnedFolders.length === 0) {
       return <PanelMessage icon="search_off" message={t('workspace.noMatchingFiles')} />
     }
 
     return (
       <div className="py-1">
+        {pinnedFolders.length > 0 && (
+          <section aria-label={t('workspace.pinnedFolders')} className="mb-2 border-b border-[var(--color-border)] pb-2">
+            <div className="flex items-center gap-1.5 px-3 py-1 text-[11px] text-[var(--color-text-secondary)]"><Pin size={13} />{t('workspace.pinnedFolders')}</div>
+            {pinnedFolders.map((folder) => (
+              <TreeNode key={folder.path} sessionId={sessionId}
+                entry={{ path: folder.path, name: folder.label, isDirectory: true }} depth={0}
+                showHiddenFolders={showHiddenFolders} expandedPaths={expandedPathSet}
+                treeByPath={treeByPath} treeLoadingByPath={treeLoadingByPath} treeErrorsByPath={treeErrorsByPath}
+                changedFilesByPath={changedFilesByPath} filterQuery=""
+                onToggle={(path) => { void (async () => {
+                  const key = normalizeProjectFolderKey(path)
+                  const root = mountedRoots.find((root) => key === normalizeProjectFolderKey(root.path) || key.startsWith(normalizeProjectFolderKey(root.path) + '/'))
+                  if (root) await sessionsApi.registerWorkspaceRoot(sessionId, root.path)
+                  await toggleTreeNode(sessionId, path)
+                })().catch((error) => addToast({ type: 'error', message: String(error) })) }}
+                onOpenFile={handleOpenFile} onFileContextMenu={handleFileContextMenu} activePath={activeTreePath} />
+            ))}
+          </section>
+        )}
         {filteredRootEntries.map((entry) => (
           <TreeNode
+                showHiddenFolders={showHiddenFolders}
             key={entry.path}
             sessionId={sessionId}
             entry={entry}
@@ -2394,13 +2436,13 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
         {mountedRoots.map((root) => {
           const tree = treeByPath[root.path]
           const isLoading = treeLoadingByPath[makeTreeStateKey(sessionId, root.path)] ?? false
-          const error = treeErrorsByPath[makeTreeStateKey(sessionId, root.path)] ?? null
+          const error = mountedRootErrors[root.path] ?? treeErrorsByPath[makeTreeStateKey(sessionId, root.path)] ?? null
           const entries = tree?.state === 'ok'
-            ? tree.entries.filter((entry) => treeEntryMatchesFilter(entry, normalizedFilterQuery, treeByPath))
+            ? tree.entries.filter((entry) => isWorkspaceFolderEntryVisible(entry, showHiddenFolders) && treeEntryMatchesFilter(entry, normalizedFilterQuery, treeByPath))
             : []
           return (
             <section key={root.path} className="mt-2 border-t border-[var(--color-border)] pt-1.5">
-              <div className="group flex min-h-8 items-center gap-1.5 px-3 text-[11px] font-medium text-[var(--color-text-secondary)]" title={root.path}>
+              <div className="group flex min-h-8 items-center gap-1.5 px-3 text-[11px] font-medium text-[var(--color-text-secondary)]" title={root.path} onContextMenu={(event) => handleFileContextMenu(event, root.path, true)}>
                 <FolderOpen size={14} className="shrink-0" aria-hidden="true" />
                 <span className="min-w-0 flex-1 truncate">{root.label}</span>
                 <button
@@ -2418,6 +2460,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               {!isLoading && !error && tree?.state === 'error' ? <PanelMessage compact icon="error" tone="error" message={tree.error || t('workspace.loadError')} /> : null}
               {!isLoading && !error && tree?.state === 'ok' && entries.map((entry) => (
                 <TreeNode
+                showHiddenFolders={showHiddenFolders}
                   key={entry.path}
                   sessionId={sessionId}
                   entry={entry}
@@ -2925,11 +2968,16 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                 </div>
               )}
               </div>
+              <IconButton icon={showHiddenFolders ? <Eye size={16} /> : <EyeOff size={16} />}
+                label={t(showHiddenFolders ? 'workspace.hideHiddenFolders' : 'workspace.showHiddenFolders')}
+                aria-pressed={showHiddenFolders}
+                onClick={() => useProjectFoldersStore.getState().setShowHiddenFolders(projectPath, !showHiddenFolders)}
+                size="md" tone="muted" />
               {activeView === 'all' && (
                 <IconButton
                   icon={<FolderPlus size={16} strokeWidth={1.9} aria-hidden="true" />}
-                  label={t('workspace.addFolder')}
-                  onClick={() => void handleAddWorkspaceFolder()}
+                  label={t('workspace.manageAttachedFolders')}
+                  onClick={() => setProjectFoldersOpen(true)}
                   size="md"
                   tone="muted"
                   showTooltip={false}
@@ -2975,6 +3023,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                 versionFilter={changedVersionFilter}
                 onPlainTextOnlyChange={setPlainTextOnly}
                 onVersionFilterChange={setChangedVersionFilter}
+                onExpandAll={() => setChangedDirectoryOverrides(new Set(changedDefaultExpanded ? [] : changedDirectoryPaths))}
+                onCollapseAll={() => setChangedDirectoryOverrides(new Set(changedDefaultExpanded ? changedDirectoryPaths : []))}
               />
             )}
 
@@ -3002,6 +3052,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
         )}
       </div>
 
+      {projectFoldersOpen && projectPath && <ProjectFoldersDialog projectPath={projectPath} onClose={() => setProjectFoldersOpen(false)} />}
       {fileContextMenu && (
         <div
           ref={fileContextMenuRef}
@@ -3010,6 +3061,19 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
           style={{ left: fileContextMenu.x, top: fileContextMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
+          {fileContextMenu.isDirectory && projectPath && (
+            <button type="button" role="menuitem"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--color-surface-hover)]"
+              onClick={() => {
+                const path = resolveWorkspaceAttachmentPath(status?.workDir, fileContextMenu.path)
+                const store = useProjectFoldersStore.getState()
+                if (pinnedFolders.some((folder) => normalizeProjectFolderKey(folder.path) === normalizeProjectFolderKey(path))) store.unpinFolder(projectPath, path)
+                else store.pinFolder(projectPath, path)
+                setFileContextMenu(null)
+              }}>
+              <Pin size={14} />{t(pinnedFolders.some((folder) => normalizeProjectFolderKey(folder.path) === normalizeProjectFolderKey(resolveWorkspaceAttachmentPath(status?.workDir, fileContextMenu.path))) ? 'workspace.unpinFolder' : 'workspace.pinFolder')}
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"

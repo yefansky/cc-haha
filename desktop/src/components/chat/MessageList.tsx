@@ -3555,6 +3555,7 @@ export const MessageBlock = memo(function MessageBlock({
       // other tool call takes.
       return (
         <ToolCallBlock
+          sessionId={sessionId}
           toolName={message.toolName}
           originId={message.toolUseId}
           input={message.input}

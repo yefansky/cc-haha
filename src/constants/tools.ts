@@ -53,6 +53,7 @@ export const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set([
  * Async Agent Tool Availability Status (Source of Truth)
  */
 export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
+  'TrackFileChanges',
   FILE_READ_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
   TODO_WRITE_TOOL_NAME,

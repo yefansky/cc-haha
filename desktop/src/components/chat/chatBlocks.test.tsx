@@ -301,7 +301,7 @@ describe('chat blocks', () => {
     fireEvent.click(screen.getByRole('button'))
 
     expect(container.textContent).toContain('Tool Input')
-    expect(container.textContent).not.toContain('const answer = 42')
+    expect(container.textContent).toContain('const answer = 42')
   })
 
   // #1149: bash stdout used to be dropped entirely — the card showed the command
@@ -493,9 +493,7 @@ describe('chat blocks', () => {
     expect(container.textContent).not.toContain('Tool Input')
   })
 
-  // Read stays out of the shell path: file content is not command output, and it
-  // is by far the bulkiest tool output — see #1149.
-  it('keeps Read file contents suppressed', () => {
+  it('keeps Read contents collapsed but exposes the actual result on demand', () => {
     const { container } = render(
       <ToolCallBlock
         toolName="Read"
@@ -504,9 +502,11 @@ describe('chat blocks', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button'))
-
     expect(container.textContent).not.toContain('const answer = 42')
+    fireEvent.click(screen.getByRole('button', { name: /View read content/ }))
+    expect(container.textContent).toContain('const answer = 42')
+    expect(container.textContent).toContain('console.log(answer)')
+    fireEvent.click(screen.getByRole('button', { name: /Collapse read content/ }))
     expect(container.textContent).not.toContain('console.log(answer)')
   })
 

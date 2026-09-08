@@ -3,12 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
 const mocks = vi.hoisted(() => ({
+  copyText: vi.fn(),
   getTurnCheckpoints: vi.fn(),
   getWorkspaceStatus: vi.fn(),
   getWorkspaceFile: vi.fn(),
   getWorkspaceDiff: vi.fn(),
   getTurnCheckpointDiff: vi.fn(),
 }))
+
+vi.mock('@/lib/clipboard', () => ({ copyTextToClipboard: mocks.copyText }))
 
 vi.mock('../../api/sessions', () => ({
   sessionsApi: {
@@ -38,6 +41,30 @@ function checkpoint(
 }
 
 describe('SessionChangedFilesStrip', () => {
+  it.each([
+    ['src/app.ts', '/repo', '/repo/src/app.ts'],
+    ['K:/external/file.lua', '/repo', 'K:/external/file.lua'],
+    ['//server/share/file.lua', '/repo', '//server/share/file.lua'],
+  ])('copies paths from the context menu for %s without opening the file', async (source, root, absolute) => {
+    mocks.getTurnCheckpoints.mockResolvedValue({ checkpoints: [{ ...checkpoint('turn', 0, [source]), workDir: root }] })
+    render(<SessionChangedFilesStrip sessionId="copy-path" workDir="/different" enabled refreshNonce={0} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Session file changes: 1' }))
+    const row = screen.getByRole('button', { name: /Open.*app.ts|Open.*file.lua/ })
+    const open = vi.spyOn(useWorkspacePanelStore.getState(), 'openPreview')
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 60 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy absolute path' }))
+    await waitFor(() => expect(mocks.copyText).toHaveBeenCalledWith(absolute))
+    expect(open).not.toHaveBeenCalled()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    fireEvent.contextMenu(row)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy path' }))
+    await waitFor(() => expect(mocks.copyText).toHaveBeenLastCalledWith(source))
+    fireEvent.contextMenu(row)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    open.mockRestore()
+  })
+
   it('refreshes confirmed child changes while running, keeps expanded state, and stops polling on completion', async () => {
     vi.useFakeTimers()
     try {
@@ -61,6 +88,7 @@ describe('SessionChangedFilesStrip', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.copyText.mockResolvedValue(true)
     clearSessionTurnCheckpointCache()
     useWorkspacePanelStore.setState(initialWorkspaceState, true)
     useSettingsStore.setState({ locale: 'en' })
@@ -81,6 +109,20 @@ describe('SessionChangedFilesStrip', () => {
       path: 'src/app.ts',
       diff: 'diff --turn a/src/app.ts b/src/app.ts',
     })
+  })
+
+  it('shows actual registered-script changes after refresh but not unchanged registered candidates', async () => {
+    mocks.getTurnCheckpoints.mockResolvedValueOnce({ checkpoints: [checkpoint('registered', 0, [])] })
+      .mockResolvedValue({ checkpoints: [checkpoint('registered', 0, ['/repo/edited.lua', '/repo/new.lua', '/repo/deleted.lua'])] })
+    const view = render(<SessionChangedFilesStrip sessionId="registered-script" workDir="/repo" enabled refreshNonce={0} />)
+    await waitFor(() => expect(mocks.getTurnCheckpoints).toHaveBeenCalledTimes(1))
+    expect(screen.queryByTestId('session-changed-files-strip')).not.toBeInTheDocument()
+    view.rerender(<SessionChangedFilesStrip sessionId="registered-script" workDir="/repo" enabled refreshNonce={1} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Session file changes: 3' }))
+    expect(screen.getByText('edited.lua')).toBeInTheDocument()
+    expect(screen.getByText('new.lua')).toBeInTheDocument()
+    expect(screen.getByText('deleted.lua')).toBeInTheDocument()
+    expect(screen.queryByText('unchanged.lua')).not.toBeInTheDocument()
   })
 
   it('warms every deduplicated session file and opens it without a workspace status scan', async () => {

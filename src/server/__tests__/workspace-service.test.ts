@@ -1261,6 +1261,7 @@ describe('WorkspaceService', () => {
       state: 'ok',
       path: '',
       entries: [
+        { name: '.git', path: '.git', isDirectory: true },
         { name: '.hidden-dir', path: '.hidden-dir', isDirectory: true },
         { name: 'a-dir', path: 'a-dir', isDirectory: true },
         { name: 'b-dir', path: 'b-dir', isDirectory: true },
@@ -1277,6 +1278,25 @@ describe('WorkspaceService', () => {
         { name: 'note.txt', path: 'a-dir/note.txt', isDirectory: false },
       ],
     })
+  })
+
+  it('includes VCS metadata directories so the file viewer can reveal and expand hidden folders', async () => {
+    const workDir = await makeTempDir('workspace-service-tree-metadata-')
+    const service = new WorkspaceService(async () => workDir)
+    for (const name of ['.git', '.svn', '.hg']) {
+      await fs.mkdir(path.join(workDir, name))
+      await fs.writeFile(path.join(workDir, name, 'metadata.txt'), 'fixture\n')
+    }
+
+    const tree = await service.readTree('session-1')
+    expect(tree.state).toBe('ok')
+    expect(tree.entries.map(entry => entry.name).sort()).toEqual(['.git', '.hg', '.svn'])
+    for (const name of ['.git', '.svn', '.hg']) {
+      await expect(service.readTree('session-1', name)).resolves.toMatchObject({
+        state: 'ok',
+        entries: [{ name: 'metadata.txt', path: `${name}/metadata.txt`, isDirectory: false }],
+      })
+    }
   })
 
   it('prefers the accumulated file-history diff over intermediate transcript patches', async () => {

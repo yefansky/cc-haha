@@ -4675,6 +4675,7 @@ describe('Sessions API', () => {
       path: '',
     })
     expect(treeBody.entries).toEqual([
+      { name: '.git', path: '.git', isDirectory: true },
       { name: 'services', path: 'services', isDirectory: true },
       { name: 'src', path: 'src', isDirectory: true },
       { name: 'tracked.txt', path: 'tracked.txt', isDirectory: false },
@@ -6677,6 +6678,67 @@ describe('Sessions API', () => {
         prompt: 'make v3 and create file',
       },
     ])
+  })
+
+  it.each([
+    ['gbk', Buffer.from([0xd6, 0xd0]), Buffer.from([0xb9, 0xfa])],
+    ['binary', Buffer.from([0x81]), Buffer.from([0x82])],
+  ] as const)('registered %s byte changes appear even with identical UTF-8 replacement text and old timestamps', async (_kind, before, after) => {
+    const sessionId = crypto.randomUUID()
+    const userId = crypto.randomUUID()
+    const workDir = path.join(tmpDir, 'registered-bytes')
+    const file = path.join(workDir, 'legacy.lua')
+    const backupName = 'registered-bytes@v1'
+    await fs.mkdir(workDir, { recursive: true })
+    await fs.writeFile(file, after)
+    await fs.utimes(file, new Date(0), new Date(0))
+    await writeFileHistoryBackup(sessionId, backupName, '')
+    await fs.writeFile(path.join(tmpDir, 'file-history', sessionId, backupName), before)
+    await writeSessionFile('-tmp-registered-bytes', sessionId, [
+      makeSessionMetaEntry(workDir),
+      makeFileHistorySnapshotEntry(userId, { 'legacy.lua': { backupFileName: backupName, version: 1, backupTime: '2026-01-01T00:00:00.000Z' } }),
+      { ...makeUserEntry('modify registered file', userId), cwd: workDir, sessionId },
+      makeAssistantEntry('Done', userId),
+    ])
+    const response = await fetch(`${baseUrl}/api/sessions/${sessionId}/turn-checkpoints`)
+    expect(response.status).toBe(200)
+    const result = await response.json() as {checkpoints:Array<{code:{filesChanged:string[]}}>}
+    expect(result.checkpoints[0]?.code.filesChanged).toEqual([file])
+  })
+
+  it('registered script targets reach the session change list only after actual content changes', async () => {
+    const sessionId = '99999999-bbbb-cccc-dddd-000000000019'
+    const workDir = path.join(tmpDir, 'registered-script-files')
+    const userId = crypto.randomUUID()
+    await fs.mkdir(workDir, { recursive: true })
+    const paths = ['edit.lua', 'delete.lua', 'unchanged.lua', 'new.lua'].map(name => path.join(workDir, name))
+    const backups: Record<string, unknown> = {}
+    for (const name of ['edit.lua', 'delete.lua', 'unchanged.lua']) {
+      await fs.writeFile(path.join(workDir, name), 'before\n')
+      await writeFileHistoryBackup(sessionId, `${name}@v1`, 'before\n')
+      backups[name] = { backupFileName: `${name}@v1`, version: 1, backupTime: '2026-01-01T00:00:00.000Z' }
+    }
+    backups['new.lua'] = { backupFileName: null, version: 1, backupTime: '2026-01-01T00:00:00.000Z' }
+    await writeSessionFile('-tmp-registered-script-files', sessionId, [
+      makeSessionMetaEntry(workDir), makeFileHistorySnapshotEntry(userId, backups),
+      { ...makeUserEntry('batch edit using a script', userId), cwd: workDir, sessionId },
+      makeAssistantToolUseEntry([{id:'track-files',name:'TrackFileChanges',input:{file_paths:paths}}], userId),
+      makeToolResultUserEntry('track-files', JSON.stringify({registered:paths,failed:[],truncated:false}), undefined, undefined, sessionId),
+      makeAssistantEntry('Registration completed', userId),
+    ])
+    const readList = async () => {
+      const response = await fetch(`${baseUrl}/api/sessions/${sessionId}/turn-checkpoints`)
+      expect(response.status).toBe(200)
+      return await response.json() as {checkpoints:Array<{code:{filesChanged:string[]},unverifiedChangeSources:string[]}>}
+    }
+    const before = await readList()
+    expect(before.checkpoints[0]?.code.filesChanged).toEqual([])
+    expect(before.checkpoints[0]?.unverifiedChangeSources).toEqual([])
+    const child = Bun.spawn([process.execPath, '-e', `const fs=require('node:fs');const p=require('node:path');const root=process.argv[1];fs.writeFileSync(p.join(root,'edit.lua'),'after\\n');fs.unlinkSync(p.join(root,'delete.lua'));fs.writeFileSync(p.join(root,'new.lua'),'created\\n')`, workDir], {stdout:'pipe',stderr:'pipe'})
+    expect(await child.exited).toBe(0)
+    const after = await readList()
+    expect(after.checkpoints[0]?.code.filesChanged.sort()).toEqual([paths[0]!, paths[1]!, paths[3]!].sort())
+    expect(after.checkpoints[0]?.code.filesChanged).not.toContain(paths[2]!)
   })
 
   it('GET /api/sessions/:id/turn-checkpoints should keep an available empty preview for an unchanged snapshot-backed turn', async () => {

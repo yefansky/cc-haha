@@ -3676,6 +3676,16 @@ async function ensureCliSessionStarted(
     await sendRepositoryStartupStatus(ws, sessionId, reason)
     console.log(`[WS] Starting CLI for ${sessionId} due to ${reason}`)
     await conversationService.startSession(sessionId, workDir, sdkUrl, startupSettings)
+    // Remember the configuration that actually started. A restored session may
+    // have no in-memory override yet; re-sending that same selection during its
+    // first turn must not schedule a redundant restart and postpone its ACK.
+    if (!runtimeOverrides.has(sessionId) && startupSettings.model) {
+      runtimeOverrides.set(sessionId, {
+        providerId: startupSettings.providerId ?? null,
+        modelId: startupSettings.model,
+        ...(startupSettings.effort ? { effort: startupSettings.effort } : {}),
+      })
+    }
     runtimeExitStoppedSessions.delete(sessionId)
   })
 

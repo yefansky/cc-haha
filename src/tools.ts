@@ -1,3 +1,4 @@
+import { TrackFileChangesTool } from './tools/TrackFileChangesTool/TrackFileChangesTool.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { toolMatchesName, type Tool, type Tools } from './Tool.js'
 import { AgentTool } from './tools/AgentTool/AgentTool.js'
@@ -207,6 +208,7 @@ export function getAllBaseTools(): Tools {
     ...(hasEmbeddedSearchTools() ? [] : [GlobTool, GrepTool]),
     ExitPlanModeV2Tool,
     FileReadTool,
+    TrackFileChangesTool,
     FileEditTool,
     FileWriteTool,
     NotebookEditTool,
@@ -296,6 +298,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
     const simpleTools: Tool[] = [
       ...(shellTool ? [shellTool] : []),
       FileReadTool,
+      TrackFileChangesTool,
       FileEditTool,
     ]
     // When coordinator mode is also active, include AgentTool and TaskStopTool

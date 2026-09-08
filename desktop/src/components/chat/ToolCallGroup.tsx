@@ -1,6 +1,7 @@
 import { memo, useCallback, useState } from 'react'
 import { BookMarked, ChevronDown, ChevronRight, CircleCheck, Settings } from 'lucide-react'
 import { ToolCallBlock } from './ToolCallBlock'
+import { ToolCallSessionContext } from './toolCallSessionContext'
 import { ImageGenerationGroup, type ImageGenerationItem } from './ImageGenerationBlock'
 import { isImageGenerationToolName } from './imageGenerationTools'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
@@ -157,7 +158,13 @@ function hasUnresolvedToolCalls(
   )
 }
 
-export const ToolCallGroup = memo(function ToolCallGroup({
+export const ToolCallGroup = memo(function ToolCallGroup(props: Props) {
+  return <ToolCallSessionContext.Provider value={props.sessionId ?? null}>
+    <ToolCallGroupBody {...props} />
+  </ToolCallSessionContext.Provider>
+})
+
+function ToolCallGroupBody({
   sessionId,
   toolCalls,
   resultMap,
@@ -208,7 +215,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
       isStreaming={isStreaming}
     />
   )
-})
+}
 
 function ToolCallGroupContent({
   sessionId,
