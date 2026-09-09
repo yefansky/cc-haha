@@ -1,0 +1,63 @@
+{
+  "source_project": "cc-haha-remote-gateway",
+  "source_commit": "5d5762bbf380ee050cd3bb76f47358024b9d76ed",
+  "scope": "Authorized client-only copy; no server, account store, runtime data or private documentation.",
+  "files": [
+    {
+      "source": "src/cc_haha_tunnel/__init__.py",
+      "path": "src/cc_haha_tunnel/__init__.py",
+      "source_sha256": "3038577c489088c4f7c75120faa03cbddac771cf6788e4dc99bbe4a6ceb4ac8b",
+      "adaptation": "none (line endings normalized to LF)",
+      "sha256": "3038577c489088c4f7c75120faa03cbddac771cf6788e4dc99bbe4a6ceb4ac8b"
+    },
+    {
+      "source": "src/cc_haha_tunnel/__main__.py",
+      "path": "src/cc_haha_tunnel/__main__.py",
+      "source_sha256": "2e6deadbfa8ba683d742614a4226cb0124b036118b76e32da1e9486d88e7fcd5",
+      "adaptation": "none (line endings normalized to LF)",
+      "sha256": "2e6deadbfa8ba683d742614a4226cb0124b036118b76e32da1e9486d88e7fcd5"
+    },
+    {
+      "source": "src/cc_haha_tunnel/client.py",
+      "path": "src/cc_haha_tunnel/client.py",
+      "source_sha256": "27a7de02d50370c5d70e00c2f8e646dc1b31e9b00a007c3fb85a19dbf7d9a9de",
+      "adaptation": "Imports point to client-local protocol/flow_control; no protocol behavior changes",
+      "sha256": "85e619ade0b7098c2453da095e658a1fa63dbde4a176da18a24c4ca6f04e9580"
+    },
+    {
+      "source": "src/cc_haha_tunnel/supervisor.py",
+      "path": "src/cc_haha_tunnel/supervisor.py",
+      "source_sha256": "5f13daa07d4aa6cabaaa0273c9475c138b220b817436241de4875c55938220e6",
+      "adaptation": "Imports point to client-local protocol/flow_control; no protocol behavior changes",
+      "sha256": "a1ba9e3abf8a7824a633f0beac86842433946bf83c431e114cad6d06b91cc075"
+    },
+    {
+      "source": "src/cc_haha_gateway/protocol.py",
+      "path": "src/cc_haha_tunnel/protocol.py",
+      "source_sha256": "b24477b1389f2df795d4ac1637764092f1fb7774d75b611a8a357bd54432610b",
+      "adaptation": "none (line endings normalized to LF)",
+      "sha256": "b24477b1389f2df795d4ac1637764092f1fb7774d75b611a8a357bd54432610b"
+    },
+    {
+      "source": "src/cc_haha_gateway/flow_control.py",
+      "path": "src/cc_haha_tunnel/flow_control.py",
+      "source_sha256": "0871e951d5ed0c4536659929cf45f35fbc12eff05513b0dffd8ad662c40ea435",
+      "adaptation": "none (line endings normalized to LF)",
+      "sha256": "0871e951d5ed0c4536659929cf45f35fbc12eff05513b0dffd8ad662c40ea435"
+    },
+    {
+      "source": "requirements-build.txt",
+      "path": "requirements-build.txt",
+      "source_sha256": "96919e5940e2ca9e30bdcdba0b1e489acbcf67c40bfb4b5443f3fc19bbb674fd",
+      "adaptation": "none (line endings normalized to LF)",
+      "sha256": "96919e5940e2ca9e30bdcdba0b1e489acbcf67c40bfb4b5443f3fc19bbb674fd"
+    },
+    {
+      "source": "requirements/runtime.txt",
+      "path": "requirements/runtime.txt",
+      "source_sha256": "089156c0087fd412e9e7773cc4c877cf64b48ec4911c2b20d2287c0e61d17ef6",
+      "adaptation": "none (line endings normalized to LF)",
+      "sha256": "089156c0087fd412e9e7773cc4c877cf64b48ec4911c2b20d2287c0e61d17ef6"
+    }
+  ]
+}

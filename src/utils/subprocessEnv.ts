@@ -56,6 +56,8 @@ const ALWAYS_SUBPROCESS_SCRUB = [
   // Used only by the Claude process to authenticate its host-managed API hop.
   // Bash, hooks, MCP, LSP, and shell snapshots must never inherit it.
   'CC_HAHA_LOCAL_ACCESS_TOKEN',
+  // Server-to-H5 relay capability, never needed by project tools.
+  'CC_HAHA_GATEWAY_FORWARDER_TOKEN',
 ] as const
 
 /**

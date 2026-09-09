@@ -109,6 +109,8 @@ export class ElectronServerRuntime {
   private readonly localAccessToken = randomBytes(32).toString('base64url')
   private readonly petAccessToken = randomBytes(32).toString('base64url')
   private readonly integrationToken = randomBytes(32).toString('base64url')
+  private readonly gatewayForwarderToken = randomBytes(32).toString('base64url')
+  private readonly serverChangedListeners = new Set<(url: string | null) => void>()
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private systemProxyBridge: SystemProxyBridgeLike | null = null
   private server: ActiveServer | null = null
@@ -160,6 +162,24 @@ export class ElectronServerRuntime {
     return this.integrationToken
   }
 
+  /** Restricted H5 forwarder capability. Main process only, never renderer IPC. */
+  getGatewayForwarderToken(): string {
+    return this.gatewayForwarderToken
+  }
+
+  onServerChanged(listener: (url: string | null) => void): () => void {
+    this.serverChangedListeners.add(listener)
+    return () => { this.serverChangedListeners.delete(listener) }
+  }
+
+  private notifyServerChanged(): void {
+    const url = this.getActiveServerUrl()
+    for (const listener of this.serverChangedListeners) {
+      // Observers cannot break local server startup or process cleanup.
+      try { listener(url) } catch { /* The observer owns its recovery. */ }
+    }
+  }
+
   getPetAccessToken(): string {
     return this.petAccessToken
   }
@@ -205,6 +225,7 @@ export class ElectronServerRuntime {
       this.server = null
     }
     this.stopSystemProxyBridge()
+    this.notifyServerChanged()
   }
 
   private async startServerOnce(generation: number): Promise<string> {
@@ -220,6 +241,7 @@ export class ElectronServerRuntime {
     const env = {
       ...this.withServerAccessTokens(await this.resolveSidecarBaseEnv()),
       CC_HAHA_DESKTOP_INTEGRATION_TOKEN: this.integrationToken,
+      CC_HAHA_GATEWAY_FORWARDER_TOKEN: this.gatewayForwarderToken,
     }
     this.assertCurrentGeneration(generation)
     const plan = createServerPlan({
@@ -256,6 +278,7 @@ export class ElectronServerRuntime {
         startState.failurePromise,
       ])
       if (startState.failure) throw startState.failure
+      this.notifyServerChanged()
       return url
     } catch (error) {
       if (startState) {
@@ -340,7 +363,11 @@ export class ElectronServerRuntime {
   }
 
   private withLocalAccessToken(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    const { CC_HAHA_DESKTOP_INTEGRATION_TOKEN: _integrationToken, ...safeEnv } = env
+    const {
+      CC_HAHA_DESKTOP_INTEGRATION_TOKEN: _integrationToken,
+      CC_HAHA_GATEWAY_FORWARDER_TOKEN: _gatewayForwarderToken,
+      ...safeEnv
+    } = env
     return {
       ...safeEnv,
       CC_HAHA_LOCAL_ACCESS_TOKEN: this.localAccessToken,
@@ -436,6 +463,7 @@ export class ElectronServerRuntime {
     this.restartAfterExit = true
     this.startupError = formatStartupError(message, logs)
     if (starting) this.startingServer?.fail(new Error(message))
+    if (active) this.notifyServerChanged()
   }
 
   private stopAdapterChildren(children: SidecarChild[], sync = false) {

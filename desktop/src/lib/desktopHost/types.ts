@@ -3,6 +3,8 @@ import type {
   AppModeConfig as SettingsAppModeConfig,
 } from '../../types/settings'
 import type { Locale } from '../../i18n/locale'
+import type { GatewayHost } from './gatewayTypes'
+export type { GatewayConfig, GatewaySaveInput, GatewayStatus, GatewayTestResult, GatewayErrorCode, GatewayHost } from './gatewayTypes'
 import type { SeasunStatus } from '../../providerBusinesses/seasun/types'
 
 export type DesktopHostKind = 'browser' | 'electron'
@@ -268,6 +270,7 @@ export type AppModeSetInput = {
 }
 
 export type DesktopHost = {
+  gateway: GatewayHost
   providerBusinesses?: {
     seasun: {
       login(): Promise<SeasunStatus>

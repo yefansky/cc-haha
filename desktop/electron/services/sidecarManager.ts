@@ -736,6 +736,8 @@ function fallbackToDirectSidecarKill(child: SidecarChild, error: unknown) {
  * the async `taskkill` is fire-and-forget and can leave orphaned processes.
  */
 export function killSidecar(child: SidecarChild, sync = false, deps: KillSidecarDeps = {}) {
+  // An exited PID cannot identify its old process tree and may have been reused.
+  if (child.exitCode != null || child.signalCode != null) return
   const platform = deps.platform ?? process.platform
   if (platform === 'win32' && child.pid) {
     const command = resolveWindowsTaskkillExecutable(deps.env)
@@ -743,7 +745,7 @@ export function killSidecar(child: SidecarChild, sync = false, deps: KillSidecar
     const options = { stdio: 'ignore', windowsHide: true } as const
     if (sync) {
       try {
-        const result = (deps.spawnSyncFn ?? spawnSync)(command, args, options)
+        const result = (deps.spawnSyncFn ?? spawnSync)(command, args, { ...options, timeout: 2000 })
         if (result.error) fallbackToDirectSidecarKill(child, result.error)
       } catch (error) {
         fallbackToDirectSidecarKill(child, error)

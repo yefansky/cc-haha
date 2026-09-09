@@ -37,6 +37,16 @@ const defaultAppMode: AppModeConfig = {
 const defaultPermissionState: NotificationPermissionState = 'default'
 
 export const browserHost: DesktopHost = {
+  gateway: {
+    async getConfig() { unsupported('Gateway management') },
+    async saveConfig() { unsupported('Gateway management') },
+    async clearKey() { unsupported('Gateway management') },
+    async testConnection() { unsupported('Gateway management') },
+    async start() { unsupported('Gateway management') },
+    async stop() { unsupported('Gateway management') },
+    async getStatus() { unsupported('Gateway management') },
+    async onStatus() { unsupported('Gateway management') },
+  },
   kind: 'browser',
   isDesktop: false,
   capabilities: browserCapabilities,

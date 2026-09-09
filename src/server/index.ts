@@ -57,6 +57,7 @@ import {
   PET_SESSION_LIMIT,
 } from './petAccessPolicy.js'
 import { settleResponseOnRequestAbort } from './requestLifecycle.js'
+import { LocalGatewaySetup } from './localGatewaySetup.js'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -223,6 +224,8 @@ function originFromUrl(value: string | null): string | null {
   }
 }
 
+const localGatewaySetups = new Set<LocalGatewaySetup>()
+
 export function startServer(port = PORT, host = HOST) {
   enableConfigs()
   // Warm the synchronous disconnect-grace cache from managed settings so the
@@ -236,6 +239,13 @@ export function startServer(port = PORT, host = HOST) {
     diagnosticsService.installProcessCapture()
   }
   let serverPort = port
+  const localGatewaySetup = new LocalGatewaySetup({
+    origin: () => `http://127.0.0.1:${serverPort}`,
+    token: () => process.env.CC_HAHA_LOCAL_ACCESS_TOKEN,
+    localOnly: process.env.CC_HAHA_GATEWAY_LOCAL_ONLY === '1',
+  })
+  localGatewaySetups.add(localGatewaySetup)
+  process.once('exit', () => localGatewaySetup.disposeSync())
   const localConnectHost =
     host === '0.0.0.0' || host === '127.0.0.1' || host === 'localhost'
       ? '127.0.0.1'
@@ -272,6 +282,9 @@ export function startServer(port = PORT, host = HOST) {
           return gatewayForwarderRejectedResponse()
         }
 
+        const localSetupResponse = await localGatewaySetup.handle(req, server.requestIP(req)?.address ?? null)
+        if (localSetupResponse) return localSetupResponse
+
         // Startup probes must not wait on migrations, config reads, or auth.
         // Electron deliberately uses this endpoint to decide when the sidecar
         // is ready, so keep it independent of every other runtime subsystem.
@@ -285,6 +298,14 @@ export function startServer(port = PORT, host = HOST) {
               },
             },
           )
+        }
+
+        // In the explicit local gateway deployment, loopback alone is not an
+        // identity: the entire upstream application requires a local credential
+        // or the dedicated authenticated tunnel capability.
+        if (process.env.CC_HAHA_GATEWAY_LOCAL_ONLY === '1' &&
+          !isLocalAccessAuthorized(req) && !isGatewayForwarderAuthorized(req)) {
+          return Response.json({ error: 'Unauthorized', message: 'Login through the gateway or use a local access credential.' }, { status: 401, headers: { 'Cache-Control': 'no-store' } })
         }
 
         await ensurePersistentStorageUpgraded()
@@ -663,6 +684,8 @@ let shutdownInProgress: Promise<void> | null = null
 export async function stopServerRuntimeForShutdown(
   options: { waitForCli?: boolean } = {},
 ): Promise<void> {
+  for (const setup of localGatewaySetups) setup.disposeSync()
+  localGatewaySetups.clear()
   teamWatcher.stop()
   cronScheduler.stop()
   backgroundIndexStartupController?.abort()

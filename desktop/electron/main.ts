@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, safeStorage, screen, session, WebContentsView } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
@@ -8,6 +8,10 @@ import {
   validateElectronIpcPayload,
 } from './ipc/capabilities'
 import { ElectronServerRuntime } from './services/serverRuntime'
+import { GatewayCredentials } from './services/gatewayCredentials'
+import { GatewayTunnelRuntime } from './services/gatewayTunnelRuntime'
+import { resolveGatewayTunnelExecutable } from './services/gatewayTunnelExecutable'
+import type { GatewaySaveInput } from '../src/lib/desktopHost/gatewayTypes'
 import { SeasunLoginService, createSeasunBackendRequest, isSeasunIpcSender } from './services/seasunLogin'
 import { appendHostDiagnostic, electronHostDiagnosticsFile, sanitizeHostDiagnostic } from './services/sidecarManager'
 import { openDialog, saveDialog } from './services/dialogs'
@@ -91,6 +95,7 @@ import {
 
 let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
+let gatewayRuntime: GatewayTunnelRuntime | null = null
 let updaterService: ElectronUpdaterService | null = null
 let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
@@ -238,6 +243,32 @@ function getServerRuntime() {
     resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
   })
   return serverRuntime
+}
+
+function getGatewayRuntime() {
+  if (gatewayRuntime) return gatewayRuntime
+  const local = getServerRuntime()
+  gatewayRuntime = new GatewayTunnelRuntime({
+    credentials: new GatewayCredentials({ directory: app.getPath('userData'), safeStorage }),
+    resolveLocal: async () => ({
+      upstreamUrl: await local.getServerUrl(),
+      forwarderToken: local.getGatewayForwarderToken(),
+    }),
+    resolveExecutable: () => resolveGatewayTunnelExecutable({
+      desktopRoot: unpackedRoot(), isPackaged: app.isPackaged, env: process.env,
+    }),
+    onStatus: status => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(ELECTRON_EVENT_CHANNELS.gatewayStatus, status)
+      }
+    },
+  })
+  // Down transitions trigger recovery. The subsequent successful startup must
+  // not cancel the very tunnel launch that requested the new local port.
+  local.onServerChanged(url => {
+    if (!isQuitting && url === null) void gatewayRuntime?.localServerChanged().catch(() => {})
+  })
+  return gatewayRuntime
 }
 
 function resolvePetServerAccess(): PreviewLocalAccess | null {
@@ -439,6 +470,34 @@ function registerIpcHandlers() {
     requireMainFrame(event)
     return seasunLogin.cancel()
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.gatewayGetConfig, event => {
+    requireMainFrame(event)
+    return getGatewayRuntime().getConfig()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.gatewaySaveConfig, (event, payload) => {
+    requireMainFrame(event)
+    return getGatewayRuntime().saveConfig(payload as GatewaySaveInput)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.gatewayClearKey, event => {
+    requireMainFrame(event)
+    return getGatewayRuntime().clearKey()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.gatewayTestConnection, event => {
+    requireMainFrame(event)
+    return getGatewayRuntime().testConnection()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.gatewayStart, event => {
+    requireMainFrame(event)
+    return getGatewayRuntime().start()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.gatewayStop, event => {
+    requireMainFrame(event)
+    return getGatewayRuntime().stop()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.gatewayGetStatus, event => {
+    requireMainFrame(event)
+    return getGatewayRuntime().getStatus()
+  })
   app.on('before-quit', () => { void seasunLogin.cancel() })
   ipcMain.on(ELECTRON_INTERNAL_CHANNELS.previewMessageFromView, (event, raw) => {
     void getPreviewService().sendMessageToRenderer(event.sender, raw, mainWindow?.webContents)
@@ -628,7 +687,10 @@ function registerIpcHandlers() {
     mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.updateDownloadEvent, event)
   }))
   registerHandler(ELECTRON_IPC_CHANNELS.updateInstall, () => getUpdaterService().stageDownloadedUpdate())
-  registerHandler(ELECTRON_IPC_CHANNELS.updatePrepareInstall, () => getServerRuntime().stopAll())
+  registerHandler(ELECTRON_IPC_CHANNELS.updatePrepareInstall, async () => {
+    await gatewayRuntime?.stop()
+    getServerRuntime().stopAll()
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.updateCancelInstall, () => getUpdaterService().cancelInstall())
   registerHandler(ELECTRON_IPC_CHANNELS.updateRelaunch, () => {
     if (getUpdaterService().hasDownloadedUpdate()) {
@@ -687,7 +749,10 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.previewMessage, (event, payload) => getPreviewService().message(payload, event.sender))
   registerHandler(ELECTRON_IPC_CHANNELS.appModeGet, () => getAppMode(app))
   registerHandler(ELECTRON_IPC_CHANNELS.appModeSet, (_event, payload) => setAppMode(app, payload as Parameters<typeof setAppMode>[1]))
-  registerHandler(ELECTRON_IPC_CHANNELS.appModePrepareRestart, () => getServerRuntime().stopAll(true))
+  registerHandler(ELECTRON_IPC_CHANNELS.appModePrepareRestart, async () => {
+    await gatewayRuntime?.stop()
+    getServerRuntime().stopAll(true)
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.appModeRestart, () => {
     isQuitting = true
     app.relaunch()
@@ -827,6 +892,13 @@ app.whenReady().then(async () => {
     })
   }
   await createMainWindow()
+  // Failed/corrupt credentials cannot prevent desktop startup. Status contains
+  // only stable codes; secret-bearing errors are deliberately not logged.
+  try {
+    const gateway = getGatewayRuntime()
+    const config = await gateway.getConfig()
+    if (config.autoStart && config.hasKey) await gateway.start()
+  } catch { /* The settings panel exposes the recoverable storage error. */ }
   scheduleNotificationSmoke({
     env: process.env,
     NotificationClass: Notification,
@@ -857,5 +929,6 @@ app.on('before-quit', () => {
   petWindowController = null
   // Synchronous on quit so the Windows taskkill completes before the process
   // exits, otherwise the fire-and-forget kill can leave orphaned sidecars.
+  gatewayRuntime?.disposeSync()
   getServerRuntime().stopAll(true)
 })

@@ -64,6 +64,8 @@ describe('gatewayForwarderAuth', () => {
     for (const pathname of [
       '/_gateway',
       '/_gateway/client-config',
+      '/_local/gateway',
+      '/_local/gateway/state',
       '/api/h5-access',
       '/api/h5-access/verify',
       '/sdk',
@@ -91,6 +93,8 @@ describe('gatewayForwarderAuth', () => {
 
     for (const pathname of [
       '/_gateway/client-config',
+      '/_local/gateway',
+      '/_local/gateway/state',
       '/api/h5-access/verify',
       '/sdk/session-1',
     ]) {
@@ -153,6 +157,8 @@ describe('gatewayForwarderAuth', () => {
 
       for (const pathname of [
         '/_gateway/client-config',
+      '/_local/gateway',
+      '/_local/gateway/state',
         '/api/h5-access/verify',
         '/sdk/session-1',
       ]) {

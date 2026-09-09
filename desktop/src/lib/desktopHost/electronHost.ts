@@ -12,6 +12,7 @@ import {
 } from '../../../electron/ipc/channels'
 import { validateElectronIpcPayload } from '../../../electron/ipc/capabilities'
 import { parseSeasunStatus } from '../../providerBusinesses/seasun/types'
+import { GATEWAY_ERROR_CODES, parseGatewayConfig, parseGatewayStatus, parseGatewayTestResult, type GatewayErrorCode } from './gatewayTypes'
 
 export type ElectronHostBridge = {
   invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T>
@@ -43,6 +44,23 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
     safeInvoke<T>(bridge, channel, payload)
   const subscribe = <T>(channel: ElectronEventChannel, handler: (payload: T) => void) =>
     bridge.subscribe(channel, handler)
+  const gatewayInvoke = async (channel: ElectronIpcChannel, payload?: unknown) => {
+    if (!validateElectronIpcPayload(channel, payload)) {
+      throw Object.assign(new Error('Invalid Electron IPC payload'), { code: 'CONFIG_INVALID' })
+    }
+    try { return await bridge.invoke(channel, payload) } catch (error) {
+      // Electron drops custom Error properties across invoke. Match the entire
+      // known envelope, including this call's channel, never a code substring.
+      const serializedCode = error instanceof Error
+        ? GATEWAY_ERROR_CODES.find(candidate => error.message ===
+          `Error invoking remote method '${channel}': Error: ${candidate}`)
+        : undefined
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        && GATEWAY_ERROR_CODES.includes(error.code as GatewayErrorCode)
+        ? error.code as GatewayErrorCode : serializedCode ?? 'CONNECTION_FAILED'
+      throw Object.assign(new Error(code), { code })
+    }
+  }
   const createUpdate = (metadata: ElectronUpdateMetadata): DesktopUpdate => ({
     version: metadata.version,
     body: metadata.body ?? null,
@@ -61,6 +79,16 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
   })
 
   return {
+    gateway: {
+      getConfig: async () => parseGatewayConfig(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayGetConfig)),
+      saveConfig: async input => parseGatewayConfig(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewaySaveConfig, input)),
+      clearKey: async () => parseGatewayConfig(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayClearKey)),
+      testConnection: async () => parseGatewayTestResult(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayTestConnection)),
+      start: async () => parseGatewayStatus(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayStart)),
+      stop: async () => parseGatewayStatus(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayStop)),
+      getStatus: async () => parseGatewayStatus(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayGetStatus)),
+      onStatus: handler => subscribe(ELECTRON_EVENT_CHANNELS.gatewayStatus, value => handler(parseGatewayStatus(value))),
+    },
     kind: 'electron',
     isDesktop: true,
     capabilities: {

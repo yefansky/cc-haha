@@ -537,7 +537,7 @@ describe('Electron sidecar manager', () => {
       spawnAsync: spawnAsync as never,
       spawnSyncFn: spawnSyncFn as never,
     })
-    expect(spawnSyncFn).toHaveBeenCalledWith('C:\\Windows\\System32\\taskkill.exe', ['/F', '/T', '/PID', '777'], { stdio: 'ignore', windowsHide: true })
+    expect(spawnSyncFn).toHaveBeenCalledWith('C:\\Windows\\System32\\taskkill.exe', ['/F', '/T', '/PID', '777'], { stdio: 'ignore', windowsHide: true, timeout: 2000 })
     expect(spawnAsync).not.toHaveBeenCalled()
     expect(child.kill).not.toHaveBeenCalled()
   })
@@ -563,6 +563,28 @@ describe('Electron sidecar manager', () => {
     } finally {
       errorSpy.mockRestore()
     }
+  })
+
+  it.each([{ exitCode: 0, signalCode: null }, { exitCode: null, signalCode: 'SIGTERM' }])('does not send taskkill to an already exited or potentially reused PID', state => {
+    const child = { pid: 777, kill: vi.fn(), ...state } as unknown as SidecarChild
+    const spawnSyncFn = vi.fn()
+    const spawnAsync = vi.fn()
+    killSidecar(child, true, { platform: 'win32', spawnSyncFn: spawnSyncFn as never, spawnAsync: spawnAsync as never })
+    killSidecar(child, false, { platform: 'win32', spawnSyncFn: spawnSyncFn as never, spawnAsync: spawnAsync as never })
+    expect(spawnSyncFn).not.toHaveBeenCalled()
+    expect(spawnAsync).not.toHaveBeenCalled()
+    expect(child.kill).not.toHaveBeenCalled()
+  })
+
+  it('bounds a stalled Windows taskkill and falls back to the owned child handle', () => {
+    const child = { pid: 777, exitCode: null, signalCode: null, kill: vi.fn() } as unknown as SidecarChild
+    const spawnSyncFn = vi.fn(() => ({ error: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }) }))
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      killSidecar(child, true, { platform: 'win32', spawnSyncFn: spawnSyncFn as never })
+      expect(spawnSyncFn).toHaveBeenCalledWith(expect.any(String), expect.any(Array), expect.objectContaining({ timeout: 2000, windowsHide: true }))
+      expect(child.kill).toHaveBeenCalledOnce()
+    } finally { errorSpy.mockRestore() }
   })
 
   it('resolves taskkill from Windows system directories without relying on PATH', () => {

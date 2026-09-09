@@ -137,6 +137,28 @@ describe('ElectronServerRuntime', () => {
       .not.toBe(path.join(homedir(), '.claude'))
   })
 
+  it('restricts the gateway token to the server and reports actual lifecycle transitions', async () => {
+    const runtime = createRuntime({ env: { CC_HAHA_GATEWAY_FORWARDER_TOKEN: 'inherited-secret' } })
+    const changes: (string | null)[] = []
+    const unsubscribe = runtime.onServerChanged(url => changes.push(url))
+    const firstUrl = await runtime.startServer()
+    const token = runtime.getGatewayForwarderToken()
+    expect(token.length).toBeGreaterThanOrEqual(32)
+    expect([runtime.getLocalAccessToken(), runtime.getIntegrationToken(), runtime.getPetAccessToken(), 'inherited-secret']).not.toContain(token)
+    expect(sidecarMocks.serverPlans[0]!.env.CC_HAHA_GATEWAY_FORWARDER_TOKEN).toBe(token)
+    for (const [plan] of sidecarMocks.spawnSidecar.mock.calls) {
+      if (plan.args[0] === 'adapters') expect(plan.env.CC_HAHA_GATEWAY_FORWARDER_TOKEN).toBeUndefined()
+    }
+    const firstChild = sidecarMocks.serverChildren[0]!
+    firstChild.emit('exit', 7, null)
+    const secondUrl = await runtime.getServerUrl()
+    firstChild.emit('exit', 9, null)
+    expect(changes).toEqual([firstUrl, null, secondUrl])
+    unsubscribe()
+    runtime.stopAll()
+    expect(changes).toEqual([firstUrl, null, secondUrl])
+  })
+
   it('keeps the pet capability independent and exposes it only to the server sidecar', async () => {
     const runtime = createRuntime({ env: { CC_HAHA_DESKTOP_INTEGRATION_TOKEN: 'inherited-token-must-not-propagate' } })
 

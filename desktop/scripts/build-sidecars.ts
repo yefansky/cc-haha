@@ -17,6 +17,9 @@ const targetTriple =
 
 const bunTarget = mapTargetTripleToBun(targetTriple)
 
+// Native Python runtime is bundled; installed desktop users need no Python.
+await import('./build-gateway-tunnel')
+
 // 编译前先扫一遍 src/ 把所有缺失的 ant-internal 模块在磁盘上 stub 出来。
 // 见 desktop/scripts/scan-missing-imports.ts。
 console.log('[build-sidecars] scanning for missing imports...')

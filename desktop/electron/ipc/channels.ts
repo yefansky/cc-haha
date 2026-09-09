@@ -1,4 +1,11 @@
 export const ELECTRON_IPC_CHANNELS = {
+  gatewayGetConfig: 'desktop:gateway:get-config',
+  gatewaySaveConfig: 'desktop:gateway:save-config',
+  gatewayClearKey: 'desktop:gateway:clear-key',
+  gatewayTestConnection: 'desktop:gateway:test-connection',
+  gatewayStart: 'desktop:gateway:start',
+  gatewayStop: 'desktop:gateway:stop',
+  gatewayGetStatus: 'desktop:gateway:get-status',
   seasunLogin: 'desktop:seasun:login',
   seasunCancel: 'desktop:seasun:cancel',
   appGetVersion: 'desktop:app:get-version',
@@ -70,6 +77,7 @@ export const ELECTRON_IPC_CHANNELS = {
 } as const
 
 export const ELECTRON_EVENT_CHANNELS = {
+  gatewayStatus: 'desktop:gateway:status',
   event: 'desktop:event',
   appLocaleChanged: 'desktop:app:locale-changed',
   webviewDragDrop: 'desktop:webview:drag-drop',

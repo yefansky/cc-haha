@@ -13,6 +13,20 @@ const hasOnlyKeys = (value: Record<string, unknown>, allowedKeys: string[]) =>
   Object.keys(value).every(key => allowedKeys.includes(key))
 
 const MAX_TERMINAL_DIMENSION = 1_000
+const gatewaySaveConfig: Validator = value => {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['gatewayUrl', 'accessKey', 'autoStart'])) return false
+  const { gatewayUrl, accessKey, autoStart } = value
+  if (typeof gatewayUrl !== 'string' || gatewayUrl.length > 2048
+    || !/^https?:\/\/[^/?#\\\s\u0000-\u001f\u007f-\u009f]+$/.test(gatewayUrl)) return false
+  try {
+    const url = new URL(gatewayUrl)
+    if (!url.hostname || url.username || url.password || gatewayUrl.includes('@') || url.port === '0') return false
+  } catch { return false }
+  return (accessKey === undefined || (typeof accessKey === 'string'
+    && accessKey.length > 0 && accessKey.length <= 1024
+    && !/[\s\u0000-\u001f\u007f-\u009f]/.test(accessKey)))
+    && (autoStart === undefined || typeof autoStart === 'boolean')
+}
 const MAX_TERMINAL_CWD_LENGTH = 4_096
 const MAX_TERMINAL_WRITE_LENGTH = 1_048_576
 
@@ -211,6 +225,13 @@ const localePreference: Validator = value =>
   || value === 'kr'
 
 export const ELECTRON_IPC_VALIDATORS = {
+  [ELECTRON_IPC_CHANNELS.gatewayGetConfig]: noPayload,
+  [ELECTRON_IPC_CHANNELS.gatewaySaveConfig]: gatewaySaveConfig,
+  [ELECTRON_IPC_CHANNELS.gatewayClearKey]: noPayload,
+  [ELECTRON_IPC_CHANNELS.gatewayTestConnection]: noPayload,
+  [ELECTRON_IPC_CHANNELS.gatewayStart]: noPayload,
+  [ELECTRON_IPC_CHANNELS.gatewayStop]: noPayload,
+  [ELECTRON_IPC_CHANNELS.gatewayGetStatus]: noPayload,
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
   [ELECTRON_IPC_CHANNELS.appGetLocalePreference]: noPayload,
   [ELECTRON_IPC_CHANNELS.appSetLocalePreference]: localePreference,

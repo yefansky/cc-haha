@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { isSeasunIpcSender } from './services/seasunLogin'
 import {
   configureLocalServerRequestAuth,
   configurePreviewSessionPermissions,
@@ -22,6 +23,31 @@ const mainWindowSource = mainSource.slice(
 )
 
 describe('Electron preview security boundary', () => {
+  it('guards every gateway handler before accessing the runtime', () => {
+    const methods = ['GetConfig', 'SaveConfig', 'ClearKey', 'TestConnection', 'Start', 'Stop', 'GetStatus']
+    for (const method of methods) {
+      const start = mainSource.indexOf(`registerHandler(ELECTRON_IPC_CHANNELS.gateway${method},`)
+      expect(start).toBeGreaterThan(-1)
+      const block = mainSource.slice(start, mainSource.indexOf('\n  })', start))
+      expect(block).toMatch(/=>\s*\{\s*requireMainFrame\(event\)/)
+    }
+    expect(mainSource).toMatch(/const requireMainFrame =[\s\S]*?isSeasunIpcSender\(event, mainWindow, rendererEntry\(\)\)/)
+  })
+
+  it('gateway source guard rejects H5, preview, pet and same-origin child frames', () => {
+    const frame = { url: 'http://localhost:1420/#/settings' }
+    const contents = { mainFrame: frame }
+    const window = { webContents: contents } as Parameters<typeof isSeasunIpcSender>[1]
+    const event = { sender: contents, senderFrame: frame }
+    expect(isSeasunIpcSender(event, window, 'http://localhost:1420/')).toBe(true)
+    expect(isSeasunIpcSender(event, null, 'http://localhost:1420/')).toBe(false)
+    for (const url of ['http://localhost:1420/', 'http://127.0.0.1:3000/', 'https://gateway.example/', 'http://localhost:1420/pet.html']) {
+      expect(isSeasunIpcSender({ sender: {}, senderFrame: { url } }, window, 'http://localhost:1420/')).toBe(false)
+      expect(isSeasunIpcSender({ sender: contents, senderFrame: { url } }, window, 'http://localhost:1420/')).toBe(false)
+    }
+    frame.url = 'https://gateway.example/'
+    expect(isSeasunIpcSender(event, window, 'http://localhost:1420/')).toBe(false)
+  })
   it('does not give the pet preload the desktop master access token', () => {
     const petPreloadSource = readFileSync(path.join(desktopRoot, 'electron', 'pet-preload.ts'), 'utf8')
 

@@ -11,6 +11,7 @@ import { Card } from '@/components/ui/Card'
 import { useUIStore } from '../../stores/uiStore'
 import { isBrowserSafePort } from '../../lib/browserSafePort'
 import { copyTextToClipboard } from '@/lib/clipboard'
+import { GatewayAccessSettings } from '@/pages/settings/GatewayAccessSettings'
 
 /**
  * The H5 access panel: the settings tab that exposes the desktop app's built-in
@@ -561,6 +562,8 @@ export function H5AccessSettings() {
           )}
         </Card>
       </section>
+
+      <GatewayAccessSettings />
 
       <ConfirmDialog
         open={h5EnableConfirmOpen}
