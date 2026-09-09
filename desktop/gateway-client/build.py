@@ -35,7 +35,7 @@ def native_target(requested: str | None = None) -> str:
 
 def validate_source() -> None:
     package = ROOT / "src" / "cc_haha_tunnel"
-    allowed = {"__init__.py", "__main__.py", "client.py", "supervisor.py", "protocol.py", "flow_control.py"}
+    allowed = {"__init__.py", "__main__.py", "client.py", "supervisor.py", "protocol.py", "flow_control.py", "local_ws_channel.py"}
     if {p.name for p in package.glob("*.py")} != allowed:
         raise ValueError("Unexpected client source modules")
     if any(p.name != "cc_haha_tunnel" for p in (ROOT / "src").iterdir() if p.is_dir()):

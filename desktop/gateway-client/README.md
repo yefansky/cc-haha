@@ -4,6 +4,14 @@
 
 协议与流控模块位于 `cc_haha_tunnel` 包中；不存在 `cc_haha_gateway` 包，也不能导入该包。此版本仍是既有 HTTP/WebSocket 透传，不是端到端加密实现。公网连接必须使用 HTTPS/WSS；网关仍能处理被转发的业务内容。
 
+## 隐私通道接缝：默认禁用
+
+本机客户端保留 `/_privacy/channel` 字节通道接缝，供后续经过验收的安全会话使用。发行入口没有注册处理器，也没有通过命令行启用它的开关；默认访问会被拒绝，不会回退到普通上游。其他 `/_privacy` 路径变体、查询参数和 HTTP 转发同样拒绝。
+
+处理器接口本身不提供加密或认证。外层连接成功不代表身份确认；关闭按中断处理，不代表应用数据完整送达。通道复用现有背压和取消机制，并限制等待发送额度的时间。不要将这个研发接缝描述为可供用户使用的隐私模式。
+
+安装锁定运行依赖后，可运行 `python -I -B -m unittest discover -s desktop/gateway-client/tests -v`（从仓库根目录）。不安装依赖时，仅运行 `python -I -B -S -m unittest discover -s desktop/gateway-client/tests -p test_offline.py -v`。测试中的本地处理器是验证用例，不是产品加密实现。
+
 ## 开发运行
 
 需要 Python 3.11 或 3.12。先在自己的虚拟环境中安装 `requirements/runtime.txt`（使用 `pip install --require-hashes --only-binary=:all: -r requirements/runtime.txt`），然后将本目录 `src` 放入 `PYTHONPATH`，运行 `python -m cc_haha_tunnel --help`。密钥仅通过现有环境变量或单行 UTF-8 JSON stdin 交付，不放进命令行。目标上游只允许 literal-loopback 地址。

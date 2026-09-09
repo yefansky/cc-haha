@@ -42,6 +42,10 @@ from .protocol import (
     validate_protocol_limits,
 )
 from .flow_control import CreditPump, ReceiveWindow, SendWindow
+from .local_ws_channel import (
+    PRIVACY_CHANNEL_PATH, LocalWSChannel, LocalWSHandler,
+    is_privacy_target, local_handler_active,
+)
 
 
 _TOKEN_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -133,12 +137,14 @@ class TunnelClient:
         upstream_url: str,
         forwarder_token: str | None = None,
         client_version: str = "cc-haha-tunnel/0.1",
+        local_ws_handler: LocalWSHandler | None = None,
     ) -> None:
         self.gateway_url = _validate_gateway_url(gateway_url)
         self.access_key = access_key
         self.upstream_url = validate_upstream_url(upstream_url)
         self._forwarder_token = _validate_forwarder_token(forwarder_token)
         self.client_version = client_version
+        self._local_ws_handler = local_ws_handler
         self.limits = ProtocolLimits()
         self.connection_id: str | None = None
 
@@ -542,7 +548,12 @@ class TunnelClient:
         accepted = False
         relay_tasks: set[asyncio.Task[None]] = set()
         try:
-            target = validate_forward_target(start["target"])
+            target = validate_forward_target(start["target"], allow_local_ws=True)
+            if target == PRIVACY_CHANNEL_PATH:
+                if self._local_ws_handler is None or local_handler_active():
+                    raise TunnelClientError(ErrorCode.UPSTREAM_REJECTED, "local channel unavailable")
+                await self._serve_local_websocket(stream_id, state)
+                return
             headers = dict(self._upstream_request_headers(start["headers"]))
             ws_url = _as_websocket_url(self.upstream_url + target)
             session = self._require_session()
@@ -638,6 +649,33 @@ class TunnelClient:
                         upstream._response.close()
                 finally:
                     self._release_flow(stream_id, state)
+
+    async def _serve_local_websocket(self, stream_id: str, state: _WSInbound) -> None:
+        handler = self._local_ws_handler
+        assert handler is not None  # Checked before accepting the local stream.
+        channel = LocalWSChannel(
+            stream_id=stream_id, state=state, send_frame=self._send,
+            delivered=lambda seq: self._delivered(stream_id, state, seq),
+            max_message=self.limits.max_ws_message, send_timeout=self.limits.http_timeout,
+        )
+        accepted = False
+        try:
+            # Only transport acceptance, never a claim of pairing/authentication.
+            await self._send({"type": "ws.accept", "stream_id": stream_id,
+                              "protocol": None, "headers": []})
+            accepted = True
+            await channel.run(handler)
+            await self._send_ws_close(stream_id, 1000, "")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if accepted:
+                await self._send_ws_close(stream_id, 1011, "local channel failed")
+            else:
+                await self._send_stream_error("ws.reject", stream_id, ErrorCode.UPSTREAM_REJECTED,
+                                              "local channel unavailable")
+        finally:
+            await channel.close()
 
     async def _ws_gateway_to_upstream(
         self, state: _WSInbound, upstream: ClientWebSocketResponse, *, stream_id: str | None = None
@@ -895,7 +933,7 @@ def validate_method(method: str) -> str:
     return normalized
 
 
-def validate_forward_target(target: str) -> str:
+def validate_forward_target(target: str, *, allow_local_ws: bool = False) -> str:
     if not isinstance(target, str) or not target.startswith("/") or target.startswith("//"):
         raise TunnelClientError(ErrorCode.UPSTREAM_REJECTED, "absolute or invalid request target")
     if "\\" in target or "\r" in target or "\n" in target or "\x00" in target:
@@ -903,6 +941,9 @@ def validate_forward_target(target: str) -> str:
     parsed = urlsplit(target)
     if parsed.scheme or parsed.netloc or parsed.fragment:
         raise TunnelClientError(ErrorCode.UPSTREAM_REJECTED, "absolute or invalid request target")
+    if is_privacy_target(target):
+        if not allow_local_ws or target != PRIVACY_CHANNEL_PATH or local_handler_active():
+            raise TunnelClientError(ErrorCode.UPSTREAM_REJECTED, "local namespace is reserved")
     decoded = parsed.path
     for _ in range(3):
         replacement = unquote(decoded)

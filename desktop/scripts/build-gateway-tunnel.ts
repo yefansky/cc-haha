@@ -1,6 +1,7 @@
-import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { stageGatewayBundle } from './stage-gateway-bundle'
 
 const desktopRoot = path.resolve(import.meta.dir, '..')
 const clientRoot = path.join(desktopRoot, 'gateway-client')
@@ -27,10 +28,7 @@ try {
     throw new Error('Gateway client build target mismatch')
   }
   const destination = path.join(desktopRoot, 'src-tauri', 'binaries', 'gateway-tunnel', target)
-  await mkdir(path.dirname(destination), { recursive: true })
-  // Replace only this generated platform bundle after a complete successful build.
-  await rm(destination, { recursive: true, force: true })
-  await cp(source, destination, { recursive: true })
+  await stageGatewayBundle(source, destination)
   console.log(`[build-gateway-tunnel] staged ${destination}`)
 } finally {
   await rm(work, { recursive: true, force: true })

@@ -26,7 +26,20 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULES = {"__init__.py", "__main__.py", "client.py", "supervisor.py", "protocol.py", "flow_control.py"}
+MODULES = {"__init__.py", "__main__.py", "client.py", "supervisor.py", "protocol.py", "flow_control.py", "local_ws_channel.py"}
+ORIGINAL_MODULE = "src/cc_haha_tunnel/local_ws_channel.py"
+# Original Git blob hashes remain pinned even when the public copy evolves.
+# Updating a copied source baseline requires deliberate review of these values.
+COPIED_SOURCE_HASHES = {
+    "src/cc_haha_tunnel/__init__.py": "3038577c489088c4f7c75120faa03cbddac771cf6788e4dc99bbe4a6ceb4ac8b",
+    "src/cc_haha_tunnel/__main__.py": "2e6deadbfa8ba683d742614a4226cb0124b036118b76e32da1e9486d88e7fcd5",
+    "src/cc_haha_tunnel/client.py": "27a7de02d50370c5d70e00c2f8e646dc1b31e9b00a007c3fb85a19dbf7d9a9de",
+    "src/cc_haha_tunnel/supervisor.py": "5f13daa07d4aa6cabaaa0273c9475c138b220b817436241de4875c55938220e6",
+    "src/cc_haha_gateway/protocol.py": "b24477b1389f2df795d4ac1637764092f1fb7774d75b611a8a357bd54432610b",
+    "src/cc_haha_gateway/flow_control.py": "0871e951d5ed0c4536659929cf45f35fbc12eff05513b0dffd8ad662c40ea435",
+    "requirements-build.txt": "96919e5940e2ca9e30bdcdba0b1e489acbcf67c40bfb4b5443f3fc19bbb674fd",
+    "requirements/runtime.txt": "089156c0087fd412e9e7773cc4c877cf64b48ec4911c2b20d2287c0e61d17ef6",
+}
 
 
 @contextmanager
@@ -78,7 +91,7 @@ class OfflineTests(unittest.TestCase):
         # A public clone can verify copied bytes, not an unavailable private
         # Git commit. The private gate separately verifies original blob hashes.
         manifest = json.loads((ROOT / "SOURCE.json").read_text(encoding="utf-8"))
-        self.assertRegex(manifest["source_commit"], r"^[0-9a-f]{40}$")
+        self.assertEqual(manifest["source_commit"], "5d5762bbf380ee050cd3bb76f47358024b9d76ed")
         expected = {"src/cc_haha_tunnel/" + name for name in MODULES} | {"requirements-build.txt", "requirements/runtime.txt"}
         self.assertEqual({r["path"] for r in manifest["files"]}, expected)
         self.assertEqual(len(manifest["files"]), len(expected))
@@ -86,7 +99,18 @@ class OfflineTests(unittest.TestCase):
             path = ROOT / record["path"]
             self.assertTrue(path.resolve().is_relative_to(ROOT))
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), record["sha256"])
-            self.assertRegex(record["source_sha256"], r"^[0-9a-f]{64}$")
+            if record["path"] == ORIGINAL_MODULE:
+                self.assertEqual(record["origin"], "public-original")
+                self.assertIsNone(record["source"])
+                self.assertIsNone(record["source_sha256"])
+                self.assertTrue(record["adaptation"])
+            else:
+                self.assertNotEqual(record.get("origin"), "public-original")
+                expected_source = record["path"]
+                if Path(expected_source).name in {"protocol.py", "flow_control.py"}:
+                    expected_source = expected_source.replace("cc_haha_tunnel", "cc_haha_gateway")
+                self.assertEqual(record["source"], expected_source)
+                self.assertEqual(record["source_sha256"], COPIED_SOURCE_HASHES[expected_source])
         packages = set()
         for name in ("requirements-build.txt", "requirements/runtime.txt"):
             text = (ROOT / name).read_text(encoding="utf-8").replace("\\\n", " ")

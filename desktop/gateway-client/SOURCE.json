@@ -21,8 +21,16 @@
       "source": "src/cc_haha_tunnel/client.py",
       "path": "src/cc_haha_tunnel/client.py",
       "source_sha256": "27a7de02d50370c5d70e00c2f8e646dc1b31e9b00a007c3fb85a19dbf7d9a9de",
-      "adaptation": "Imports point to client-local protocol/flow_control; no protocol behavior changes",
-      "sha256": "85e619ade0b7098c2453da095e658a1fa63dbde4a176da18a24c4ca6f04e9580"
+      "adaptation": "Client-local imports; after public baseline d184af0e, reserve /_privacy namespace and add optional local binary WS handler with existing credit/lifecycle; no encryption or default handler",
+      "sha256": "a5883a1e6d9256a31abcd046762b11f8932b168f116666ad629267e946bc7b7c"
+    },
+    {
+      "source": null,
+      "path": "src/cc_haha_tunnel/local_ws_channel.py",
+      "source_sha256": null,
+      "origin": "public-original",
+      "adaptation": "New public client local binary WS seam after baseline d184af0e; not copied from the source commit; no encryption or authentication",
+      "sha256": "493c86757eb5c3c5ee386062be07dca2d654ffe1452af63b706bcbb950bfbea2"
     },
     {
       "source": "src/cc_haha_tunnel/supervisor.py",
