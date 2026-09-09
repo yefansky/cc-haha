@@ -1971,22 +1971,25 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
 
   const handleRequestWriteAccess = async (sourceSide: WorkspaceComparisonSourceSide) => {
     if (!activePreviewTab?.comparisonSession || activePreviewTab.kind !== 'diff') return
-    const sourcePath = activePreviewTab.comparisonSession[sourceSide].source.path
+    const source = activePreviewTab.comparisonSession[sourceSide].source
+    if (source.kind !== 'working_tree') return
+    const sourcePath = source.path
     setWriteAccessChangingSide(sourceSide)
     setComparisonSaveError(null)
     try {
       await sessionsApi.grantWorkspaceFileWriteAccess(sessionId, sourcePath)
-      await openPreview(
-        sessionId,
-        activePreviewTab.path,
-        activePreviewTab.kind,
-        undefined,
-        undefined,
-        activePreviewTab.diffSource,
-        activePreviewTab.textEncoding,
-        activePreviewTab.comparisonEncodings,
-        { force: true },
-      )
+      // Authorization changes capability, not the comparison's content. A VCS
+      // refresh can report no current diff even though this file still exists.
+      // Keep the original fingerprint for conflict-safe saves and use the live
+      // buffer so edits made while the request was pending are preserved.
+      const current = useWorkspacePanelStore.getState().previewTabsBySession[sessionId]
+        ?.find((tab) => tab.id === activePreviewTab.id)?.comparisonSession
+      if (!current || current[sourceSide].source.kind !== source.kind
+        || current[sourceSide].source.path !== sourcePath) return
+      setComparisonSession(sessionId, activePreviewTab.id, {
+        ...current,
+        [sourceSide]: { ...current[sourceSide], writable: true, readOnlyReason: undefined },
+      })
     } catch (error) {
       setComparisonSaveError(t('workspace.diffEdit.saveFailed', {
         reason: error instanceof Error ? error.message : String(error),

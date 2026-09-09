@@ -4314,7 +4314,7 @@ describe('WorkspacePanel', () => {
     expect(getMocks().writeWorkspaceFileMock).toHaveBeenCalledTimes(2)
   })
 
-  it('grants an external working side write access and force reloads its comparison', async () => {
+  it.each([false, true])('preserves the comparison when granting external write access (rejected: %s)', async (rejected) => {
     const sessionId = 'session-external-write-access'
     const comparisonPath = 'legacy-svn/tracked.ts'
     const comparison = editableComparison(comparisonPath)
@@ -4377,6 +4377,8 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel(sessionId)
     getMocks().getWorkspaceDiffMock.mockClear()
+    getMocks().getWorkspaceDiffMock.mockResolvedValue({ state: 'missing', path: comparisonPath })
+    if (rejected) getMocks().grantWorkspaceFileWriteAccessMock.mockRejectedValueOnce(new Error('Access denied'))
     expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession?.right).toMatchObject({
       source: { kind: 'working_tree', path: comparisonPath },
       writable: false,
@@ -4388,14 +4390,33 @@ describe('WorkspacePanel', () => {
       sessionId,
       comparisonPath,
     ))
-    await waitFor(() => expect(getMocks().getWorkspaceDiffMock).toHaveBeenCalledWith(
-      sessionId,
-      comparisonPath,
-      'auto',
-      { left: 'auto', right: 'auto' },
-    ))
-    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession).toMatchObject({
+    if (rejected) {
+      await waitFor(() => expect(view.getByRole('alert').textContent).toContain('Access denied'))
+      expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession?.right.writable).toBe(false)
+      expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalled()
+      expect(view.queryByRole('textbox', { name: 'Edit final version line 1' })).toBeNull()
+      return
+    }
+    await waitFor(() => expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession).toMatchObject({
       right: { writable: true },
+    }))
+    expect(getMocks().getWorkspaceDiffMock).not.toHaveBeenCalled()
+    expect(view.queryByRole('button', { name: 'Allow editing this file' })).toBeNull()
+    const editor = view.getByRole('textbox', { name: 'Edit final version line 1' })
+    await act(async () => {
+      fireEvent.focus(editor)
+      fireEvent.change(editor, { target: { value: 'edited' } })
+      fireEvent.blur(editor)
     })
+    getMocks().writeWorkspaceFileMock
+      .mockResolvedValueOnce({ state: 'conflict', path: comparisonPath })
+      .mockResolvedValueOnce({ state: 'ok', path: comparisonPath, content: 'edited\n', size: 7 })
+    await clickElement(view.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(getMocks().writeWorkspaceFileMock).toHaveBeenCalledWith(sessionId, expect.objectContaining({
+      path: comparisonPath, content: 'edited\n', expectedFingerprint: 'fp:new\n',
+    })))
+    expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession?.right.dirty).toBe(true)
+    await clickElement(view.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.[0]?.comparisonSession?.right.dirty).toBe(false))
   })
 })
