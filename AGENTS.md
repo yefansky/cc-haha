@@ -44,6 +44,31 @@ Rules closer to the code take precedence. Before editing `.github/`, `src/`, `de
 - `.github/workflows/`, `scripts/pr/`, and `scripts/quality-gate/`: CI routing and quality policy.
 - `release-notes/`, `scripts/release.ts`, and `.github/workflows/release-desktop.yml`: desktop release automation.
 
+## 提交与更新日志规范（每次提交必须遵守）
+
+采用 [约定式提交 1.0.0](https://www.conventionalcommits.org/zh-hans/v1.0.0/)。标题格式为 `类型(可选范围): 中文改动摘要`；不兼容改动在冒号前加 `!`。`feat` 表示新增功能，`fix` 表示修复问题，`perf` 表示性能改进，`revert` 表示撤回；其他类型使用 `docs`、`refactor`、`build`、`ci`、`test`、`style`、`chore`。这些英文前缀只供工具识别，不展示给用户。
+
+每次提交均须写清改动、原因、解决的问题和中文更新说明：
+
+```text
+fix(更新): 修复安装新版后看不到更新说明的问题
+
+改动说明：将当前版本的更新说明放进安装包，并在关于页面展示。
+修改原因：原来只保留待安装版本的说明，重启后会被清空。
+解决问题：用户更新完成后也能查看这一版改了什么，断网时仍可阅读。
+更新日志：
+- 更新后可以在关于页面查看当前版本的改动，断网时也能阅读。
+```
+
+- 正文四个字段必填；标题和正文用空行隔开。合并提交可以保留工具生成的标题，实际改动的普通提交仍须遵守；压缩合并时重新整理最终提交的四个字段，不可丢掉用户说明。
+- `更新日志：` 每行一条完整中文说明，可加 `- `。它是新版本日志的唯一来源；早期补录规则见 `release-notes/README.md`。技术分析、测试流水、协作者脚注不得混入。
+- 写用户能理解的变化：具体场景、原来遇到的问题、现在能做什么。禁止“优化体验”“全面赋能”等空话、堆砌术语、未解释缩写、中英混杂。能用中文就用中文；确实必要的英文产品名或技术名必须紧跟括号内的中文解释。不要放源码路径、提交编号、链接、代码片段或私人资料。
+- 内部维护也写明真实作用，例如“补充更新失败后的自动检查，减少以后改动时再次出现同类问题”；不要编造用户可见功能。只陈述已实现的改动，未验证结果不可写成已经解决。
+- 不兼容改动除 `!` 外，还须写 `BREAKING CHANGE: 中文影响及用户需要执行的操作`；工具会放在“更新前请注意”。
+- 提交前把完整说明保存为临时文件，运行 `bun run scripts/release-changelog.ts --check-message <文件>`。检查通过后人工再读一遍：普通用户能否理解；文案是否与实际改动相符。校验只能拦格式和明显英文，不能代替内容判断。
+- 发布从同渠道最近成功发布的祖先版本起算；提交不合格则失败。不可漏记改动、改写公开历史或用空话替代说明。首次接入与包内历史保存见发布说明。
+- 生成器：`scripts/release-changelog.ts`，借鉴 [conventional-changelog](https://github.com/conventional-changelog/conventional-changelog)；发布说明见 `release-notes/README.md`。
+
 ## Implementation Rules
 
 - Make narrow, owned diffs. Every changed line must trace to the request, a failing test, or a verified compatibility constraint.

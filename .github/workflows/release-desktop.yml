@@ -5,6 +5,10 @@ on:
     tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
+      changelog_from:
+        description: '首次接入时明确指定更新日志起点；正常发布留空'
+        required: false
+        type: string
       draft:
         description: 'Create as draft release'
         required: false
@@ -24,6 +28,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Generate readable changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CC_HAHA_CHANGELOG_FROM: ${{ inputs.changelog_from }}
+        run: |
+          bun test scripts/release-changelog.test.ts
+          bun run scripts/release-changelog.ts --channel desktop
+
+      - name: Share exact release changelog
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-changelog
+          if-no-files-found: error
+          path: |
+            release-notes/v*.md
+            desktop/public/changelog.json
+            desktop/public/CHANGELOG.md
+            desktop/build/release-notes.md
+
   signing-preflight:
     runs-on: ubuntu-latest
     outputs:
@@ -74,6 +110,7 @@ jobs:
   build:
     needs:
       - signing-preflight
+      - changelog
     strategy:
       fail-fast: false
       matrix:
@@ -193,8 +230,16 @@ jobs:
           CC_HAHA_COMPILED_SIDECAR_SMOKE_STARTS: '20'
         run: bun run test:compiled-sidecar-smoke
 
+      - name: Download release changelog
+        uses: actions/download-artifact@v4
+        with:
+          name: release-changelog
+          path: .
+
       - name: Build renderer and Electron bundles
         working-directory: desktop
+        env:
+          CC_HAHA_REQUIRE_CHANGELOG: '1'
         run: |
           bun run build
           bun run build:electron
@@ -505,6 +550,9 @@ jobs:
             exit 1
           fi
 
+      - name: Verify updater changelog
+        run: bun run scripts/release-changelog.ts --verify-metadata desktop/build-artifacts/electron
+
       - name: Namespace update metadata assets
         shell: bash
         working-directory: desktop/build-artifacts/electron
@@ -560,6 +608,12 @@ jobs:
             echo "::error::Tag ${GITHUB_REF_NAME} does not match app version ${EXPECTED_TAG}"
             exit 1
           fi
+
+      - name: Download release changelog
+        uses: actions/download-artifact@v4
+        with:
+          name: release-changelog
+          path: .
 
       - name: Load release notes
         id: release_notes
@@ -674,6 +728,8 @@ jobs:
             artifacts/release-assets/**/*.blockmap
             artifacts/update-metadata-standard/*.yml
             desktop/scripts/install-macos-unsigned.sh
+            desktop/public/CHANGELOG.md
+            desktop/public/changelog.json
 
       - name: Publish GitHub release after complete upload
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.draft == false)

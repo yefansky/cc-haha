@@ -1,0 +1,552 @@
+{
+  "schemaVersion": 1,
+  "releases": [
+    {
+      "version": "0.6.47",
+      "date": "2026-09-09T11:57:29Z",
+      "markdown": "# 0.6.47 版本更新内容\n\n- 在文件对比页点击“允许编辑此文件”后，保留当前对比内容和未保存的修改，避免授权完成时页面被重新加载。\n",
+      "commit": "bccbb472db1a9bbb5bce8b7ad32e6e754a9a8522",
+      "from": "844d9dd5a0879011d53b1ce805f2070f87be427a",
+      "source": "backfilled",
+      "sourceCommits": [
+        "bccbb472db1a9bbb5bce8b7ad32e6e754a9a8522"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.46",
+      "date": "2026-09-09T06:27:12Z",
+      "markdown": "# 0.6.46 版本更新内容\n\n- 新增经授权的网页中转连接方式，让配套访问服务能够连接会话，并限制其访问权限。\n",
+      "commit": "844d9dd5a0879011d53b1ce805f2070f87be427a",
+      "from": "aec7fbc26504496af0f185ad1194f668b623fc2a",
+      "source": "backfilled",
+      "sourceCommits": [
+        "844d9dd5a0879011d53b1ce805f2070f87be427a"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.45",
+      "date": "2026-09-09T06:22:55Z",
+      "markdown": "# 0.6.45 版本更新内容\n\n- 补充项目结构和维护说明，方便后续开发与排查问题；本版没有新增应用操作。\n",
+      "commit": "aec7fbc26504496af0f185ad1194f668b623fc2a",
+      "from": "5ffede7e18727e0c20e9f20e3f2f8cf5c07454b9",
+      "source": "backfilled",
+      "sourceCommits": [
+        "aec7fbc26504496af0f185ad1194f668b623fc2a"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.44",
+      "date": "2026-09-08T18:06:58Z",
+      "markdown": "# 0.6.44 版本更新内容\n\n- 文件浏览新增附加文件夹管理、收藏置顶和隐藏文件夹显示开关，并支持全部展开或收拢。\n- 可在对话内展开查看工具当时读取的文件内容，也可另行打开当前文件。\n- 补充通过命令修改文件前的改动记录能力，帮助会话追踪和恢复这些文件。\n- 模型配置确认失败时保留排队消息，可按提示重试；确认后继续发送。\n",
+      "commit": "5ffede7e18727e0c20e9f20e3f2f8cf5c07454b9",
+      "from": "89ce8f607b08ec418ca6b5f84652a49c0032328e",
+      "source": "backfilled",
+      "sourceCommits": [
+        "5ffede7e18727e0c20e9f20e3f2f8cf5c07454b9"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.43",
+      "date": "2026-09-08T16:17:32Z",
+      "markdown": "# 0.6.43 版本更新内容\n\n- 缓存文件对比内容，减少重复打开时的等待。\n- 关闭权限提醒后，在同一会话中切换页面不会反复弹出；修改权限模式后会重新提醒。\n",
+      "commit": "89ce8f607b08ec418ca6b5f84652a49c0032328e",
+      "from": "ee2b66f6f6fe8447d60dce0c6b8e8681ced40e61",
+      "source": "backfilled",
+      "sourceCommits": [
+        "89ce8f607b08ec418ca6b5f84652a49c0032328e"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.42",
+      "date": "2026-09-08T15:47:36Z",
+      "markdown": "# 0.6.42 版本更新内容\n\n- 模型正在切换或切换未确认时，新输入仍可排队，避免无法提交。\n- 恢复文件对比中的文本编码选择，方便在内容显示异常时重新选择读取方式。\n",
+      "commit": "ee2b66f6f6fe8447d60dce0c6b8e8681ced40e61",
+      "from": "bb01d3ed073820f5d5a4c3c42b574f477335795d",
+      "source": "backfilled",
+      "sourceCommits": [
+        "ee2b66f6f6fe8447d60dce0c6b8e8681ced40e61"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.41",
+      "date": "2026-09-08T14:32:30Z",
+      "markdown": "# 0.6.41 版本更新内容\n\n- 主会话和任务详情里可以看到分派给其他助手的任务进度。\n- 自动刷新会话中的文件改动，并支持通过右键菜单复制文件路径。\n- 编辑中文文件时保留原有文本编码，减少保存后出现乱码的风险。\n",
+      "commit": "bb01d3ed073820f5d5a4c3c42b574f477335795d",
+      "from": "e1a940ed2672bc22d4c2133fb42b6526dc6abe31",
+      "source": "backfilled",
+      "sourceCommits": [
+        "bb01d3ed073820f5d5a4c3c42b574f477335795d"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.40",
+      "date": "2026-09-06T13:55:49Z",
+      "markdown": "# 0.6.40 版本更新内容\n\n- 切换模型时，会同步切换当前会话使用的服务商，避免界面选择与实际请求不一致。\n- 新增模型切换中的状态提示；切换失败时保留输入，方便重新选择后发送。\n",
+      "commit": "e1a940ed2672bc22d4c2133fb42b6526dc6abe31",
+      "from": "cb92082d58c0730a4c39b591d76d9de851bcc15c",
+      "source": "backfilled",
+      "sourceCommits": [
+        "e1a940ed2672bc22d4c2133fb42b6526dc6abe31"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.39",
+      "date": "2026-09-06T12:14:38Z",
+      "markdown": "# 0.6.39 版本更新内容\n\n- 加强西山居账号登录完成时的来源检查，避免接受不符合要求的页面跳转。\n",
+      "commit": "cb92082d58c0730a4c39b591d76d9de851bcc15c",
+      "from": "54e1a0d290b7c93d38d04fef8fcd31d0c01e0c44",
+      "source": "backfilled",
+      "sourceCommits": [
+        "cb92082d58c0730a4c39b591d76d9de851bcc15c"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.38",
+      "date": "2026-09-06T10:07:51Z",
+      "markdown": "# 0.6.38 版本更新内容\n\n- 新增西山居企业模型服务接入，可在桌面端登录账号、查看可用模型并设置默认服务。\n- 改进不同模型服务的请求处理，保留逐步显示的回答、思考内容和工具操作信息。\n- 补充安装包异常退出时的诊断记录，方便维护人员定位安装问题。\n",
+      "commit": "54e1a0d290b7c93d38d04fef8fcd31d0c01e0c44",
+      "from": "2301c3d1460a8b978b9fce5d587cd2b665e72f54",
+      "source": "backfilled",
+      "sourceCommits": [
+        "54e1a0d290b7c93d38d04fef8fcd31d0c01e0c44",
+        "a92d63a7fb1664d51cdd7ca3fb834e3fadaaf91a"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.36",
+      "date": "2026-09-04T08:43:34Z",
+      "markdown": "# 0.6.36 版本更新内容\n\n- 完善左右对比：可拖动调整宽度、展开相同内容、逐行复制修改，并撤销或重做操作。\n- 会话中新增已修改文件入口，方便集中查看本次对话改过的文件。\n- 缓存文件预览并收起较早的工具操作记录，减少重复加载和页面占用。\n- 安装时支持创建桌面快捷方式，并改进快捷方式的安装检查。\n",
+      "commit": "2301c3d1460a8b978b9fce5d587cd2b665e72f54",
+      "from": "8ce95dee714eb763e6ed9cdab6d4b0f47f7c83e7",
+      "source": "backfilled",
+      "sourceCommits": [
+        "2301c3d1460a8b978b9fce5d587cd2b665e72f54",
+        "a61c8fa00e1237981cd2bdb8d30ed14217fcbc25",
+        "1a83a35cf902425b33b85a9caf41b21a76ed8f8f",
+        "7e37c2270e21d34a5080bbc5bc5cb9b7716ff0ab",
+        "15fb4131ab08d7a8938ee85bc98ccf25fccf084b"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.32",
+      "date": "2026-09-02T17:44:48Z",
+      "markdown": "# 0.6.32 版本更新内容\n\n- 补充文件状态扫描的诊断工具，方便维护人员排查卡顿；本版没有新增界面功能。\n",
+      "commit": "8ce95dee714eb763e6ed9cdab6d4b0f47f7c83e7",
+      "from": "4bdee72de731ee4fec130d6b6374e6ff0b969607",
+      "source": "backfilled",
+      "sourceCommits": [
+        "8ce95dee714eb763e6ed9cdab6d4b0f47f7c83e7"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.31",
+      "date": "2026-09-02T17:07:07Z",
+      "markdown": "# 0.6.31 版本更新内容\n\n- 合并重复的文件状态扫描，减少连续刷新工作区时的界面卡顿。\n",
+      "commit": "4bdee72de731ee4fec130d6b6374e6ff0b969607",
+      "from": "01626ae3390a62b30363dc5a660afc07dc9c48bf",
+      "source": "backfilled",
+      "sourceCommits": [
+        "4bdee72de731ee4fec130d6b6374e6ff0b969607"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.30",
+      "date": "2026-09-02T07:22:38Z",
+      "markdown": "# 0.6.30 版本更新内容\n\n- 新增左右并排的文件对比视图，可以跳转到上一处、下一处改动。\n- 可选择查看完整文件、仅看差异或查看差异附近内容，并按需要忽略空白和大小写变化。\n- 支持在对比中编辑、合并和保存文件；遇到磁盘文件已被改动时，会保留未保存内容并提示冲突。\n- 可以手动对齐左右两侧的行，方便比较位置发生变化的内容。\n",
+      "commit": "01626ae3390a62b30363dc5a660afc07dc9c48bf",
+      "from": "3d741229ac2f76734303dae41c554b09b7be90a9",
+      "source": "backfilled",
+      "sourceCommits": [
+        "01626ae3390a62b30363dc5a660afc07dc9c48bf"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.29",
+      "date": "2026-09-01T02:14:01Z",
+      "markdown": "# 0.6.29 版本更新内容\n\n- 修复回答完成后，已经显示的内容丢失或被覆盖的问题。\n- 改进工作区文件链接的识别，让回答中的文件更容易直接打开。\n",
+      "commit": "3d741229ac2f76734303dae41c554b09b7be90a9",
+      "from": "05dd9bf69a95b1f669a03a96f9521077dc8d762a",
+      "source": "backfilled",
+      "sourceCommits": [
+        "3d741229ac2f76734303dae41c554b09b7be90a9"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.28",
+      "date": "2026-08-31T18:41:50Z",
+      "markdown": "# 0.6.28 版本更新内容\n\n- 更早根据对话内容生成会话标题，方便在列表里辨认正在处理的任务。\n",
+      "commit": "05dd9bf69a95b1f669a03a96f9521077dc8d762a",
+      "from": "5234513269e19b910ac2f857b1e757948c555eb4",
+      "source": "backfilled",
+      "sourceCommits": [
+        "05dd9bf69a95b1f669a03a96f9521077dc8d762a"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.27",
+      "date": "2026-08-30T17:32:06Z",
+      "markdown": "# 0.6.27 版本更新内容\n\n- 需要你回答的问题和授权请求会更及时地显示；提交失败时可以重试，连接恢复后会重新核对处理状态。\n- 修复编辑已发送消息、重新生成回答时消息对应关系不稳定的问题。\n- 本地网页文件可以在应用内的浏览器中预览。\n- 改进对话内容占用量的估算与读取，减少查看时的等待。\n- 为账号登录请求增加超时处理，避免网络异常时一直等待。\n",
+      "commit": "5234513269e19b910ac2f857b1e757948c555eb4",
+      "from": "5990730e97f353923995a6705e635afe8ecfebe4",
+      "source": "backfilled",
+      "sourceCommits": [
+        "5234513269e19b910ac2f857b1e757948c555eb4",
+        "1322adfe79ab29d02ae9aef97b8f67d3a7804c03",
+        "1bd7b9100df64e918113f4540f61c3b0693efb43",
+        "2fd96d64d1e2c360e9a6429306cfd0a154d2f312",
+        "56a6ecfd527738db14f31d0789a1d82a17ae331a",
+        "412569aad07b0fcc087f99abaa5bd71bfec40bb2",
+        "a740da58544f6850f73ce0ed5d3184094461565a",
+        "22765667b5315aabdc4f9f01e4cd3e1564302b2b",
+        "fe755b2c335ee884b692869e85cdd187ae9dcbd1",
+        "69a90d7e824186dd726d6db2e3ef4a1844ac0f0f",
+        "ea24f0640a2942338f59798525a901138fd70e57",
+        "9b2867c2776e0b7f8bb395e098fcf308a1dafb33",
+        "52a80cbb26031ca73422a75d190115b6f47e473c",
+        "6cc409e7ca1498b08618f6a5f03577430d17ffb1",
+        "7a2cee778bfa9bb9d401d2ab4fd556b297d05e18",
+        "c672606c7622573179a552bd3a6f829bd0e326f7",
+        "1916e2d946e82b9d2b94fbe1dff47ffd283a06ec",
+        "61b9bee73109da2cc65af124124ad293146dd2df",
+        "4abafe8a311d6f1a29070a20709ea8eff1c50b90",
+        "0de05c53b5b1da15f527e4a9a5f9717cf25b1728",
+        "45899f2b1a4902123a39110a4ba3d5a10cdeb7f3",
+        "d0b038b93301c32d49803d00288bbaf6ea4a7b58",
+        "656667f4af198da060cf9a63c368c6ff9de10a94",
+        "d2e5a2ee7c55cf4462913b861bc23c9e45fa8b88",
+        "5eccf9fb1017fd2eff192a502e6c83b07e1e0573",
+        "3600f38d6c6fa3679c7cf302e04d1e1fa7d328c5",
+        "5d682296e42533f874050abf26dbdf9526ba21a8",
+        "721ba4c2fd54211fa1f737aa6e736ad4a023addb",
+        "6b99fc14db9a8dd57f1c80c863c8e02644689278",
+        "9bc0405149473e9fb3385d132e9a7cf8c52377bd",
+        "56cc9603e903405f6b1ca6459e396d21cd577915",
+        "9a6fa1878aaceef3529bd1b5e18ed8587dd25219",
+        "478a77a0423b0357749f96d704ce0f525af36ee1",
+        "3543b27176ca7867f0495466e7fcb4556465ad4b",
+        "25bbd23cedfd92d77859aa0d2734d9fba29d388e",
+        "222db67655ff07405945a47bfd8a25c119ce8368",
+        "d17b15530fe1d74f18b2d810bd98db546f2b17a0",
+        "03f7a40c53397766119658cf20465b2fdd4d4e82",
+        "5797f1f6f0c2e1418790b7835ff1f9f3c7061a0b",
+        "a6b1a2fd905899dabeecaa996bbf16e494694715",
+        "177f03bf4334ab5cf9dd3d7e72c908c8b87a9731",
+        "f126ff4ed1d965362a0b8ff548d43db27febd845"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.26",
+      "date": "2026-08-26T06:56:59Z",
+      "markdown": "# 0.6.26 版本更新内容\n\n- 读取大型项目的文件改动时，不再遍历已忽略的构建文件，并延长等待时间，减少扫描失败。\n",
+      "commit": "5990730e97f353923995a6705e635afe8ecfebe4",
+      "from": "16a17bbca530d593ee90d43e8b6c1bcfbed29e74",
+      "source": "backfilled",
+      "sourceCommits": [
+        "5990730e97f353923995a6705e635afe8ecfebe4"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.25",
+      "date": "2026-08-20T06:12:01Z",
+      "markdown": "# 0.6.25 版本更新内容\n\n- 已发送的消息仍可编辑，方便修正需求后继续对话。\n- 修复回答中的本地文件链接无法正确打开的问题。\n",
+      "commit": "16a17bbca530d593ee90d43e8b6c1bcfbed29e74",
+      "from": "c22f7d23de3dca6b4ae575e86f574bdbbd109216",
+      "source": "backfilled",
+      "sourceCommits": [
+        "16a17bbca530d593ee90d43e8b6c1bcfbed29e74"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.24",
+      "date": "2026-08-16T07:51:56Z",
+      "markdown": "# 0.6.24 版本更新内容\n\n- 运行时间较长的命令会自动转到后台，避免一直占着当前对话等待。\n",
+      "commit": "c22f7d23de3dca6b4ae575e86f574bdbbd109216",
+      "from": "0c621494c5dfb7eb582727a112094b234254428e",
+      "source": "backfilled",
+      "sourceCommits": [
+        "c22f7d23de3dca6b4ae575e86f574bdbbd109216"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.23",
+      "date": "2026-08-14T09:31:26Z",
+      "markdown": "# 0.6.23 版本更新内容\n\n- 修改审阅增加时间线，可按每轮对话保存的改动记录查看文件差异。\n- 支持将单个文件恢复到选定记录之前，也可恢复本次会话修改过的全部文件。\n- 可以直接编辑当前文件，或撤销选中的一块修改；与后续修改冲突时会提示无法撤销。\n",
+      "commit": "0c621494c5dfb7eb582727a112094b234254428e",
+      "from": "fa9a84bcec25a57fdf6c26a4011c1f9bc057076d",
+      "source": "backfilled",
+      "sourceCommits": [
+        "0c621494c5dfb7eb582727a112094b234254428e"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.22",
+      "date": "2026-08-14T09:11:28Z",
+      "markdown": "# 0.6.22 版本更新内容\n\n- 刷新工作区时，会一并更新已经展开的子文件夹，新增或删除文件后无需折叠再展开。\n",
+      "commit": "fa9a84bcec25a57fdf6c26a4011c1f9bc057076d",
+      "from": "027a60c81eb59d1c995099959974c9930641e9ad",
+      "source": "backfilled",
+      "sourceCommits": [
+        "fa9a84bcec25a57fdf6c26a4011c1f9bc057076d"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.21",
+      "date": "2026-08-13T09:57:20Z",
+      "markdown": "# 0.6.21 版本更新内容\n\n- 使用中文时，发给助手的任务进度和待办提醒改用中文，减少英文提醒混入对话。\n",
+      "commit": "027a60c81eb59d1c995099959974c9930641e9ad",
+      "from": "33c6defc0f99469efe5350326eba9394d47f3cad",
+      "source": "backfilled",
+      "sourceCommits": [
+        "027a60c81eb59d1c995099959974c9930641e9ad"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.20",
+      "date": "2026-08-12T12:54:32Z",
+      "markdown": "# 0.6.20 版本更新内容\n\n- 安装包补齐微信连接组件，修复打包版本缺少该组件的问题。\n",
+      "commit": "33c6defc0f99469efe5350326eba9394d47f3cad",
+      "from": "3680b2ab82b56a2710be21144a238d92597e58b9",
+      "source": "backfilled",
+      "sourceCommits": [
+        "33c6defc0f99469efe5350326eba9394d47f3cad"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.19",
+      "date": "2026-08-12T00:10:35Z",
+      "markdown": "# 0.6.19 版本更新内容\n\n- 修复集中式版本管理项目中，目录删除后无法查看其中文件改动的问题。\n",
+      "commit": "3680b2ab82b56a2710be21144a238d92597e58b9",
+      "from": "c5ccbc51db83e1ba3926317cd952a4df109e83fc",
+      "source": "backfilled",
+      "sourceCommits": [
+        "3680b2ab82b56a2710be21144a238d92597e58b9"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.18",
+      "date": "2026-08-11T05:45:53Z",
+      "markdown": "# 0.6.18 版本更新内容\n\n- 可以为每个新会话的第一条消息自动添加固定提示词，并在发送前临时取消。\n- 修复创建诊断会话时项目目录丢失的问题，让诊断继续使用原项目位置。\n",
+      "commit": "c5ccbc51db83e1ba3926317cd952a4df109e83fc",
+      "from": "7ffda9c11ef46690a6f8d95dc505ba9f5aca0795",
+      "source": "backfilled",
+      "sourceCommits": [
+        "c5ccbc51db83e1ba3926317cd952a4df109e83fc",
+        "01336541ed8738f667bf1ac06cebb525a8294582"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.17",
+      "date": "2026-08-10T16:46:11Z",
+      "markdown": "# 0.6.17 版本更新内容\n\n- 会话可以置顶，常用对话更容易找到。\n- 工作区增加表格预览，可以在表格视图和原始文本之间切换。\n- 文件树宽度可以拖动调整。\n",
+      "commit": "7ffda9c11ef46690a6f8d95dc505ba9f5aca0795",
+      "from": "64694554f1e58784a9dca9c7ab21a16255914c94",
+      "source": "backfilled",
+      "sourceCommits": [
+        "7ffda9c11ef46690a6f8d95dc505ba9f5aca0795"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.16",
+      "date": "2026-08-10T15:58:34Z",
+      "markdown": "# 0.6.16 版本更新内容\n\n- 新增文件树、文件内容和对话并排显示的工作区布局，可在设置中切换。\n- 可以选择将会话列表放在最左侧或最右侧。\n- 文档支持分别打开原始文本和排版预览，并扩大文本编码的自动识别范围。\n",
+      "commit": "64694554f1e58784a9dca9c7ab21a16255914c94",
+      "from": "0dce419a4c85b8ddd3ed0c56590d02b106da2fbb",
+      "source": "backfilled",
+      "sourceCommits": [
+        "64694554f1e58784a9dca9c7ab21a16255914c94"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.15",
+      "date": "2026-08-07T17:14:32Z",
+      "markdown": "# 0.6.15 版本更新内容\n\n- 修复模型与服务商对应错误的问题，避免把选中的模型发给不支持它的服务商。\n- 重新打开会话时会检查已保存的模型配置，对无法继续使用的配置进行纠正或恢复默认设置。\n",
+      "commit": "0dce419a4c85b8ddd3ed0c56590d02b106da2fbb",
+      "from": "66b8f7cf38c73f8a999d03b58361e7d395b294b3",
+      "source": "backfilled",
+      "sourceCommits": [
+        "0dce419a4c85b8ddd3ed0c56590d02b106da2fbb"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.14",
+      "date": "2026-08-07T01:35:42Z",
+      "markdown": "# 0.6.14 版本更新内容\n\n- 修改并重新发送旧消息时，编辑框与原消息保持相同宽度，减少编辑时的布局跳动。\n",
+      "commit": "66b8f7cf38c73f8a999d03b58361e7d395b294b3",
+      "from": "147bb95fac0ffc506340f5eac17e08c8fe10b35a",
+      "source": "backfilled",
+      "sourceCommits": [
+        "66b8f7cf38c73f8a999d03b58361e7d395b294b3"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.13",
+      "date": "2026-08-07T00:24:14Z",
+      "markdown": "# 0.6.13 版本更新内容\n\n- 修复重新打开历史会话时，聊天区域短暂显示空白或停在错误位置的问题。\n",
+      "commit": "147bb95fac0ffc506340f5eac17e08c8fe10b35a",
+      "from": "cb4b48aa357fac65083e2528db63581649a83b2f",
+      "source": "backfilled",
+      "sourceCommits": [
+        "147bb95fac0ffc506340f5eac17e08c8fe10b35a"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.12",
+      "date": "2026-08-06T11:07:58Z",
+      "markdown": "# 0.6.12 版本更新内容\n\n- 修改审阅按对话中保存的文件改动记录显示，避免把整个工作区的其他改动混入当前审阅。\n",
+      "commit": "cb4b48aa357fac65083e2528db63581649a83b2f",
+      "from": "c9c2cd8eccf3f32086fbecdf44b94b6e24c5e843",
+      "source": "backfilled",
+      "sourceCommits": [
+        "cb4b48aa357fac65083e2528db63581649a83b2f"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.6.11",
+      "date": "2026-08-06T06:12:50Z",
+      "markdown": "# 0.6.11 版本更新内容\n\n- 更新桌面界面的布局、主题和通用控件，侧栏宽度可调整。\n- 新增图片生成入口，并在聊天中显示生成图片的缩略预览。\n- 模型选择器支持搜索，方便从较长的模型列表中找到目标模型。\n- 请求详情和模型服务登录界面可随应用语言显示。\n",
+      "commit": "c9c2cd8eccf3f32086fbecdf44b94b6e24c5e843",
+      "from": "3656d9fc12f8088a15b6e030fad0c284692177e5",
+      "source": "backfilled",
+      "sourceCommits": [
+        "c9c2cd8eccf3f32086fbecdf44b94b6e24c5e843",
+        "c712f52858aa33d9407c1d6c1e8c20ca66a112cd",
+        "ddf48fc07cecfa483975bdb51c00cc547e1bad67",
+        "fde63d94e7ed54a9b029232b529346d5f270594d",
+        "8eba29bdd4d5234e3c99ae136d98693ee67c7203",
+        "0f0c81e33f8b5a052f3cc3109019f8b3ef90ac3b"
+      ],
+      "comparison": "net-diff"
+    },
+    {
+      "version": "0.6.10",
+      "date": "2026-08-05T16:59:06Z",
+      "markdown": "# 0.6.10 版本更新内容\n\n- 修正桌面更新来源，检查更新时使用本项目发布的安装包。\n",
+      "commit": "3656d9fc12f8088a15b6e030fad0c284692177e5",
+      "from": "e2984fda444d56d9bb43cbb87253ca16a9b0b1f2",
+      "source": "backfilled",
+      "sourceCommits": [
+        "3656d9fc12f8088a15b6e030fad0c284692177e5"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.5.9",
+      "date": "2026-08-05T13:28:49Z",
+      "markdown": "# 0.5.9 版本更新内容\n\n- 修复上下翻阅较长聊天记录时，页面滚动位置抖动的问题。\n",
+      "commit": "e2984fda444d56d9bb43cbb87253ca16a9b0b1f2",
+      "from": "846f2a5165a4b30e0f7cb023febedbd38bcfc0da",
+      "source": "backfilled",
+      "sourceCommits": [
+        "e2984fda444d56d9bb43cbb87253ca16a9b0b1f2"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.5.8",
+      "date": "2026-08-05T12:38:45Z",
+      "markdown": "# 0.5.8 版本更新内容\n\n- 可以复制已有会话，保留当前对话内容，在独立的新会话里继续尝试。\n- 文件预览增加文本编码选择和分栏查看，方便处理乱码并对照文件内容。\n- 请求详情增加逐条消息的大小和耗时信息，便于排查请求过大或等待过久的原因。\n- 增加项目记忆开关和记忆文件删除入口，并记住上次选择的模型。\n",
+      "commit": "846f2a5165a4b30e0f7cb023febedbd38bcfc0da",
+      "from": "61feaac69796018da4fb91d684b0954ec87c9030",
+      "source": "backfilled",
+      "sourceCommits": [
+        "846f2a5165a4b30e0f7cb023febedbd38bcfc0da",
+        "7ddb9562fc788e386a05085bc8d4665b1be87067",
+        "145e24cb7718703a7f8b5b3027389d616bffbe78",
+        "5557258a590a1a0ab29f310bbf41b60b3c1861c4"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.5.7",
+      "date": "2026-08-04T13:21:33Z",
+      "markdown": "# 0.5.7 版本更新内容\n\n- 修复集中式版本管理项目中文件较多时，工作区无法完整读取文件状态的问题。\n",
+      "commit": "61feaac69796018da4fb91d684b0954ec87c9030",
+      "from": "c88d31f7097cb269ff5d73fd29a72da28f4a9be2",
+      "source": "backfilled",
+      "sourceCommits": [
+        "61feaac69796018da4fb91d684b0954ec87c9030"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.5.6",
+      "date": "2026-08-04T13:15:44Z",
+      "markdown": "# 0.5.6 版本更新内容\n\n- 查看文件差异时保留旁边的文件树，切换文件无需反复返回目录。\n",
+      "commit": "c88d31f7097cb269ff5d73fd29a72da28f4a9be2",
+      "from": "704f75c869324a61a40ba4979552e941613fbe21",
+      "source": "backfilled",
+      "sourceCommits": [
+        "c88d31f7097cb269ff5d73fd29a72da28f4a9be2"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.5.5",
+      "date": "2026-08-04T09:10:13Z",
+      "markdown": "# 0.5.5 版本更新内容\n\n- 工作区可以浏览通过链接接入的文件夹，并查看其中使用集中式版本管理的项目改动。\n- 改动文件列表增加筛选，方便从较多文件中找到要查看的内容。\n",
+      "commit": "704f75c869324a61a40ba4979552e941613fbe21",
+      "from": "eb37fafbb7ad265ca78d35d29112c9fc363a9ce1",
+      "source": "backfilled",
+      "sourceCommits": [
+        "704f75c869324a61a40ba4979552e941613fbe21"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.5.4",
+      "date": "2026-08-04T01:10:30Z",
+      "markdown": "# 0.5.4 版本更新内容\n\n- 新增 企业模型服务的登录入口，可复用本机已有的登录状态。\n- 支持选择该服务提供的模型，并调整模型的思考强度。\n",
+      "commit": "eb37fafbb7ad265ca78d35d29112c9fc363a9ce1",
+      "from": "bef16fffd4dc9bad9e27b359b6fcd224c1e91245",
+      "source": "backfilled",
+      "sourceCommits": [
+        "eb37fafbb7ad265ca78d35d29112c9fc363a9ce1"
+      ],
+      "comparison": "ancestor-range"
+    },
+    {
+      "version": "0.5.3",
+      "date": "2026-07-31T14:59:56Z",
+      "markdown": "# 0.5.3 版本更新内容\n\n- 首次提供可直接安装的桌面版本，安装后可检查后续更新。\n",
+      "commit": "bef16fffd4dc9bad9e27b359b6fcd224c1e91245",
+      "from": null,
+      "source": "backfilled",
+      "sourceCommits": [
+        "bef16fffd4dc9bad9e27b359b6fcd224c1e91245"
+      ],
+      "comparison": "first-release"
+    }
+  ]
+}

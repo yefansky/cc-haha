@@ -10,10 +10,11 @@ import { useUpdateStore } from '../../stores/updateStore'
 import { formatBytes } from '../../lib/formatBytes'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { publicAssetPath } from '../../lib/publicAsset'
+import { getPackagedChangelog } from '../../lib/packagedChangelog'
+import { ChangelogHistory } from './ChangelogHistory'
 import {
   PRODUCT_AUTHORS,
   PRODUCT_ISSUES_URL,
-  PRODUCT_RELEASES_URL,
   PRODUCT_REPOSITORY,
 } from '../../lib/productBranding'
 import { BrandSeal } from '../../components/composite/BrandSeal'
@@ -53,6 +54,7 @@ export function AboutSettings() {
   const [updateProxyDraft, setUpdateProxyDraft] = useState(updateProxy)
   const [updateProxySaveError, setUpdateProxySaveError] = useState<string | null>(null)
   const [isSavingUpdateProxy, setIsSavingUpdateProxy] = useState(false)
+  const installedNotes = getPackagedChangelog(version)
 
   useEffect(() => {
     let cancelled = false
@@ -165,7 +167,11 @@ export function AboutSettings() {
         <div className="mt-1 flex items-center gap-2 text-xs text-[var(--color-text-tertiary)]">
           <span>{t('settings.about.installedVersion')} {version}</span>
           <span className="text-[var(--color-border)]">·</span>
-          <Button variant="link" size="xs" onClick={() => openUrl(PRODUCT_RELEASES_URL)}>
+          <Button variant="link" size="xs" onClick={() => {
+            const section = document.getElementById('installed-changelog')
+            section?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+            section?.focus({ preventScroll: true })
+          }}>
             {t('settings.about.changelog')}
           </Button>
         </div>
@@ -339,16 +345,20 @@ export function AboutSettings() {
             </div>
           )}
 
-          {releaseNotes && availableVersion && (
+          {availableVersion && (
             <div className="mt-3 rounded-[var(--radius-lg)] bg-[var(--color-surface-container-low)] px-3 py-3">
               <div className="text-[11px] uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
-                {t('update.releaseNotes')}
+                {t('update.availableNotes', { version: availableVersion })}
               </div>
-              <MarkdownRenderer
-                content={releaseNotes}
-                variant="document"
-                className="mt-2 text-[13px] leading-6 text-[var(--color-text-secondary)] [&_h1]:text-lg [&_h2]:text-base [&_h3]:text-sm [&_p]:text-[13px] [&_p]:leading-6"
-              />
+              {releaseNotes ? (
+                <MarkdownRenderer
+                  content={releaseNotes}
+                  variant="document"
+                  className="mt-2 text-[13px] leading-6 text-[var(--color-text-secondary)] [&_h1]:text-lg [&_h2]:text-base [&_h3]:text-sm [&_p]:text-[13px] [&_p]:leading-6"
+                />
+              ) : (
+                <p className="mt-2 text-sm text-[var(--color-text-secondary)]">{t('update.notesUnavailable')}</p>
+              )}
             </div>
           )}
 
@@ -372,6 +382,26 @@ export function AboutSettings() {
           )}
         </div>
       </Card>
+
+      <section id="installed-changelog" tabIndex={-1} aria-labelledby="installed-changelog-title" className="mt-4 w-full rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-4 focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]">
+        <h2 id="installed-changelog-title" className="text-sm font-semibold text-[var(--color-text-primary)]">
+          {t('update.installedNotes', { version: version || t('update.currentVersionUnknown') })}
+        </h2>
+        {installedNotes ? (
+          <MarkdownRenderer content={installedNotes} variant="document" className="mt-3 text-[13px] leading-6 text-[var(--color-text-secondary)] [&_h1]:text-lg [&_h2]:text-base [&_h3]:text-sm [&_p]:text-[13px] [&_p]:leading-6" />
+        ) : (
+          <p className="mt-2 text-sm text-[var(--color-text-secondary)]">{t('update.installedNotesUnavailable')}</p>
+        )}
+        <Button variant="link" size="xs" className="mt-2" onClick={() => {
+          const section = document.getElementById('changelog-history')
+          section?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+          section?.focus({ preventScroll: true })
+        }}>
+          {t('update.allVersionNotes')}
+        </Button>
+      </section>
+
+      <ChangelogHistory />
 
       {/* Divider */}
       <div className="w-full border-t border-[var(--color-border-separator)] my-6" />

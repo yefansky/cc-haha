@@ -6,6 +6,36 @@ function readText(path: string) {
 }
 
 describe('release desktop workflow', () => {
+  test('publishes the packaged history archive for later releases to preserve', () => {
+    for (const file of ['.github/workflows/release-desktop.yml', '.github/workflows/release-windows-continuous.yml']) {
+      const workflow = readFileSync(file, 'utf8')
+      expect(workflow).toMatch(/files: \|[\s\S]*desktop\/public\/changelog\.json/)
+    }
+  })
+
+  test('both publishers generate one Chinese changelog before packaging and share it with the installed app', () => {
+    const continuous = readText('.github/workflows/release-windows-continuous.yml')
+    const tagged = readText('.github/workflows/release-desktop.yml')
+    for (const workflow of [continuous, tagged]) {
+      expect(workflow).toContain('fetch-depth: 0')
+      expect(workflow).toContain('scripts/release-changelog.ts --channel')
+      expect(workflow).toContain("CC_HAHA_REQUIRE_CHANGELOG: '1'")
+      expect(workflow.indexOf('Generate readable changelog')).toBeLessThan(workflow.indexOf('Build renderer and Electron bundles'))
+    }
+    expect(continuous).toContain('body_path: release-notes/v${{ steps.version.outputs.value }}.md')
+    expect(continuous).not.toContain('Windows continuous build for commit')
+    // A shared concurrency group discards intermediate pending pushes on GitHub.
+    // Every main push must keep its own build, even when several arrive quickly.
+    expect(continuous).not.toContain('concurrency:')
+    expect(continuous).toContain('Publish Windows release after complete upload')
+    expect(continuous).toContain('draft: true')
+    expect(continuous).toContain('--draft=false --latest')
+    expect(tagged.match(/name: Download release changelog/g)).toHaveLength(2)
+    expect(tagged).toContain('desktop/build/release-notes.md')
+    expect(tagged).toContain('desktop/public/changelog.json')
+    expect(readText('desktop/vite.config.ts')).toContain('readPackagedChangelog')
+  })
+
   function readReleaseWorkflow() {
     return readText('.github/workflows/release-desktop.yml')
   }

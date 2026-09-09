@@ -88,3 +88,8 @@ graphify-out/
 
 # Private user transcripts and development provenance (never a public docs input).
 /文档/研发历史/
+
+# Version-specific release content is generated before packaging.
+/desktop/public/changelog.json
+/desktop/public/CHANGELOG.md
+/desktop/build/release-notes.md

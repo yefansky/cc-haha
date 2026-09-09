@@ -2,6 +2,8 @@
 
 本页是维护者发版 runbook。桌面端版本来源是 `desktop/package.json`，正式发布必须让版本号、Git tag 和 `release-notes/vX.Y.Z.md` 严格一致。
 
+更新日志现在从约定式提交中的中文“更新日志”字段自动生成，并同时用于发布页、自动更新数据和安装包。关于页面分别展示新版与当前安装版本的改动；当前版本说明支持离线阅读。生成范围和维护方式见仓库 `release-notes/README.md`，提交规范见根 `AGENTS.md`。
+
 ## Windows 持续发布
 
 `.github/workflows/release-windows-continuous.yml` 会在 `main` 每次推送到 GitHub 后自动构建 Windows x64 NSIS 安装包，并创建公开 GitHub Release。
@@ -86,4 +88,4 @@ bun test scripts/pr/release-workflow.test.ts scripts/release-update-metadata.tes
 bun run check:policy
 ```
 
-正式调用 `bun run scripts/release.ts 0.4.11` 前，先确认对应 `release-notes/v0.4.11.md` 已经存在。
+正式调用版本脚本前，先校验待发布提交的中文说明，并设置目标仓库 `GITHUB_REPOSITORY`；脚本会从已发布版本之后的提交生成日志。首次接入若没有已发布起点，须明确指定 `CC_HAHA_CHANGELOG_FROM`。无需手写一份与提交无关的版本日志。

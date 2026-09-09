@@ -10,7 +10,8 @@
  *   bun run scripts/release.ts patch --dry  # preview without changes
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 const root = path.resolve(import.meta.dir, '..')
@@ -96,11 +97,9 @@ if (dryRun) {
   process.exit(0)
 }
 
-if (!existsSync(releaseNotesPath)) {
-  console.error(`Missing release notes file: ${path.relative(root, releaseNotesPath)}`)
-  console.error(`Create it before releasing so GitHub Release can use it automatically.`)
-  process.exit(1)
-}
+// Preview notes from published history before modifying the version or staging.
+// GITHUB_REPOSITORY must identify the intended repository for local releases.
+await run(['bun', 'run', 'scripts/release-changelog.ts', '--channel', 'desktop', '--version', next])
 
 // Update version in all files
 for (const file of VERSION_FILES) {
@@ -118,7 +117,15 @@ await run([
   'desktop/package.json',
   path.relative(root, releaseNotesPath),
 ])
-await run(['git', 'commit', '-m', `release: v${next}`])
+const messageDir = mkdtempSync(path.join(tmpdir(), 'cc-haha-release-message-'))
+const messagePath = path.join(messageDir, 'commit.txt')
+writeFileSync(messagePath, `build(发布): 准备 ${next} 版本安装包\n\n改动说明：更新安装包版本号和本次版本说明。\n修改原因：让安装包和发布版本保持一致。\n解决问题：用户能够正确识别并安装本次发布的版本。\n更新日志：准备新的安装包，版本号与本次发布保持一致。`, 'utf8')
+try {
+  await run(['git', 'commit', '--file', messagePath])
+} finally {
+  unlinkSync(messagePath)
+  rmdirSync(messageDir)
+}
 await run(['git', 'tag', '-a', `v${next}`, '-m', `Release v${next}`])
 
 console.log(`\n  Done! Created commit and tag v${next}`)

@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      changelog_from:
+        description: '首次接入时明确指定更新日志起点；正常发布留空'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -15,6 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -49,6 +56,14 @@ jobs:
       - name: Install root dependencies
         run: bun install --frozen-lockfile
 
+      - name: Generate readable changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CC_HAHA_CHANGELOG_FROM: ${{ inputs.changelog_from }}
+        run: |
+          bun test scripts/release-changelog.test.ts
+          bun run scripts/release-changelog.ts --channel windows --version ${{ steps.version.outputs.value }}
+
       - name: Install desktop dependencies
         working-directory: desktop
         run: bun install --frozen-lockfile
@@ -82,6 +97,8 @@ jobs:
 
       - name: Build renderer and Electron bundles
         working-directory: desktop
+        env:
+          CC_HAHA_REQUIRE_CHANGELOG: '1'
         run: |
           bun run build
           bun run build:electron
@@ -139,17 +156,17 @@ jobs:
             exit 1
           fi
 
+      - name: Verify updater changelog
+        run: bun run scripts/release-changelog.ts --verify-metadata desktop/build-artifacts/electron
+
       - name: Publish Windows GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: Claude Code Haha ${{ steps.version.outputs.tag }} (Windows)
-          body: |
-            Windows continuous build for commit ${{ github.sha }}.
-
-            Download the `.exe` installer below. Installed copies check this release feed for later updates.
-          draft: false
+          body_path: release-notes/v${{ steps.version.outputs.value }}.md
+          draft: true
           prerelease: false
           make_latest: true
           fail_on_unmatched_files: true
@@ -157,3 +174,10 @@ jobs:
             desktop/build-artifacts/electron/Claude-Code-Haha-${{ steps.version.outputs.value }}-win-x64.exe
             desktop/build-artifacts/electron/Claude-Code-Haha-${{ steps.version.outputs.value }}-win-x64.exe.blockmap
             desktop/build-artifacts/electron/latest.yml
+            desktop/public/CHANGELOG.md
+            desktop/public/changelog.json
+
+      - name: Publish Windows release after complete upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ steps.version.outputs.tag }}" --draft=false --latest --repo "${{ github.repository }}"
