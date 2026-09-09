@@ -78,8 +78,13 @@ runtime/__pycache__
 
 # Local AI assistant artifacts (graph, notes)
 CLAUDE.md
+# Keep the root fork-development router; nested/local Claude notes stay ignored.
+!/CLAUDE.md
 .mavis/
 .opencode/
 graphify-out/
 
 .learnings/
+
+# Private user transcripts and development provenance (never a public docs input).
+/文档/研发历史/

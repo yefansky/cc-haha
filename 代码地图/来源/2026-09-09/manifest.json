@@ -1,0 +1,685 @@
+{
+  "capturedAt": "2026-09-09T05:20:20.319Z",
+  "entryUrl": "https://cchaha.ai/internals/",
+  "bundleUrl": "https://cchaha.ai/assets/index-B9kKTsKR.js",
+  "bundleSha256": "ee13641c7538057624eda1ffe8ad4d7aa496e3594a80a06ac50f7cfa3976a009",
+  "method": "Discover live route imports, parse chunk AST and extract only static exported string; never execute downloaded JavaScript. Compare local Markdown body after removing frontmatter exactly as site generator does.",
+  "records": [
+    {
+      "route": "/internals",
+      "pageUrl": "https://cchaha.ai/internals",
+      "assetUrl": "https://cchaha.ai/assets/internals-index-B2Qcx1hG.js",
+      "file": "index.md",
+      "bodySha256": "b972e8c47ef80551bd615b6e68e880b7c2bd1cecad447b3e127fae6609c1b028",
+      "assetSha256": "3723606baf5462d0c9d16fcc1093a25120163b7aa505581c8d37b111e12ab184",
+      "bytes": 4125,
+      "etag": "W/\"6a9fbb75-1078\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/index.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "b972e8c47ef80551bd615b6e68e880b7c2bd1cecad447b3e127fae6609c1b028"
+    },
+    {
+      "route": "/internals/desktop",
+      "pageUrl": "https://cchaha.ai/internals/desktop",
+      "assetUrl": "https://cchaha.ai/assets/internals-desktop-B_cUfbkI.js",
+      "file": "desktop.md",
+      "bodySha256": "b4d8151169ad51625bb6c518d8fa02ce32783441e29137422aabd9cf28e3e781",
+      "assetSha256": "c3368e5fa2eeb5202970c48a11685c3c1af0e014a5c45b50c0b4f73c2b75b8e0",
+      "bytes": 8539,
+      "etag": "W/\"6a9fbb75-2222\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/desktop.md",
+      "localExists": true,
+      "localBodyIdentical": false,
+      "localBodySha256": "a991114ee0525995beaaba8f282dc78118a3fc738f780726948c54a5dcf92e84"
+    },
+    {
+      "route": "/internals/server",
+      "pageUrl": "https://cchaha.ai/internals/server",
+      "assetUrl": "https://cchaha.ai/assets/internals-server-ChQkLoqi.js",
+      "file": "server.md",
+      "bodySha256": "b1791c366e7ac4fadd026dd0fd41575c76b0f8089806b6680c51bdae117859a8",
+      "assetSha256": "96bf33aeac985ca4f7c6805c258b867ef95c7538659d1347dec529fddbbd1cc8",
+      "bytes": 6067,
+      "etag": "W/\"6a9fbb75-189d\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/server.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "b1791c366e7ac4fadd026dd0fd41575c76b0f8089806b6680c51bdae117859a8"
+    },
+    {
+      "route": "/internals/structure",
+      "pageUrl": "https://cchaha.ai/internals/structure",
+      "assetUrl": "https://cchaha.ai/assets/internals-structure-DA7TcOm4.js",
+      "file": "structure.md",
+      "bodySha256": "971f4f8a86f3f21df1fed77eb492e644decaf442503e9e2a1f805f7ab41d2696",
+      "assetSha256": "1ffb1e24c2521bf65f3e30ac470b76c00049d9d4671443c06106337d11fc606d",
+      "bytes": 4634,
+      "etag": "W/\"6a9fbb75-128b\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/structure.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "971f4f8a86f3f21df1fed77eb492e644decaf442503e9e2a1f805f7ab41d2696"
+    },
+    {
+      "route": "/internals/agent",
+      "pageUrl": "https://cchaha.ai/internals/agent",
+      "assetUrl": "https://cchaha.ai/assets/internals-agent-B2gghCsj.js",
+      "file": "agent.md",
+      "bodySha256": "ba911c992e03fad4b13326b57b00f06a5b97503c2edeb13c9acc0f916dfe2ba9",
+      "assetSha256": "555b2b5dd0afa57c585c2db1db5605c865ab714832ae71c6aaaa1f1cd7a22711",
+      "bytes": 17624,
+      "etag": "W/\"6a9fbb75-4677\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/agent.md",
+      "localExists": true,
+      "localBodyIdentical": false,
+      "localBodySha256": "93754ab2a78ca074d2c9faecc0483622d81c25fbb3d05d7b99bc6030257529e0"
+    },
+    {
+      "route": "/internals/agent-internals",
+      "pageUrl": "https://cchaha.ai/internals/agent-internals",
+      "assetUrl": "https://cchaha.ai/assets/internals-agent-internals-C-Ql009O.js",
+      "file": "agent-internals.md",
+      "bodySha256": "4fbeecdf984adc3c79ce735115e84e922bc0ced82a818e16877d173dcc9ff6db",
+      "assetSha256": "217906f65bba158eb5729a77ea617c1f6e3e45d97e36cfa9550c186463738899",
+      "bytes": 27597,
+      "etag": "W/\"6a9fbb75-6da0\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/agent-internals.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "4fbeecdf984adc3c79ce735115e84e922bc0ced82a818e16877d173dcc9ff6db"
+    },
+    {
+      "route": "/internals/agent-framework",
+      "pageUrl": "https://cchaha.ai/internals/agent-framework",
+      "assetUrl": "https://cchaha.ai/assets/internals-agent-framework-r7XBZDxc.js",
+      "file": "agent-framework.md",
+      "bodySha256": "db4f59552567b9a4f2d344c1c55c1305a480c4e767cc18e255ed994db66b958f",
+      "assetSha256": "992db26dc49a85d3010ce77324c7a939d39641c32a2ea03eda92c36be776d0a5",
+      "bytes": 30474,
+      "etag": "W/\"6a9fbb75-78cd\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/agent-framework.md",
+      "localExists": true,
+      "localBodyIdentical": false,
+      "localBodySha256": "902a064cd36e6111e0de37c42c8161a035381d4c4bef36d96bf1d47938b50ee1"
+    },
+    {
+      "route": "/internals/skills",
+      "pageUrl": "https://cchaha.ai/internals/skills",
+      "assetUrl": "https://cchaha.ai/assets/internals-skills-B-WVLlIF.js",
+      "file": "skills.md",
+      "bodySha256": "34e37c766db7bac05603a7541bff6856ccd7659eece56849e62622953a458ce3",
+      "assetSha256": "4c7b8e31fc3fd5f392a633fe4bec34740f1b2823bf4c040823719a503ac54095",
+      "bytes": 13073,
+      "etag": "W/\"6a9fbb75-347d\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/skills.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "34e37c766db7bac05603a7541bff6856ccd7659eece56849e62622953a458ce3"
+    },
+    {
+      "route": "/internals/skills-internals",
+      "pageUrl": "https://cchaha.ai/internals/skills-internals",
+      "assetUrl": "https://cchaha.ai/assets/internals-skills-internals-CmQY5fJ_.js",
+      "file": "skills-internals.md",
+      "bodySha256": "368d87b872b8cbf466c30d94680d55d0aabf1ff9a7dbc3485d04f7e8053a2367",
+      "assetSha256": "8e996c8404df4eb45acceadb02d2b36434654f6f83ff7c351bbf423e6745654b",
+      "bytes": 29554,
+      "etag": "W/\"6a9fbb75-7515\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/skills-internals.md",
+      "localExists": true,
+      "localBodyIdentical": false,
+      "localBodySha256": "8fbd0206b088ae24556b0ca67315cfad6c3d501942e3fbf0b0da0461309675aa"
+    },
+    {
+      "route": "/internals/memory",
+      "pageUrl": "https://cchaha.ai/internals/memory",
+      "assetUrl": "https://cchaha.ai/assets/internals-memory-B9kwBQ0c.js",
+      "file": "memory.md",
+      "bodySha256": "ae8f4f1d09df1fc06c451e8f652814417fb0f71b793ed7abb232efe9cacd1a10",
+      "assetSha256": "9487ca7583049e819ffca3c8015387c1f21f77826ac30189ce8e3682f8a56114",
+      "bytes": 8205,
+      "etag": "W/\"6a9fbb75-20e3\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/memory.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "ae8f4f1d09df1fc06c451e8f652814417fb0f71b793ed7abb232efe9cacd1a10"
+    },
+    {
+      "route": "/internals/memory-internals",
+      "pageUrl": "https://cchaha.ai/internals/memory-internals",
+      "assetUrl": "https://cchaha.ai/assets/internals-memory-internals-DwThO5nh.js",
+      "file": "memory-internals.md",
+      "bodySha256": "239420092d46e0fc2952d4166bfbc6b9bec7b4a9e9c89a9b3a4eb5b1e3841b37",
+      "assetSha256": "dc6e33fda2d9bf401c8a4879b77628eff37328e51d99eaf4d1de2fe4a38bb5ae",
+      "bytes": 16567,
+      "etag": "W/\"6a9fbb75-41eb\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/memory-internals.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "239420092d46e0fc2952d4166bfbc6b9bec7b4a9e9c89a9b3a4eb5b1e3841b37"
+    },
+    {
+      "route": "/internals/autodream",
+      "pageUrl": "https://cchaha.ai/internals/autodream",
+      "assetUrl": "https://cchaha.ai/assets/internals-autodream-CdPSH8K6.js",
+      "file": "autodream.md",
+      "bodySha256": "9ae6b728c6ed1e8557b7e519826b568f7b131ed62dd0a7d217e8c60aedee80f3",
+      "assetSha256": "ba26f396dba8a5a8eb89866f25778ac43edf2cd7210d936c07860839b56c7792",
+      "bytes": 10083,
+      "etag": "W/\"6a9fbb75-2886\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/autodream.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "9ae6b728c6ed1e8557b7e519826b568f7b131ed62dd0a7d217e8c60aedee80f3"
+    },
+    {
+      "route": "/internals/computer-use",
+      "pageUrl": "https://cchaha.ai/internals/computer-use",
+      "assetUrl": "https://cchaha.ai/assets/internals-computer-use-D2nqw5hR.js",
+      "file": "computer-use.md",
+      "bodySha256": "15dd8bc3c166facd70be35980c7e7af06990cbfcf8c0d1a9dc9ac71cf5d71dbd",
+      "assetSha256": "02b15f8fc4b79d542f32338abfb19eb8c716623f85858ebdf9b0bd8f590488c5",
+      "bytes": 8744,
+      "etag": "W/\"6a9fbb75-22f4\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/computer-use.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "15dd8bc3c166facd70be35980c7e7af06990cbfcf8c0d1a9dc9ac71cf5d71dbd"
+    },
+    {
+      "route": "/internals/channel",
+      "pageUrl": "https://cchaha.ai/internals/channel",
+      "assetUrl": "https://cchaha.ai/assets/internals-channel-7oTyAj5B.js",
+      "file": "channel.md",
+      "bodySha256": "15cde65ad2ab7fa5a972bf9813b19162e99685e84fb9241afd0221783b29f03f",
+      "assetSha256": "b1012aec7c39647c28e98da0cc4f3a4491c3ffb22df3fd46a1aac8752da5e266",
+      "bytes": 27879,
+      "etag": "W/\"6a9fbb75-6ef2\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/channel.md",
+      "localExists": true,
+      "localBodyIdentical": true,
+      "localBodySha256": "15cde65ad2ab7fa5a972bf9813b19162e99685e84fb9241afd0221783b29f03f"
+    },
+    {
+      "route": "/internals/contributing",
+      "pageUrl": "https://cchaha.ai/internals/contributing",
+      "assetUrl": "https://cchaha.ai/assets/internals-contributing-D7wNEiMD.js",
+      "file": "contributing.md",
+      "bodySha256": "7398a0c81d39647817e990c5b29c7374d8d44abf2027eb8b68aba13e29b7ea4d",
+      "assetSha256": "3871961f64911bf8553a8a587dccd8b71feea7b31b074e06242affd91ec18d11",
+      "bytes": 23736,
+      "etag": "W/\"6a9fbb75-5e99\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/contributing.md",
+      "localExists": true,
+      "localBodyIdentical": false,
+      "localBodySha256": "90b01ecfe30b35d2fc87f206f2940e6a9af1299a4909c3b60f5c2cf09f91c8b4"
+    },
+    {
+      "route": "/internals/computer-use-cef-injection",
+      "pageUrl": "https://cchaha.ai/internals/computer-use-cef-injection",
+      "assetUrl": "https://cchaha.ai/assets/internals-computer-use-cef-injection-BtEsGVAD.js",
+      "file": "computer-use-cef-injection.md",
+      "bodySha256": "19742e7ae826f08d50c6aa4dbf89a5e670f1647b4650eb1d268e3c852be11430",
+      "assetSha256": "c29fe842215e13b6fc62339eb63721ff246a08d69d69198a6a561b6a8fd9740c",
+      "bytes": 5555,
+      "etag": "W/\"6a9fbb75-1653\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/computer-use-cef-injection.md",
+      "localExists": false,
+      "localBodyIdentical": false,
+      "localBodySha256": null
+    },
+    {
+      "route": "/internals/computer-use-codex-impl-blueprint",
+      "pageUrl": "https://cchaha.ai/internals/computer-use-codex-impl-blueprint",
+      "assetUrl": "https://cchaha.ai/assets/internals-computer-use-codex-impl-blueprint-CLzLvSyk.js",
+      "file": "computer-use-codex-impl-blueprint.md",
+      "bodySha256": "c2743e94720a5130ab04c351c5b940eadde420f9494a0dc17c1eef39c66f273e",
+      "assetSha256": "34558dfcb6867a2ff123b1c86e89f0b4601aaf33c076a970c979c2e3c0ddd494",
+      "bytes": 12878,
+      "etag": "W/\"6a9fbb75-3353\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/computer-use-codex-impl-blueprint.md",
+      "localExists": false,
+      "localBodyIdentical": false,
+      "localBodySha256": null
+    },
+    {
+      "route": "/internals/computer-use-codex-redesign",
+      "pageUrl": "https://cchaha.ai/internals/computer-use-codex-redesign",
+      "assetUrl": "https://cchaha.ai/assets/internals-computer-use-codex-redesign-BcNOshiG.js",
+      "file": "computer-use-codex-redesign.md",
+      "bodySha256": "fecd923c5241ab1f6b5ce11301d157e2d340e36f2c871a530938e56d1a57ec4c",
+      "assetSha256": "3776383083160a59a878acd1555ef2745a55848389a081ca115d630194d68d18",
+      "bytes": 50848,
+      "etag": "W/\"6a9fbb75-c8c6\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/computer-use-codex-redesign.md",
+      "localExists": false,
+      "localBodyIdentical": false,
+      "localBodySha256": null
+    },
+    {
+      "route": "/internals/computer-use-codex-parity-review",
+      "pageUrl": "https://cchaha.ai/internals/computer-use-codex-parity-review",
+      "assetUrl": "https://cchaha.ai/assets/internals-computer-use-codex-parity-review-BVxlqqHw.js",
+      "file": "computer-use-codex-parity-review.md",
+      "bodySha256": "7b6715e34102ea1db2c385a3e17a923a17f86d782427e9118fda20dd24ccd0de",
+      "assetSha256": "11df429c6505a81108fdb75d3de92031d6f75fc9a89a3f8f817db1c6596b04c2",
+      "bytes": 17125,
+      "etag": "W/\"6a9fbb75-4422\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/computer-use-codex-parity-review.md",
+      "localExists": false,
+      "localBodyIdentical": false,
+      "localBodySha256": null
+    },
+    {
+      "route": "/internals/computer-use-native-swift-design",
+      "pageUrl": "https://cchaha.ai/internals/computer-use-native-swift-design",
+      "assetUrl": "https://cchaha.ai/assets/internals-computer-use-native-swift-design-2cUAq1S0.js",
+      "file": "computer-use-native-swift-design.md",
+      "bodySha256": "cae48d24f978f9bd61e524b474f4cdda2bfa736b5337fed3908b7131d56f76fc",
+      "assetSha256": "4c177ce053cff0dcde76a1b63e0bf37605aade79dcf03985e90c9c350bdbef35",
+      "bytes": 16936,
+      "etag": "W/\"6a9fbb75-43ba\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/computer-use-native-swift-design.md",
+      "localExists": false,
+      "localBodyIdentical": false,
+      "localBodySha256": null
+    },
+    {
+      "route": "/internals/computer-use-native-manual-qa",
+      "pageUrl": "https://cchaha.ai/internals/computer-use-native-manual-qa",
+      "assetUrl": "https://cchaha.ai/assets/internals-computer-use-native-manual-qa-HgD9QGOO.js",
+      "file": "computer-use-native-manual-qa.md",
+      "bodySha256": "7bb95dcf07192925b48517e3672d0672677db118406ce9544900fbe40c14ecc0",
+      "assetSha256": "3abb678129a3f4df50289d3e9e704c6d7cdc9f9809b9279294df86e204b32c4a",
+      "bytes": 10272,
+      "etag": "W/\"6a9fbb75-2915\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/computer-use-native-manual-qa.md",
+      "localExists": false,
+      "localBodyIdentical": false,
+      "localBodySha256": null
+    },
+    {
+      "route": "/internals/computer-use-handoff",
+      "pageUrl": "https://cchaha.ai/internals/computer-use-handoff",
+      "assetUrl": "https://cchaha.ai/assets/internals-computer-use-handoff-BlWuf4cT.js",
+      "file": "computer-use-handoff.md",
+      "bodySha256": "85ed9e881827d20220350c092fe9bda2aec35d7fe67d19e2b51c385783f7f0f2",
+      "assetSha256": "41db8cb0f949c08cdd9e67875263f0196d81294a70644a46d68a9ef0ae4c0cce",
+      "bytes": 10209,
+      "etag": "W/\"6a9fbb75-28ad\"",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT",
+      "localPath": "docs/internals/computer-use-handoff.md",
+      "localExists": false,
+      "localBodyIdentical": false,
+      "localBodySha256": null
+    }
+  ],
+  "images": [
+    {
+      "url": "https://cchaha.ai/internals/images/01-agent-overview.png",
+      "file": "2026-09-09/images/01-agent-overview.png",
+      "sha256": "3c8a4e479e8d292a44c487a5958bcb6d9013c81308a4ea11574b2a9665d3f495",
+      "bytes": 1850831,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/01-channel-overview.png",
+      "file": "2026-09-09/images/01-channel-overview.png",
+      "sha256": "cd3b22de587179c5c982d7b0e663a7c3910ec5ddc651a53c098fa8c3aa776641",
+      "bytes": 604516,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/01-memory-overview.png",
+      "file": "2026-09-09/images/01-memory-overview.png",
+      "sha256": "99ecca87fa3654ce749c4d9321a36ea68ebe6a281dc90aef17d5502f4b6c71ed",
+      "bytes": 647333,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/01-skills-overview.png",
+      "file": "2026-09-09/images/01-skills-overview.png",
+      "sha256": "410d49f065468db462bbf6dacaac25e76dcec70b4a0570f5634f0dc10c73526e",
+      "bytes": 470805,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/02-agent-types.png",
+      "file": "2026-09-09/images/02-agent-types.png",
+      "sha256": "9d462f5147a87957d57144543524bc2f663f191520ac02b2f6efd7ab5bb2ac4d",
+      "bytes": 1847708,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/02-memory-types.png",
+      "file": "2026-09-09/images/02-memory-types.png",
+      "sha256": "8c7a1140a160fc31331a1207623decf928764d1d53e9c68716d9cc08fa20e537",
+      "bytes": 519450,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/02-message-flow.png",
+      "file": "2026-09-09/images/02-message-flow.png",
+      "sha256": "a3434e134dbe4c5736f915d7d6fd60ef06282b8f486050e727fc6393a678f97a",
+      "bytes": 420665,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/02-skill-sources.png",
+      "file": "2026-09-09/images/02-skill-sources.png",
+      "sha256": "74ff2d71f8c8e726b44615f28bad8afd1e6eb27e2bcad0c3d94f709f4ce81f20",
+      "bytes": 670790,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/03-access-control.png",
+      "file": "2026-09-09/images/03-access-control.png",
+      "sha256": "b946013ccd2a79dcdd436aa23f47d0221cdc820246d2b75a057e7226fb1fa041",
+      "bytes": 560390,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/03-memory-trigger.png",
+      "file": "2026-09-09/images/03-memory-trigger.png",
+      "sha256": "265898b6cf2de919db9f5bfe7a13b6c98c85d1565af6abfed08372e94a9bcef0",
+      "bytes": 484874,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/03-skill-invocation.png",
+      "file": "2026-09-09/images/03-skill-invocation.png",
+      "sha256": "34e6c3807c7cbed83e63396b6e49b4c77caa6c1bde641c1277794b01dac1a6f1",
+      "bytes": 575511,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/03-spawn-flow.png",
+      "file": "2026-09-09/images/03-spawn-flow.png",
+      "sha256": "e276d4e529567898f7d8ae828ee23b5598c119f3528dc37f665b158be1aae06f",
+      "bytes": 2350702,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/04-agent-teams.png",
+      "file": "2026-09-09/images/04-agent-teams.png",
+      "sha256": "225fe4268589288c25f7ee76c6e3f1a1d887faa7a6976bb6420a87b7b0b07c9e",
+      "bytes": 105744,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/04-memory-lifecycle.png",
+      "file": "2026-09-09/images/04-memory-lifecycle.png",
+      "sha256": "47d5c75a72128a9c6c3b30f802ace288a86ab419995284a9c79f7ea16f1f8d95",
+      "bytes": 1051895,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/04-permission-relay.png",
+      "file": "2026-09-09/images/04-permission-relay.png",
+      "sha256": "9aed13db99c1d0438eaf286967ef44156db632f40e23e776210756c1ff9b2b29",
+      "bytes": 673434,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/04-skills-architecture.png",
+      "file": "2026-09-09/images/04-skills-architecture.png",
+      "sha256": "bbe30b66da486c3a3716f6a8d092c58d7a39cbb3a724f9af2ea5681aad31868a",
+      "bytes": 503619,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/05-architecture-overview.png",
+      "file": "2026-09-09/images/05-architecture-overview.png",
+      "sha256": "f18d387384afe861ad0ff5333ea0ef05baf08a128c26f7ee5875f744a7a9f635",
+      "bytes": 3653548,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/05-architecture.png",
+      "file": "2026-09-09/images/05-architecture.png",
+      "sha256": "037e8ca5494cedc73e12667c7a87f488f4f2ce925c7894988b040d5ed7ba0402",
+      "bytes": 2022765,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/05-skill-loading.png",
+      "file": "2026-09-09/images/05-skill-loading.png",
+      "sha256": "aba63a45925b6d605d2103378858dffe3b2d91f59b33be60667f8a3d7b4fa26a",
+      "bytes": 609509,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/06-context-passing.png",
+      "file": "2026-09-09/images/06-context-passing.png",
+      "sha256": "b625ed456df8b55db5f2d3fe5dbb3f4dd13218d1c719d61cf9525bcb2bf9c528",
+      "bytes": 118908,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/06-path-resolution.png",
+      "file": "2026-09-09/images/06-path-resolution.png",
+      "sha256": "6911947b4e67939c5715b3a93ad084ab631066c74967f38db8e724c71b8c406d",
+      "bytes": 1043628,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/06-skill-injection.png",
+      "file": "2026-09-09/images/06-skill-injection.png",
+      "sha256": "70332612a366a90bf7513f039a64a8167f2e0c5f8f27c5ff9049ac6db9eb4247",
+      "bytes": 803910,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/07-prompt-injection.png",
+      "file": "2026-09-09/images/07-prompt-injection.png",
+      "sha256": "0b436b6168fa1f494ba4f7d20673d5d9c5bd8012f428b374d6039bef6246c8eb",
+      "bytes": 1805722,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/07-skill-execution.png",
+      "file": "2026-09-09/images/07-skill-execution.png",
+      "sha256": "04c28c06228ad1df3818a1b3b384724c930a0463119381532dc5ac25cd3951a8",
+      "bytes": 590319,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/07-tool-pool.png",
+      "file": "2026-09-09/images/07-tool-pool.png",
+      "sha256": "ba2edd4bfe803aa77fd1a4e128fe1bddec66080f4be34453ce6adcf91aeedfdd",
+      "bytes": 1592815,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/08-auto-extraction.png",
+      "file": "2026-09-09/images/08-auto-extraction.png",
+      "sha256": "4e9e2e84070217e5f0d2601d4aeb3681ba1b75a673b6a01782ecf061898bb69a",
+      "bytes": 2301758,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/08-background-task.png",
+      "file": "2026-09-09/images/08-background-task.png",
+      "sha256": "8136772f5e76909eedaaec8017fb6357eb024b83afaec128c895140c6374ea9b",
+      "bytes": 92903,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/08-conditional-activation.png",
+      "file": "2026-09-09/images/08-conditional-activation.png",
+      "sha256": "41dcc115691a11f6f8aee97a4b983f9459d93846f3792d59a27f494c4700378c",
+      "bytes": 684135,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/09-memory-retrieval.png",
+      "file": "2026-09-09/images/09-memory-retrieval.png",
+      "sha256": "a573e57bd68e9e1069f1d7ee45a21efe14deed18e9d436b6d3407f23a45c1f31",
+      "bytes": 835102,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/09-skill-lifecycle.png",
+      "file": "2026-09-09/images/09-skill-lifecycle.png",
+      "sha256": "b8beae2b12f543d109203831bed844dd3eaa1397b8ccd90bd08b3bf19f242f2c",
+      "bytes": 525701,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/09-teams-mailbox.png",
+      "file": "2026-09-09/images/09-teams-mailbox.png",
+      "sha256": "ba7c6f15f3afefbc5ecd995a4c560f59590947650cfbebf9879026c45d49ff83",
+      "bytes": 89477,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/10-agent-memory.png",
+      "file": "2026-09-09/images/10-agent-memory.png",
+      "sha256": "d3b3e4f9fd3b454601247a844ebd3443273da9aec8c20a6ec72ea89a24e35016",
+      "bytes": 535864,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/10-fork-cache.png",
+      "file": "2026-09-09/images/10-fork-cache.png",
+      "sha256": "77db426c291b507fec9512da44dddf2c95c9f244203a277d7c7d65aeb2327689",
+      "bytes": 94661,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/11-agent-framework-overview.png",
+      "file": "2026-09-09/images/11-agent-framework-overview.png",
+      "sha256": "7e43f8cb5d6ad6eb90ab389b0bae5caa7fa728e56d1af21e268d7192aadfff83",
+      "bytes": 751511,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/11-autodream-overview.png",
+      "file": "2026-09-09/images/11-autodream-overview.png",
+      "sha256": "2f1fea359eff43aeae13ed4994976159231eeeb49969528f035f5013c5cbb09a",
+      "bytes": 777421,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/12-agent-core-loop.png",
+      "file": "2026-09-09/images/12-agent-core-loop.png",
+      "sha256": "544f1b6e13059322d20b942267ed712d402ab9fe69c7ad822e6080587c31fd59",
+      "bytes": 715131,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/12-autodream-trigger.png",
+      "file": "2026-09-09/images/12-autodream-trigger.png",
+      "sha256": "0ed98016199e1f6d81e7675d4d4fe501f6953e73d4a615ad18f7b43e482e053c",
+      "bytes": 493420,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/13-autodream-phases.png",
+      "file": "2026-09-09/images/13-autodream-phases.png",
+      "sha256": "57b6d5beda005aea34f3d996fedd65e026fe8293664a4583d6afc35004c85022",
+      "bytes": 601742,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/13-system-prompt-pipeline.png",
+      "file": "2026-09-09/images/13-system-prompt-pipeline.png",
+      "sha256": "7b26e77cd8361333b0dab4a488fd24e4437ab80cfbe7a31ab2c2319f7395968d",
+      "bytes": 608837,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/internals/images/14-context-compression.png",
+      "file": "2026-09-09/images/14-context-compression.png",
+      "sha256": "f80e083bc94185109144fd53f8555885f1e748fc0657a28819a041f72a2a51f7",
+      "bytes": 695589,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/images/01-overall-architecture.png",
+      "file": "images/01-overall-architecture.png",
+      "sha256": "c6e540ffb78bbfaa3bcfb99ecd1327144a94d0ee01243e8cfc0afac1e5a0a9c8",
+      "bytes": 910256,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/images/02-request-lifecycle.png",
+      "file": "images/02-request-lifecycle.png",
+      "sha256": "07b1f6606450a85529e7f205e8a9935352765000edc495a679b2aa295a3429d0",
+      "bytes": 641067,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    },
+    {
+      "url": "https://cchaha.ai/images/03-tool-system.png",
+      "file": "images/03-tool-system.png",
+      "sha256": "5ce25283f52410eafcec78bc88948630f7971507e8cef08d11851e41ca05fadf",
+      "bytes": 945370,
+      "contentType": "image/png",
+      "lastModified": "Tue, 08 Sep 2026 07:38:29 GMT"
+    }
+  ]
+}
