@@ -35,6 +35,36 @@ test('reports overflow rather than claiming a complete batch', async () => {
   expect(result.filePaths.length).toBe(500)
   expect(result.truncated).toBe(true)
 })
+
+test('a narrow include never enumerates or asks permission for unrelated subtrees', async () => {
+  const root = await fixture()
+  await mkdir(join(root, 'unrelated/deep'), { recursive: true })
+  await mkdir(join(root, '项目大脑/scripts'), { recursive: true })
+  await writeFile(join(root, '项目大脑/scripts/check.py'), 'pass')
+  const seen: string[] = []
+  const result = await resolveTrackingPaths({ patterns: [{ base_dir: root, include: ['项目大脑/**'] }] }, {
+    checkPath: async path => { seen.push(path); return { allowed: !path.includes('unrelated') } },
+  })
+  expect(result.filePaths).toEqual([join(root, '项目大脑/scripts/check.py')])
+  expect(result.failed).toEqual([])
+  expect(result.truncated).toBe(false)
+  expect(seen.some(path => path.includes('unrelated'))).toBe(false)
+})
+
+test('pruning retains escaped literal directory names, dot prefixes and multiple includes', async () => {
+  const root = await fixture()
+  for (const name of ['src/[test]', 'other', 'tests']) {
+    await mkdir(join(root, name), { recursive: true })
+    await writeFile(join(root, name, 'a.txt'), 'data')
+  }
+  for (const include of [['src/\\[test\\]/**', './other/**'], ['{src,other,tests}/**']]) {
+    const result = await resolveTrackingPaths({ patterns: [{ base_dir: root, include }] }, allowed)
+    expect(result.filePaths).toContain(join(root, 'src/[test]/a.txt'))
+    expect(result.filePaths).toContain(join(root, 'other/a.txt'))
+    expect(result.failed).toEqual([])
+    expect(result.truncated).toBe(false)
+  }
+})
 test('rejects escaping patterns and never executes a for expression', async () => {
   const root=await fixture()
   const result=await resolveTrackingPaths({patterns:[{base_dir:root,include:['../*.lua']}]},allowed)

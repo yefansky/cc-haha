@@ -9,15 +9,9 @@ import type { PermissionDecision } from '../../utils/permissions/PermissionResul
 import { FileReadTool } from '../FileReadTool/FileReadTool.js'
 import { resolveTrackingPaths } from './batchPaths.js'
 import { TRACK_FILE_CHANGES_PROMPT, TRACK_FILE_CHANGES_TOOL_NAME } from './prompt.js'
+import { trackingPathsSchema } from './trackingSchema.js'
 
-const inputSchema = z.object({
-  file_paths: z.array(z.string().min(1)).max(1000).optional(),
-  patterns: z.array(z.object({
-    base_dir: z.string().min(1),
-    include: z.array(z.string().min(1)).min(1),
-    exclude: z.array(z.string().min(1)).optional(),
-  })).max(100).optional(),
-}).refine(input => Boolean(input.file_paths?.length || input.patterns?.length), 'Provide file_paths or patterns')
+const inputSchema = trackingPathsSchema
 
 type Input = z.infer<typeof inputSchema>
 type Output = {
@@ -81,12 +75,13 @@ export const TrackFileChangesTool = buildTool({
       const decision = readDecision(path, context)
       if (decision.behavior === 'deny') { data.failed.push({ path, reason: decision.message }); continue }
       try {
-        await fileHistoryTrackEdit(context.updateFileHistoryState, path, snapshot!.messageId)
+        let backupError: unknown
+        await fileHistoryTrackEdit(context.updateFileHistoryState, path, snapshot!.messageId, error => { backupError = error })
         const latest = historyState(context)?.snapshots.at(-1)
         const saved = latest?.messageId === snapshot!.messageId && Object.entries(latest.trackedFileBackups)
           .some(([key, backup]) => Boolean(backup) && pathIdentity(key) === pathIdentity(path))
         if (saved) data.registered.push(path)
-        else data.failed.push({ path, reason: 'Could not preserve a backup in the active snapshot' })
+        else data.failed.push({ path, reason: backupError instanceof Error ? backupError.message : 'Could not preserve a backup in the active snapshot' })
       } catch {
         data.failed.push({ path, reason: 'Could not preserve a backup in the active snapshot' })
       }

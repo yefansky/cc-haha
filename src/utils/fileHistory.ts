@@ -95,6 +95,7 @@ export async function fileHistoryTrackEdit(
   ) => void,
   filePath: string,
   messageId: UUID,
+  onBackupError?: (error: unknown) => void,
 ): Promise<void> {
   if (!fileHistoryEnabled()) {
     return
@@ -130,6 +131,7 @@ export async function fileHistoryTrackEdit(
   } catch (error) {
     logError(error)
     logEvent('tengu_file_history_track_edit_failed', {})
+    onBackupError?.(error)
     return
   }
   const isAddingFile = backup.backupFileName === null
@@ -1249,7 +1251,7 @@ async function assertTrackedPathStaysWithinProject(
   const realRelative = relative(realProjectPath, realParentPath)
   if (realRelative.startsWith('..') || isAbsolute(realRelative)) {
     throw new Error(
-      `FileHistory: Refusing path whose parent escapes the project through a symbolic link: ${filePath}`,
+      `FileHistory: Refusing path whose parent escapes the project through a symbolic link: ${filePath}. Register the real target explicitly (subject to its own read permissions): ${resolve(realParentPath, relative(existingParentPath, resolvedFilePath))}`,
     )
   }
 }

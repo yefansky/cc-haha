@@ -6,6 +6,7 @@ test('guidance depends on available registration tool and is delivered in shell 
   const instruction = fileChangeTrackingInstruction(new Set(['TrackFileChanges']))!
   expect(instruction).toContain('Before any authorized local file')
   expect(instruction).toContain('wait for registration')
-  expect(instruction).toContain('only actual content changes')
+  expect(instruction.toLowerCase()).toContain('only actual content changes')
+  expect(instruction).toContain('file_changes')
   expect(getSimplePrompt()).toContain(instruction)
 })

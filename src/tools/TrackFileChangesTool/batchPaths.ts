@@ -49,6 +49,11 @@ export async function resolveTrackingPaths(input: TrackingPathInput, options: {
         continue
       }
       const matches = picomatch(positive, { dot: true })
+      // Do not walk unrelated subtrees before applying include patterns. A
+      // narrow include in a large workspace must not exhaust MAX_ENTRIES there.
+      const bases = positive.map(pattern => picomatch.scan(pattern, { unescape: true }).base.replace(/^\.\//, '').replace(/\/$/, ''))
+      const mayContainMatch = (directory: string) => bases.some(base => !base || base === '.'
+        || base === directory || base.startsWith(directory + '/') || directory.startsWith(base + '/'))
       const excludes = excluded.length ? picomatch(excluded, { dot: true }) : () => false
       const rootStat = await lstat(root)
       if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
@@ -62,6 +67,7 @@ export async function resolveTrackingPaths(input: TrackingPathInput, options: {
           const path = join(directory, entry.name)
           const name = relative(root, path).replace(/\\/g, '/')
           if (excludes(name) || (entry.isDirectory() && excludes(name + '/'))) continue
+          if ((entry.isDirectory() || entry.isSymbolicLink()) && !mayContainMatch(name)) continue
           if (entry.isSymbolicLink()) {
             failed.push({ path, reason: 'Linked paths are not followed for tracking' }); continue
           }

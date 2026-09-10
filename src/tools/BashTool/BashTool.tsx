@@ -1,4 +1,6 @@
 import { feature } from 'bun:bundle';
+import { prepareShellFileChanges } from '../TrackFileChangesTool/shellTracking.js';
+import { shellFileChangesSchema } from '../TrackFileChangesTool/trackingSchema.js';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
 import * as React from 'react';
@@ -224,6 +226,7 @@ const isBackgroundTasksDisabled =
 isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS);
 const fullInputSchema = lazySchema(() => z.strictObject({
   command: z.string().describe('The command to execute'),
+  file_changes: shellFileChangesSchema.optional(),
   timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),
   description: z.string().optional().describe(`Clear, concise description of what this command does in active voice. Never use words like "complex" or "risk" in the description - just describe what it does.
 
@@ -625,6 +628,7 @@ export const BashTool = buildTool({
     if (input._simulatedSedEdit) {
       return applySedEdit(input._simulatedSedEdit, toolUseContext, parentMessage);
     }
+    await prepareShellFileChanges({ fileChanges: input.file_changes, knownReadOnly: this.isReadOnly(input), context: toolUseContext, parentMessage });
     const {
       abortController,
       getAppState,

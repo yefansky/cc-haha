@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { randomUUID, type UUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getIsInteractive, getOriginalCwd, setIsInteractive, setOriginalCwd } from '../../bootstrap/state.js'
@@ -49,6 +49,19 @@ async function register(paths: string[]) {
 }
 
 describe('TrackFileChanges', () => {
+  test('linked project paths report the real target; explicit permitted targets can be backed up', async () => {
+    const external = join(root, 'external')
+    await mkdir(external)
+    const file = join(external, 'check.py')
+    await writeFile(file, 'before')
+    await symlink(external, join(getOriginalCwd(), 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    const rejected = await register([join(getOriginalCwd(), 'linked/check.py')])
+    expect(rejected.data.registered).toEqual([])
+    expect(rejected.data.failed[0]?.reason).toContain('symbolic link')
+    expect(rejected.data.failed[0]?.reason).toContain(file)
+    expect((await register([file])).data.registered).toEqual([file])
+    expect(await readFile(file, 'utf8')).toBe('before')
+  })
   test('registers without a false change, detects an external write and retains the original on repeated registration', async () => {
     const file = join(getOriginalCwd(), 'source.txt')
     await writeFile(file, 'before\n')

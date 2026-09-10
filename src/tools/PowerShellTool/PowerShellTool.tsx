@@ -1,4 +1,6 @@
 import { feature } from 'bun:bundle';
+import { prepareShellFileChanges } from '../TrackFileChangesTool/shellTracking.js';
+import { shellFileChangesSchema } from '../TrackFileChangesTool/trackingSchema.js';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
 import * as React from 'react';
@@ -225,6 +227,7 @@ const isBackgroundTasksDisabled =
 isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS);
 const fullInputSchema = lazySchema(() => z.strictObject({
   command: z.string().describe('The PowerShell command to execute'),
+  file_changes: shellFileChangesSchema.optional(),
   timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),
   description: z.string().optional().describe('Clear, concise description of what this command does in active voice.'),
   run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run this command in the background. Use Read to read the output later.`),
@@ -442,6 +445,7 @@ export const PowerShellTool = buildTool({
     if (isWindowsSandboxPolicyViolation()) {
       throw new Error(WINDOWS_SANDBOX_POLICY_REFUSAL);
     }
+    await prepareShellFileChanges({ fileChanges: input.file_changes, knownReadOnly: this.isReadOnly(input), context: toolUseContext, parentMessage: _parentMessage });
     const {
       abortController,
       setAppState,
