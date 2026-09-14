@@ -49,7 +49,7 @@ from .local_ws_channel import (
 
 
 _TOKEN_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
-_BLOCKED_PATHS = ("/_gateway", "/_local", "/api/h5-access", "/sdk")
+_BLOCKED_PATHS = ("/gateway", "/_gateway", "/_local", "/api/h5-access", "/sdk")
 _FORWARDER_HEADER = "X-CC-Haha-Gateway-Forwarder"
 _ALWAYS_DROPPED_HEADERS = {
     "authorization",
@@ -1034,7 +1034,7 @@ def _validate_gateway_url(value: str) -> str:
 def _tunnel_endpoint(gateway_url: str) -> str:
     parsed = urlsplit(gateway_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
-    path = parsed.path.rstrip("/") + "/_gateway/v1/tunnels/connect"
+    path = parsed.path.rstrip("/") + "/gateway/v1/tunnels/connect"
     return urlunsplit((scheme, parsed.netloc, path, "", ""))
 
 

@@ -21,8 +21,8 @@
       "source": "src/cc_haha_tunnel/client.py",
       "path": "src/cc_haha_tunnel/client.py",
       "source_sha256": "27a7de02d50370c5d70e00c2f8e646dc1b31e9b00a007c3fb85a19dbf7d9a9de",
-      "adaptation": "Client-local imports; after public baseline d184af0e, reserve /_privacy namespace and add optional local binary WS handler with existing credit/lifecycle; no encryption or default handler",
-      "sha256": "a5883a1e6d9256a31abcd046762b11f8932b168f116666ad629267e946bc7b7c"
+      "adaptation": "Client-local imports; after public baseline d184af0e, reserve /_privacy namespace and add optional local binary WS handler with existing credit/lifecycle; tunnel endpoint and reserved-path list use the canonical /gateway namespace (the legacy /_gateway name stays reserved but is no longer dialed); no encryption or default handler",
+      "sha256": "14f1192f9b08db6ea19d86056780386f13786e1486e8991a42ef023e98b7f390"
     },
     {
       "source": null,

@@ -51,7 +51,8 @@ function matchesPathPrefix(pathname: string, prefix: string): boolean {
 }
 
 export function isGatewayForwarderRestrictedPath(pathname: string): boolean {
-  return matchesPathPrefix(pathname, '/_gateway') ||
+  return matchesPathPrefix(pathname, '/gateway') ||
+    matchesPathPrefix(pathname, '/_gateway') ||
     matchesPathPrefix(pathname, '/_local') ||
     matchesPathPrefix(pathname, '/api/h5-access') ||
     matchesPathPrefix(pathname, '/sdk')

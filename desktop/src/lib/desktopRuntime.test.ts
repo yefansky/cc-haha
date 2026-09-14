@@ -178,7 +178,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem')
     globalThis.fetch = vi.fn((input) => {
       const url = String(input)
-      if (url.endsWith('/_gateway/client-config')) return Promise.resolve(gatewaySessionResponse())
+      if (url.endsWith('/gateway/client-config')) return Promise.resolve(gatewaySessionResponse())
       if (url.endsWith('/health')) return Promise.resolve(healthOkResponse())
       if (url.endsWith('/api/status')) return Promise.resolve(Response.json({ ok: true }))
       return Promise.reject(new Error(`Unexpected request: ${url}`))
@@ -188,7 +188,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
 
     expect(globalThis.fetch).toHaveBeenNthCalledWith(
       1,
-      `${window.location.origin}/_gateway/client-config`,
+      `${window.location.origin}/gateway/client-config`,
       { cache: 'no-store' },
     )
     expect(clientMocks.setBaseUrl).toHaveBeenLastCalledWith(window.location.origin)
@@ -239,7 +239,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      `${window.location.origin}/_gateway/client-config`,
+      `${window.location.origin}/gateway/client-config`,
       { cache: 'no-store' },
     )
     expect(clientMocks.setBaseUrl).toHaveBeenLastCalledWith(window.location.origin)

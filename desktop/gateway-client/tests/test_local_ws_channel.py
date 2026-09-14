@@ -184,6 +184,29 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(STREAM, self.client._streams)
         self.client._session.ws_connect.assert_not_called()
 
+    async def test_tunnel_endpoint_uses_canonical_gateway_namespace(self):
+        self.assertEqual(
+            self.module._tunnel_endpoint("http://gateway.example:8081"),
+            "ws://gateway.example:8081/gateway/v1/tunnels/connect",
+        )
+        self.assertEqual(
+            self.module._tunnel_endpoint("https://gateway.example"),
+            "wss://gateway.example/gateway/v1/tunnels/connect",
+        )
+
+    async def test_gateway_namespaces_stay_unforwardable(self):
+        await self.client._dispatch({"type": "http.request.start", "stream_id": STREAM,
+            "method": "GET", "target": "/gateway/client-config", "headers": []})
+        state = self.client._streams[STREAM]
+        await asyncio.wait_for(state.task, 1)
+        self.assertEqual(self.frames[-1]["type"], "http.error")
+        self.assertNotIn(STREAM, self.client._streams)
+        for target in ["/gateway", "/gateway/client-config", "/_gateway/client-config",
+                       "/gateway/v1/tunnels/connect"]:
+            with self.subTest(target=target), self.assertRaises(self.module.TunnelClientError):
+                self.module.validate_forward_target(target)
+        self.client._session.request.assert_not_called()
+
     async def test_http_cannot_forward_reserved_local_endpoint(self):
         await self.client._dispatch({"type": "http.request.start", "stream_id": STREAM,
             "method": "GET", "target": "/_privacy/channel", "headers": []})

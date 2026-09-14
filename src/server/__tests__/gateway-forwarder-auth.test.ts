@@ -62,6 +62,8 @@ describe('gatewayForwarderAuth', () => {
 
   test('matches only the permanent forwarder deny prefixes', () => {
     for (const pathname of [
+      '/gateway',
+      '/gateway/client-config',
       '/_gateway',
       '/_gateway/client-config',
       '/_local/gateway',
@@ -79,7 +81,7 @@ describe('gatewayForwarderAuth', () => {
       '/api/status',
       '/api/h5-accessibility',
       '/sdk-tools',
-      '/gateway',
+      '/gateway-tools',
     ]) {
       expect(isGatewayForwarderRestrictedPath(pathname)).toBe(false)
     }
@@ -92,6 +94,7 @@ describe('gatewayForwarderAuth', () => {
     const missingRequest = new Request('http://127.0.0.1:3456/api/status')
 
     for (const pathname of [
+      '/gateway/client-config',
       '/_gateway/client-config',
       '/_local/gateway',
       '/_local/gateway/state',

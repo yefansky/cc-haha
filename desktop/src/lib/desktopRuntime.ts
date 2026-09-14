@@ -289,7 +289,7 @@ async function detectGatewaySession() {
   if (!sameOriginUrl) return null
 
   try {
-    const response = await fetch(`${sameOriginUrl}/_gateway/client-config`, {
+    const response = await fetch(`${sameOriginUrl}/gateway/client-config`, {
       cache: 'no-store',
     })
     if (response.status !== 200) return null
