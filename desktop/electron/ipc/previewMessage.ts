@@ -64,7 +64,8 @@ export function parsePreviewAgentMessage(raw: string): PreviewAgentMessage | nul
       if (!isBoundedString(parsed.url) || !isBoundedString(parsed.title)) return null
       try {
         const url = new URL(parsed.url)
-        if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+        if (url.protocol !== 'http:' && url.protocol !== 'https:' &&
+          !(url.protocol === 'file:' && !url.hostname)) return null
       } catch {
         return null
       }
@@ -99,7 +100,8 @@ export function shouldForwardPreviewMessage(input: {
   if (!input.isTopFrame) return false
   try {
     const parsed = new URL(input.href)
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ||
+      (parsed.protocol === 'file:' && !parsed.hostname)
   } catch {
     return false
   }

@@ -2192,6 +2192,8 @@ export const jp: Record<TranslationKey, string> = {
   'chat.turnChangesTitle': '{count} 個のファイルが変更されました',
   'chat.sessionChangedFilesTitle': 'セッションの変更',
   'chat.sessionChangedFilesToggle': 'このセッションで変更されたファイルは {count} 個です',
+  'chat.scriptOutput': 'スクリプト出力',
+  'chat.scriptOutputHint': 'スクリプトの書き込み報告です。書き込み前のスナップショットがないため元に戻せません。',
   'chat.sessionChangedFilesOpen': 'セッションで変更された {path} を開く',
   'chat.turnChangesLatestCardLabel': 'ターンで変更されたファイル',
   'chat.turnChangesHistoricalCardLabel': 'ターンで変更されたファイル',
@@ -3059,6 +3061,7 @@ export const jp: Record<TranslationKey, string> = {
   // ─── Browser Panel ──────────────────────────────────────
   'browser.back': '戻る',
   'browser.forward': '進む',
+  'browser.loadFailed': 'ページを読み込めません。パスを確認して再試行してください。',
   'browser.reload': '再読み込み',
   'browser.addressPlaceholder': 'URL を入力...',
   'browser.loading': '読み込み中',

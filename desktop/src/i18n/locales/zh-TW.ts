@@ -2191,6 +2191,8 @@ export const zh: Record<TranslationKey, string> = {
   'chat.turnChangesTitle': '{count} 個檔案已更改',
   'chat.sessionChangedFilesTitle': '本工作階段修改',
   'chat.sessionChangedFilesToggle': '本工作階段累計修改了 {count} 個檔案',
+  'chat.scriptOutput': '腳本產物',
+  'chat.scriptOutputHint': '腳本回報已寫入；沒有寫入前快照，不提供此次復原。',
   'chat.sessionChangedFilesOpen': '開啟本工作階段修改的檔案 {path}',
   'chat.turnChangesLatestCardLabel': '輪次已更改檔案',
   'chat.turnChangesHistoricalCardLabel': '輪次已更改檔案',
@@ -3058,6 +3060,7 @@ export const zh: Record<TranslationKey, string> = {
   // ─── Browser Panel ──────────────────────────────────────
   'browser.back': '上一頁',
   'browser.forward': '下一頁',
+  'browser.loadFailed': '頁面載入失敗，請檢查檔案路徑或重試',
   'browser.reload': '重新整理',
   'browser.addressPlaceholder': '輸入網址...',
   'browser.loading': '載入中',

@@ -102,10 +102,32 @@ afterEach(() => {
 })
 
 describe('Electron preview service', () => {
+  it('applies visibility requested before creation before attaching the view, including reopen', async () => {
+    const views: FakeView[] = []
+    const service = new ElectronPreviewService({
+      createView: () => { const view = new FakeView(); views.push(view); return view },
+      previewScriptPath: previewScript(),
+    })
+    const parent = { contentView: {
+      addChildView: vi.fn((view: FakeView) => expect(view.visible.at(-1)).toBe(false)),
+      removeChildView: vi.fn(),
+    } }
+    const bounds = { x: 0, y: 0, width: 300, height: 200 }
+    service.setVisible(false)
+    await service.open(parent, 'https://example.com', bounds)
+    service.close()
+    await service.open(parent, 'https://example.com/other', bounds)
+    expect(views).toHaveLength(2)
+    expect(views[1]!.visible).toEqual([false])
+    service.setVisible(true)
+    expect(views[1]!.visible).toEqual([false, true])
+  })
+
   it('allows only http and https URLs', () => {
     expect(normalizePreviewUrl(' https://example.com ')).toBe('https://example.com')
     expect(normalizePreviewUrl('http://127.0.0.1:3000')).toBe('http://127.0.0.1:3000')
-    expect(() => normalizePreviewUrl('file:///tmp/index.html')).toThrow('unsupported url scheme')
+    expect(normalizePreviewUrl('file:///tmp/index.html')).toBe('file:///tmp/index.html')
+    expect(() => normalizePreviewUrl('file://server/share/index.html')).toThrow('unsupported url scheme')
     expect(() => normalizePreviewUrl('javascript:alert(1)')).toThrow('unsupported url scheme')
   })
 
@@ -176,7 +198,7 @@ describe('Electron preview service', () => {
       { x: 3, y: 4, width: 500, height: 240 },
       { x: 5, y: 6, width: 100, height: 80 },
     ])
-    expect(view.visible).toEqual([false])
+    expect(view.visible).toEqual([true, false])
     expect(view.webContents.scripts).toEqual(['window.__previewInjected = true', 'window.__previewInjected = true'])
   })
 
@@ -225,6 +247,8 @@ describe('Electron preview service', () => {
     expect(() => service.sendMessageToRenderer(view.webContents, 'not-json', renderer)).not.toThrow()
     service.sendMessageToRenderer(view.webContents, '{"v":1,"type":"unknown"}', renderer)
     service.sendMessageToRenderer(view.webContents, JSON.stringify({ v: 1, type: 'screenshot', dataUrl: 'data:text/html;base64,AAAA', kind: 'full' }), renderer)
+    Object.assign(view.webContents, { getURL: () => 'https://example.com/' })
+    await service.sendMessageToRenderer(view.webContents, JSON.stringify({ v: 1, type: 'navigated', url: 'file:///tmp/private.html', title: 'forged' }), renderer)
 
     expect(renderer.sent).toEqual([
       {
@@ -698,7 +722,7 @@ describe('Electron preview service', () => {
     await expect(service.message({ v: 1, type: 'capture', kind: 'viewport' })).rejects.toThrow('preview not open')
   })
 
-  it('allows preload forwarding only for top-level http/https preview pages', () => {
+  it('allows preload forwarding only for top-level web and local preview pages', () => {
     expect(shouldForwardPreviewMessage({
       raw: '{"v":1,"type":"ready"}',
       href: 'https://example.com/workbench',
@@ -718,7 +742,8 @@ describe('Electron preview service', () => {
       raw: '{"v":1,"type":"ready"}',
       href: 'file:///tmp/index.html',
       isTopFrame: true,
-    })).toBe(false)
+    })).toBe(true)
+    expect(shouldForwardPreviewMessage({ raw: '{"v":1,"type":"ready"}', href: 'file://server/share/page.html', isTopFrame: true })).toBe(false)
     expect(shouldForwardPreviewMessage({
       raw: { type: 'ready' },
       href: 'https://example.com',
@@ -759,7 +784,8 @@ describe('Electron preview service', () => {
       kind: 'full',
     })
     expect(parsePreviewAgentMessage('{"v":1,"type":"screenshot","dataUrl":"data:text/html;base64,AAAA","kind":"full"}')).toBeNull()
-    expect(parsePreviewAgentMessage(JSON.stringify({ v: 1, type: 'navigated', url: 'file:///tmp/a', title: 'A' }))).toBeNull()
+    expect(parsePreviewAgentMessage(JSON.stringify({ v: 1, type: 'navigated', url: 'file:///tmp/a', title: 'A' })))
+      .toEqual({ v: 1, type: 'navigated', url: 'file:///tmp/a', title: 'A' })
     expect(parsePreviewAgentMessage(JSON.stringify({ v: 1, type: 'selection', payload: null }))).toBeNull()
   })
 

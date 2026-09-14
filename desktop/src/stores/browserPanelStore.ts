@@ -31,6 +31,7 @@ type BrowserPanelState = {
   open: (sessionId: string, url: string) => void
   ensureBlank: (sessionId: string) => void
   navigate: (sessionId: string, url: string) => void
+  replaceCurrentUrl: (sessionId: string, url: string) => void
   goBack: (sessionId: string) => void
   goForward: (sessionId: string) => void
   setLoading: (sessionId: string, loading: boolean) => void
@@ -94,6 +95,12 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set) => ({
     const cur = st.bySession[sessionId]; if (!cur || cur.historyIndex <= 0) return st
     return { bySession: { ...st.bySession, [sessionId]: withNav({ ...cur, historyIndex: cur.historyIndex - 1 }) } }
   }),
+  replaceCurrentUrl: (sessionId, url) => set((st) => {
+    const cur = st.bySession[sessionId]; if (!cur) return st
+    const history = [...cur.history]
+    if (cur.historyIndex >= 0) history[cur.historyIndex] = url
+    return { bySession: { ...st.bySession, [sessionId]: { ...cur, url, history } } }
+  }),
   goForward: (sessionId) => set((st) => {
     const cur = st.bySession[sessionId]; if (!cur || cur.historyIndex >= cur.history.length - 1) return st
     return { bySession: { ...st.bySession, [sessionId]: withNav({ ...cur, historyIndex: cur.historyIndex + 1 }) } }
@@ -122,7 +129,10 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set) => ({
   }),
   setNavigated: (sessionId, url, title) => set((st) => {
     const cur = st.bySession[sessionId]; if (!cur) return st
-    return { bySession: { ...st.bySession, [sessionId]: { ...cur, url, title, loading: false } } }
+    const history = cur.history[cur.historyIndex] === url
+      ? cur.history : [...cur.history.slice(0, cur.historyIndex + 1), url]
+    const historyIndex = history === cur.history ? cur.historyIndex : history.length - 1
+    return { bySession: { ...st.bySession, [sessionId]: withNav({ ...cur, url, title, history, historyIndex, loading: false }) } }
   }),
   setReady: (sessionId) => set((st) => {
     const cur = st.bySession[sessionId]; if (!cur) return st

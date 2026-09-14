@@ -2192,6 +2192,8 @@ export const kr: Record<TranslationKey, string> = {
   'chat.turnChangesTitle': '{count}개의 파일이 변경됨',
   'chat.sessionChangedFilesTitle': '세션 변경 사항',
   'chat.sessionChangedFilesToggle': '이 세션에서 변경된 파일 {count}개',
+  'chat.scriptOutput': '스크립트 출력',
+  'chat.scriptOutputHint': '스크립트가 기록한 파일입니다. 쓰기 전 스냅샷이 없어 실행 취소할 수 없습니다.',
   'chat.sessionChangedFilesOpen': '세션에서 변경한 {path} 열기',
   'chat.turnChangesLatestCardLabel': '턴에서 변경된 파일',
   'chat.turnChangesHistoricalCardLabel': '턴에서 변경된 파일',
@@ -3059,6 +3061,7 @@ export const kr: Record<TranslationKey, string> = {
   // ─── Browser Panel ──────────────────────────────────────
   'browser.back': '뒤로',
   'browser.forward': '앞으로',
+  'browser.loadFailed': '페이지를 불러올 수 없습니다. 파일 경로를 확인하거나 다시 시도하세요.',
   'browser.reload': '새로고침',
   'browser.addressPlaceholder': '주소 입력...',
   'browser.loading': '불러오는 중',

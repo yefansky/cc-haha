@@ -17,6 +17,12 @@ import {
   useWorkspacePanelStore,
 } from '../../stores/workspacePanelStore'
 import { relativizeWorkspacePath } from './CurrentTurnChangeCard'
+import { isHtmlFilePath } from '../../lib/htmlPreviewPolicy'
+import { localFileUrl, previewFsUrl, isAbsoluteLocalPath } from '../../lib/handlePreviewLink'
+import { localPathToFileUrl } from '../../lib/localBrowserFile'
+import { getServerBaseUrl } from '../../lib/desktopRuntime'
+import { getDesktopHost } from '../../lib/desktopHost'
+import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 
 type SessionChangedFilesStripProps = {
   sessionId: string
@@ -27,6 +33,7 @@ type SessionChangedFilesStripProps = {
 }
 
 type SessionChangedFile = {
+  reportedOnly: boolean
   sourcePath: string
   displayPath: string
   checkpoint: SessionTurnCheckpoint
@@ -44,13 +51,15 @@ export function buildSessionChangedFiles(
   const byPath = new Map<string, SessionChangedFile>()
 
   for (const checkpoint of checkpoints) {
-    if (!checkpoint.code.available) continue
     const checkpointWorkDir = checkpoint.workDir ?? sessionWorkDir
-    for (const sourcePath of checkpoint.code.filesChanged) {
+    const tracked = checkpoint.code.available ? checkpoint.code.filesChanged : []
+    for (const sourcePath of [...tracked, ...(checkpoint.reportedFiles ?? [])]) {
+      const reportedOnly = !tracked.includes(sourcePath)
       const displayPath = relativizeWorkspacePath(sourcePath, checkpointWorkDir)
       const key = pathKey(displayPath, checkpointWorkDir)
       // Keep the latest checkpoint for fallback, but preserve a stable path list.
-      byPath.set(key, { sourcePath, displayPath, checkpoint })
+      if (reportedOnly && byPath.get(key)?.reportedOnly === false) continue
+      byPath.set(key, { sourcePath, displayPath, checkpoint, reportedOnly })
     }
   }
 
@@ -94,6 +103,20 @@ export function SessionChangedFilesStrip({
     const copied = await copyTextToClipboard(path)
     useUIStore.getState().addToast({ type: copied ? 'success' : 'error', message: t(copied ? 'workspace.pathCopied' : 'common.copyFailed') })
   }
+  const openHtml = (file: SessionChangedFile, external: boolean) => {
+    const root = file.checkpoint.workDir ?? workDir
+    const absolute = isAbsoluteLocalPath(file.sourcePath)
+      ? file.sourcePath : root ? `${root.replace(/[\\/]+$/, '')}/${file.sourcePath}` : null
+    closeMenu()
+    if (external && absolute) {
+      void getDesktopHost().shell.openPath(localPathToFileUrl(absolute))
+      return
+    }
+    const url = absolute
+      ? localFileUrl(getServerBaseUrl(), absolute)
+      : previewFsUrl(getServerBaseUrl(), sessionId, file.displayPath)
+    useBrowserPanelStore.getState().open(sessionId, url)
+  }
   const warmedSignatureBySessionRef = useRef(new Map<string, Map<string, string>>())
   const subscribe = useCallback(
     (listener: () => void) => subscribeSessionTurnCheckpoints(sessionId, listener),
@@ -128,7 +151,7 @@ export function SessionChangedFilesStrip({
         for (const file of filesToWarm) {
           const key = pathKey(file.displayPath, workDir)
           const signature = JSON.stringify([
-            workDir, file.checkpoint.target, file.checkpoint.code,
+            workDir, file.checkpoint.target, file.checkpoint.code, file.reportedOnly,
           ])
           const previous = previousSignatures?.get(key)
           const force = previous !== undefined && previous !== signature
@@ -147,6 +170,7 @@ export function SessionChangedFilesStrip({
           ).catch(() => {})
           // Prepare both full comparison sides before the user opens the diff.
           // The store bounds background concurrency and shares click requests.
+          if (file.reportedOnly) continue
           void workspace.preloadPreview(
             sessionId, file.displayPath, 'diff', { kind: 'workspace' },
             'auto', undefined, { force },
@@ -166,6 +190,7 @@ export function SessionChangedFilesStrip({
     // Repository comparison remains an explicit workspace view, so opening a
     // row must never wait for a full Git/SVN status scan first.
     await workspace.openPreview(sessionId, file.displayPath, 'file')
+    if (file.reportedOnly) return
     const fileTabId = getWorkspacePreviewTabId(file.displayPath, 'file')
     const fileTab = useWorkspacePanelStore.getState().previewTabsBySession[sessionId]
       ?.find((tab) => tab.id === fileTabId)
@@ -227,6 +252,7 @@ export function SessionChangedFilesStrip({
               >
                 <FileCode2 size={15} strokeWidth={1.8} aria-hidden="true" className="shrink-0 text-[var(--color-text-tertiary)]" />
                 <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--color-text-primary)]">{fileName}</span>
+                {file.reportedOnly && <span title={t('chat.scriptOutputHint')} className="shrink-0 text-[10px] text-[var(--color-text-tertiary)]">{t('chat.scriptOutput')}</span>}
                 {directory && (
                   <span className="max-w-[55%] truncate font-mono text-[10px] text-[var(--color-text-tertiary)]">{directory}</span>
                 )}
@@ -240,6 +266,16 @@ export function SessionChangedFilesStrip({
           style={{ ...menuPosition.style, visibility: menuPosition.ready ? 'visible' : 'hidden' }}
           className="glass-panel fixed z-[var(--z-dropdown)] min-w-[156px] rounded-[var(--radius-md)] py-1 text-[12px]"
           onClick={(event) => event.stopPropagation()}>
+          {isHtmlFilePath(contextMenu.file.displayPath) && [false, true].filter((external) => !external || (
+            !/^[/\\]{2}/.test(contextMenu.file.sourcePath) &&
+            (isAbsoluteLocalPath(contextMenu.file.sourcePath) || contextMenu.file.checkpoint.workDir || workDir)
+          )).map((external) => (
+            <button key={`browser-${external}`} type="button" role="menuitem"
+              onClick={() => openHtml(contextMenu.file, external)}
+              className="flex w-full items-center px-3 py-1.5 text-left text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]">
+              {t(external ? 'openWith.systemBrowser' : 'openWith.inAppBrowser')}
+            </button>
+          ))}
           {[false, true].map((absolute) => (
             <button key={String(absolute)} type="button" role="menuitem"
               onClick={() => void copyPath(contextMenu.file, absolute)}

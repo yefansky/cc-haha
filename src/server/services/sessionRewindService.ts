@@ -1,4 +1,5 @@
 import { decodeTextFile } from '../../utils/textEncoding.js'
+import { collectShellOutputFiles } from './shellOutputFiles.js'
 import type { UUID } from 'crypto'
 import { constants } from 'node:fs'
 import { access, lstat, mkdir, open, readFile, realpath, unlink, type FileHandle } from 'node:fs/promises'
@@ -165,6 +166,8 @@ export type SessionMessageReplacementResult = {
 export const MESSAGE_REPLACEMENT_STOP_TIMEOUT_MS = 250
 
 export type SessionTurnCheckpointPreview = SessionRewindPreview & {
+  /** Successful shell output receipts; display only, never undo evidence. */
+  reportedFiles?: string[]
   workDir: string
   restoreAvailable: boolean
   createdAt?: string
@@ -1859,9 +1862,14 @@ export async function listSessionTurnCheckpoints(
       target,
     )
 
-    if (!checkpoint.code.available) continue
+    const reportedFiles = collectShellOutputFiles(
+      getTranscriptTurnMessages(activeMessages, userMessage.id), checkpoint.workDir,
+    )
+    if (!checkpoint.code.available && reportedFiles.length === 0) continue
     checkpoints.push({
       ...checkpoint,
+      reportedFiles,
+      restoreAvailable: checkpoint.code.available && checkpoint.restoreAvailable,
       createdAt: userMessage.timestamp,
       prompt: extractUserPromptText(userMessage.content),
     })

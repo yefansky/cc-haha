@@ -1,6 +1,8 @@
 export type WindowOpenHandlerResult = { action: 'deny' } | { action: 'allow' }
 
 export type NavigationGuardWebContents = {
+  getURL?(): string
+  loadURL?(url: string): Promise<unknown>
   setWindowOpenHandler(handler: (details: { url: string }) => WindowOpenHandlerResult): void
   on(
     event: 'will-navigate',
@@ -74,17 +76,27 @@ export function installMainWindowNavigationGuards(
  * Preview (WebContentsView) guard. The preview renders untrusted remote pages,
  * so it must keep working as a browser: in-page http(s) navigation is allowed.
  * Popups are denied (http(s) ones handed to the system browser), and navigation
- * to any non-http(s) scheme (file:, custom schemes) is blocked outright.
+ * to custom schemes is blocked. Local documents explicitly opened by the host
+ * may follow local links; remote documents cannot navigate into local files.
  */
 export function installPreviewNavigationGuards(
   webContents: NavigationGuardWebContents,
   { openExternal }: NavigationGuardOptions,
 ): void {
+  const localNavigation = (url: string) => {
+    try {
+      const target = new URL(url)
+      const source = new URL(webContents.getURL?.() ?? '')
+      return source.protocol === 'file:' && !source.hostname &&
+        target.protocol === 'file:' && !target.hostname
+    } catch { return false }
+  }
   webContents.setWindowOpenHandler(({ url }) => {
     if (isHttpUrl(url)) openExternal(url)
+    else if (localNavigation(url)) void webContents.loadURL?.(url).catch(() => {})
     return { action: 'deny' }
   })
   webContents.on('will-navigate', (event, url) => {
-    if (!isHttpUrl(url)) event.preventDefault()
+    if (!isHttpUrl(url) && !localNavigation(url)) event.preventDefault()
   })
 }

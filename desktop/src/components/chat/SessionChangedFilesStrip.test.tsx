@@ -23,10 +23,11 @@ vi.mock('../../api/sessions', () => ({
   },
 }))
 
-import { SessionChangedFilesStrip } from './SessionChangedFilesStrip'
+import { SessionChangedFilesStrip, buildSessionChangedFiles } from './SessionChangedFilesStrip'
 import { clearSessionTurnCheckpointCache } from '../../lib/sessionTurnCheckpoints'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 
 function checkpoint(
   id: string,
@@ -34,13 +35,56 @@ function checkpoint(
   filesChanged: string[],
 ) {
   return {
-    target: { targetUserMessageId: id, userMessageIndex },
+    target: { targetUserMessageId: id, userMessageIndex, userMessageCount: userMessageIndex + 1 },
     workDir: '/repo',
     code: { available: true, filesChanged, insertions: 1, deletions: 0 },
   }
 }
 
 describe('SessionChangedFilesStrip', () => {
+  it('shows persisted shell outputs without inventing a diff or requiring undo availability', async () => {
+    const receipt = { ...checkpoint('shell', 0, []), code: { available: false, filesChanged: [], insertions: 0, deletions: 0 }, reportedFiles: ['/repo/看板/board.html'], restoreAvailable: false }
+    mocks.getTurnCheckpoints.mockResolvedValue({ checkpoints: [receipt] })
+    const view = render(<SessionChangedFilesStrip sessionId="shell-output" workDir="/repo" enabled refreshNonce={0} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Session file changes: 1' }))
+    expect(screen.getByText('Script output')).toBeInTheDocument()
+    const row = screen.getByRole('button', { name: /Open.*board.html/ })
+    fireEvent.contextMenu(row)
+    expect(screen.getByRole('menuitem', { name: 'In-app browser' })).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.click(row)
+    await waitFor(() => expect(mocks.getWorkspaceFile).toHaveBeenCalled())
+    expect(mocks.getWorkspaceDiff).not.toHaveBeenCalled()
+    expect(mocks.getTurnCheckpointDiff).not.toHaveBeenCalled()
+    view.unmount()
+    clearSessionTurnCheckpointCache('shell-output')
+    render(<SessionChangedFilesStrip sessionId="shell-output" workDir="/repo" enabled refreshNonce={1} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Session file changes: 1' }))
+    expect(screen.getByText('board.html')).toBeInTheDocument()
+  })
+
+  it('deduplicates script receipts while retaining a real checkpoint when available', () => {
+    const tracked = checkpoint('tracked', 0, ['看板/board.html'])
+    const receipt = { ...checkpoint('shell', 1, []), reportedFiles: ['/repo/看板/board.html'] }
+    for (const checkpoints of [[tracked, receipt], [receipt, tracked]]) {
+      const files = buildSessionChangedFiles(checkpoints, '/repo')
+      expect(files).toHaveLength(1)
+      expect(files[0]?.reportedOnly).toBe(false)
+      expect(files[0]?.checkpoint.target.targetUserMessageId).toBe('tracked')
+    }
+  })
+  it('offers browser preview for HTML without changing the default source-file action', async () => {
+    mocks.getTurnCheckpoints.mockResolvedValue({ checkpoints: [checkpoint('html', 0, ['/repo/看板/report.html'])] })
+    render(<SessionChangedFilesStrip sessionId="html-menu" workDir="/repo" enabled refreshNonce={0} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Session file changes: 1' }))
+    const row = screen.getByRole('button', { name: /Open.*report.html/ })
+    fireEvent.contextMenu(row)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'In-app browser' }))
+    expect(useBrowserPanelStore.getState().bySession['html-menu']?.url).toContain('/local-file/repo/%E7%9C%8B%E6%9D%BF/report.html')
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    fireEvent.click(row)
+    await waitFor(() => expect(useWorkspacePanelStore.getState().previewTabsBySession['html-menu']?.at(-1)?.kind).toBe('file'))
+  })
   it.each([
     ['src/app.ts', '/repo', '/repo/src/app.ts'],
     ['K:/external/file.lua', '/repo', 'K:/external/file.lua'],

@@ -84,6 +84,15 @@ describe('installMainWindowNavigationGuards', () => {
 })
 
 describe('installPreviewNavigationGuards', () => {
+  it('allows local document links and opens local new-page links in the same preview', () => {
+    const wc = fakeWebContents()
+    const loadURL = vi.fn().mockResolvedValue(undefined)
+    installPreviewNavigationGuards({ ...wc.contents, getURL: () => 'file:///G:/site/index.html', loadURL }, { openExternal: vi.fn() })
+    expect(wc.navigate('file:///G:/site/next.html')).not.toHaveBeenCalled()
+    expect(wc.navigate('file://server/share/page.html')).toHaveBeenCalled()
+    expect(wc.openWindow('file:///G:/site/next.html')).toEqual({ action: 'deny' })
+    expect(loadURL).toHaveBeenCalledWith('file:///G:/site/next.html')
+  })
   it('allows in-page http(s) navigation so the preview keeps working as a browser', () => {
     const wc = fakeWebContents()
     installPreviewNavigationGuards(wc.contents, { openExternal: vi.fn() })

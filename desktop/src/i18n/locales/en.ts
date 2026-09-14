@@ -2191,6 +2191,8 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'chat.turnChangesTitle': '{count} files changed',
   'chat.sessionChangedFilesTitle': 'Session changes',
   'chat.sessionChangedFilesToggle': 'Session file changes: {count}',
+  'chat.scriptOutput': 'Script output',
+  'chat.scriptOutputHint': 'Reported written by a script; no pre-write snapshot for undo.',
   'chat.sessionChangedFilesOpen': 'Open {path} from session changes',
   'chat.turnChangesLatestCardLabel': 'Turn changed files',
   'chat.turnChangesHistoricalCardLabel': 'Turn changed files',
@@ -3058,6 +3060,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   // ─── Browser Panel ──────────────────────────────────────
   'browser.back': 'Back',
   'browser.forward': 'Forward',
+  'browser.loadFailed': 'Page could not be loaded. Check the file path or retry.',
   'browser.reload': 'Reload',
   'browser.addressPlaceholder': 'Enter a URL...',
   'browser.loading': 'Loading',

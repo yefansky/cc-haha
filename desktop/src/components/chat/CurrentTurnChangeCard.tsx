@@ -7,8 +7,9 @@ import { Button } from '@/components/ui/Button'
 import { OpenWithMenu } from '@/components/composite/OpenWithMenu'
 import { buildOpenWithItems, describeFileType, isPreviewableChangedFile, type OpenWithItem } from '../../lib/openWithItems'
 import { openWithContextForWorkspaceFile } from '../../lib/openWithContextForHref'
-import { isAbsoluteLocalPath, localFileUrl } from '../../lib/handlePreviewLink'
-import { shouldOfferStaticHtmlPreview } from '../../lib/htmlPreviewPolicy'
+import { isAbsoluteLocalPath, localFileUrl, previewFsUrl } from '../../lib/handlePreviewLink'
+import { isHtmlFilePath, shouldOfferStaticHtmlPreview } from '../../lib/htmlPreviewPolicy'
+import { localPathToFileUrl } from '../../lib/localBrowserFile'
 import { getServerBaseUrl } from '../../lib/desktopRuntime'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { copyTextToClipboard } from '../../lib/clipboard'
@@ -136,7 +137,14 @@ export function CurrentTurnChangeCard({
     setOpenWith({
       anchor: new DOMRect(event.clientX, event.clientY, 0, 0),
       triggerEl: event.currentTarget,
-      items: [{
+      items: [...(isHtmlFilePath(path) ? [{
+        id: 'in-app', label: t('openWith.inAppBrowser'), icon: 'in-app-browser' as const,
+        onSelect: () => useBrowserPanelStore.getState().open(sessionId, isAbsoluteLocalPath(path)
+          ? localFileUrl(getServerBaseUrl(), path) : previewFsUrl(getServerBaseUrl(), sessionId, path)),
+      }, ...(isAbsoluteLocalPath(path) && !/^[/\\]{2}/.test(path) ? [{
+        id: 'system', label: t('openWith.systemBrowser'), icon: 'system' as const,
+        onSelect: () => { void getDesktopHost().shell.openPath(localPathToFileUrl(path)) },
+      }] : [])] : []), {
         id: 'copy-path',
         label: t('openWith.copyPath'),
         icon: 'copy',

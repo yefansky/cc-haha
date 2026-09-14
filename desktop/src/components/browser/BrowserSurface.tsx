@@ -28,6 +28,9 @@ import { useOverlayStore } from '../../stores/overlayStore'
 import { usePreviewSelectionStore } from '../../stores/previewSelectionStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useChatStore } from '../../stores/chatStore'
+import { useSessionStore } from '../../stores/sessionStore'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { localPathToFileUrl, resolveNativeLocalPreview } from '../../lib/localBrowserFile'
 
 const LOCAL_PREVIEW_PATH_PREFIXES = ['/preview-fs/', '/local-file/']
 const LOCAL_PREVIEW_READY_TIMEOUT_MS = 2500
@@ -45,8 +48,9 @@ function shouldWaitForLocalPreview(url: string): boolean {
 async function waitForLocalPreview(url: string): Promise<void> {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), LOCAL_PREVIEW_READY_TIMEOUT_MS)
+  let response: Response | undefined
   try {
-    await fetch(url, {
+    response = await fetch(url, {
       method: 'HEAD',
       cache: 'no-store',
       signal: controller.signal,
@@ -57,6 +61,7 @@ async function waitForLocalPreview(url: string): Promise<void> {
   } finally {
     window.clearTimeout(timeout)
   }
+  if (response && !response.ok) throw new Error(`HTTP ${response.status}: ${url}`)
 }
 
 function resolveBrowserNavigationUrl(input: string, sessionId: string): string {
@@ -66,6 +71,9 @@ function resolveBrowserNavigationUrl(input: string, sessionId: string): string {
   const classified = classifyPreviewLink(value)
   if (classified.kind === 'browser-file' && classified.path) {
     const serverBaseUrl = getServerBaseUrl()
+    if (getDesktopHost().kind === 'electron' && isAbsoluteLocalPath(classified.path)) {
+      return localPathToFileUrl(classified.path.replace(/^\/([a-z]:\/)/i, '$1'))
+    }
     return isAbsoluteLocalPath(classified.path)
       ? localFileUrl(serverBaseUrl, classified.path)
       : previewFsUrl(serverBaseUrl, sessionId, classified.path)
@@ -82,6 +90,7 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
   const hasNativePreviewRef = useRef(false)
   const selectionSendInFlightRef = useRef(false)
   const [pendingNavigation, setPendingNavigation] = useState<{ run: () => void } | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const session = useBrowserPanelStore((s) => s.bySession[sessionId])
   const selectionDraft = usePreviewSelectionStore((s) => s.bySession[sessionId])
   const appZoom = useSettingsStore((s) => s.uiZoom)
@@ -104,14 +113,19 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
   ) => {
     const seq = loadSeqRef.current + 1
     loadSeqRef.current = seq
+    setLoadError(null)
     void (async () => {
       if (shouldWaitForLocalPreview(url)) {
         await waitForLocalPreview(url)
       }
       if (loadSeqRef.current !== seq) return
       await action()
-    })().catch(() => {
+    })().catch((error: unknown) => {
       if (loadSeqRef.current === seq) {
+        setLoadError(error instanceof Error ? error.message : String(error))
+        void previewBridge.setVisible(false)
+        hasNativePreviewRef.current = false
+        void previewBridge.close()
         if (requestedUrlRef.current === url) {
           requestedUrlRef.current = null
         }
@@ -122,11 +136,23 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
 
   const requestNativePreview = (url: string, options?: { force?: boolean }) => {
     if (!url) return
+    if (getDesktopHost().kind === 'electron') {
+      const workDir = useWorkspacePanelStore.getState().statusBySession[sessionId]?.workDir
+        ?? useSessionStore.getState().sessions.find((item) => item.id === sessionId)?.workDir
+      try {
+        const nativeUrl = resolveNativeLocalPreview(url, getServerBaseUrl(), workDir)
+        if (nativeUrl !== url) {
+          url = nativeUrl
+          useBrowserPanelStore.getState().replaceCurrentUrl(sessionId, url)
+        }
+      } catch { /* Normal loading reports malformed addresses to the user. */ }
+    }
     if (!options?.force && requestedUrlRef.current === url) return
 
     requestedUrlRef.current = url
     loadNativePreview(url, async () => {
       await previewBridge.setZoom(previewZoom)
+      await previewBridge.setVisible(useOverlayStore.getState().count === 0)
       if (hasNativePreviewRef.current) {
         await previewBridge.navigate(url)
         return
@@ -171,8 +197,8 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
   // The layout-effect teardown above still closes the webview on unmount.
   useEffect(() => {
     if (!session) return
-    previewBridge.setVisible(overlayCount === 0)
-  }, [overlayCount, session])
+    previewBridge.setVisible(overlayCount === 0 && !loadError)
+  }, [overlayCount, session, loadError])
 
   useEffect(() => {
     if (!session) return
@@ -405,7 +431,8 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
         }}
         onOpenExternal={() => {
           if (!session.url) return
-          void getDesktopHost().shell.open(session.url)
+          const shell = getDesktopHost().shell
+          void (session.url.startsWith('file:') ? shell.openPath(session.url) : shell.open(session.url))
         }}
         rightActions={previewActions}
       />
@@ -413,6 +440,16 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
         <div className="relative min-h-0 flex-1 overflow-hidden" data-testid="browser-preview-stage">
           {/* WebContentsView renders above DOM, so keep the floating controls outside its bounds. */}
           <div ref={hostRef} className="absolute inset-x-0 top-0 bottom-12 overflow-hidden" data-testid="preview-host">
+            {loadError && (
+              <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6 text-sm text-[var(--color-text-primary)]">
+                <strong>{t('browser.loadFailed')}</strong>
+                <p className="max-w-full break-all font-mono text-xs">{loadError}</p>
+                <Button onClick={() => {
+                  store.setLoading(sessionId, true)
+                  requestNativePreview(session.url, { force: true })
+                }}>{t('browser.reload')}</Button>
+              </div>
+            )}
             {session.loading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[var(--color-surface)] text-[var(--color-text-tertiary)]">
                 <Spinner size={18} label={t('browser.loading')} />

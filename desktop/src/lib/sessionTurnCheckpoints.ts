@@ -29,6 +29,9 @@ function isSessionTurnCheckpoint(value: unknown): value is SessionTurnCheckpoint
     Boolean(checkpoint.code) &&
     typeof checkpoint.code?.available === 'boolean' &&
     Array.isArray(checkpoint.code?.filesChanged) &&
+    (checkpoint.reportedFiles === undefined ||
+      (Array.isArray(checkpoint.reportedFiles) &&
+        checkpoint.reportedFiles.every((file) => typeof file === 'string'))) &&
     (checkpoint.restoreAvailable === undefined ||
       typeof checkpoint.restoreAvailable === 'boolean') &&
     (checkpoint.unverifiedChangeSources === undefined ||

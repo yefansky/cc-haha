@@ -1,4 +1,5 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, safeStorage, screen, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, Notification, safeStorage, screen, session, WebContentsView } from 'electron'
+import { LocalPreviewAccess } from './services/localPreviewAccess'
 import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
@@ -335,7 +336,14 @@ function getPreviewService() {
       })
       configurePreviewSessionPermissions(view.webContents.session)
       installPreviewNavigationGuards(view.webContents, { openExternal: openExternalUrl })
-      return view
+      const localAccess = new LocalPreviewAccess()
+      view.webContents.session.protocol.handle('file', async (request) => {
+        if (!await localAccess.allows(request.url)) {
+          return new Response('Local preview file is outside the opened document directory or does not exist.', { status: 403 })
+        }
+        return net.fetch(request, { bypassCustomProtocol: true })
+      })
+      return Object.assign(view, { authorizeLocalFile: (url: string) => localAccess.authorize(url) })
     },
   })
   return previewService

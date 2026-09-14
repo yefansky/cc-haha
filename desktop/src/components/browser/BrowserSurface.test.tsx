@@ -9,7 +9,9 @@ beforeAll(() => {
   })
 })
 
-const { bridge, openExternal, sendMessage } = vi.hoisted(() => ({
+const { bridge, openExternal, openPath, sendMessage, hostKind } = vi.hoisted(() => ({
+  openPath: vi.fn().mockResolvedValue(undefined),
+  hostKind: { value: 'browser' as 'browser' | 'electron' },
   bridge: {
     open: vi.fn(),
     navigate: vi.fn(),
@@ -29,7 +31,7 @@ vi.mock('../../lib/desktopHost', async (importOriginal) => {
     ...actual,
     getDesktopHost: () => {
       const host = actual.getDesktopHost()
-      return { ...host, shell: { ...host.shell, open: openExternal } }
+      return { ...host, kind: hostKind.value, shell: { ...host.shell, open: openExternal, openPath } }
     },
   }
 })
@@ -51,6 +53,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  hostKind.value = 'browser'
   cleanup()
   vi.restoreAllMocks()
   Object.values(bridge).forEach((f) => f.mockReset())
@@ -61,11 +64,45 @@ afterEach(() => {
   usePreviewSelectionStore.setState({ bySession: {} })
   useSettingsStore.setState({ uiZoom: 1 })
   openExternal.mockClear()
+  openPath.mockClear()
   sendMessage.mockReset()
   setBaseUrl(getDefaultBaseUrl())
 })
 
 describe('BrowserSurface', () => {
+  it('hands local documents to the system file opener instead of the web-only URL opener', async () => {
+    useBrowserPanelStore.getState().open('s1', 'file:///G:/site/page.html')
+    render(<BrowserSurface sessionId="s1" />)
+    fireEvent.click(screen.getByRole('button', { name: '系统浏览器' }))
+    expect(openPath).toHaveBeenCalledWith('file:///G:/site/page.html')
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+  it('opens desktop legacy local-file URLs directly without HTTP and without adding history', async () => {
+    hostKind.value = 'electron'
+    setBaseUrl('http://127.0.0.1:8787')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    useBrowserPanelStore.getState().open('s1', 'http://127.0.0.1:8787/local-file/G%3A/site/page.html')
+    render(<BrowserSurface sessionId="s1" />)
+    await waitFor(() => expect(bridge.open).toHaveBeenCalledWith('file:///G:/site/page.html', expect.any(Object)))
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(useBrowserPanelStore.getState().bySession.s1?.history).toEqual(['file:///G:/site/page.html'])
+  })
+  it('shows a failed native load and recreates the view when retrying', async () => {
+    bridge.open.mockRejectedValueOnce(new Error('ERR_FILE_NOT_FOUND')).mockResolvedValue(undefined)
+    useBrowserPanelStore.getState().open('s1', 'file:///G:/missing.html')
+    render(<BrowserSurface sessionId="s1" />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('ERR_FILE_NOT_FOUND')
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button'))
+    await waitFor(() => expect(bridge.open).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+  it('reports an HTTP rejection instead of leaving an empty preview', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('forbidden', { status: 403 }))
+    useBrowserPanelStore.getState().open('s1', 'http://127.0.0.1:8787/local-file/no.html')
+    render(<BrowserSurface sessionId="s1" />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 403')
+    expect(bridge.open).not.toHaveBeenCalled()
+  })
   it('opens the preview at the session url on mount when surface is open', () => {
     useBrowserPanelStore.getState().open('s1', 'http://localhost:5173/')
     render(<BrowserSurface sessionId="s1" />)

@@ -24,6 +24,7 @@ const FULL_CAPTURE_MAX_EDGE = 16_384
 const FULL_CAPTURE_MAX_PIXELS = 32_000_000
 
 export type PreviewWebContentsLike = {
+  getURL?(): string
   loadURL(url: string): Promise<unknown>
   executeJavaScript(script: string): Promise<unknown>
   on(event: 'did-finish-load', handler: () => void): unknown
@@ -36,6 +37,7 @@ export type PreviewWebContentsLike = {
 }
 
 export type PreviewViewLike = {
+  authorizeLocalFile?(url: string): Promise<void>
   webContents: PreviewWebContentsLike
   setBounds(bounds: PreviewBounds): void
   setVisible?(visible: boolean): void
@@ -87,7 +89,8 @@ export function normalizePreviewUrl(input: string): string {
   const trimmed = input.trim()
   if (!trimmed) throw new Error('empty url')
   const parsed = new URL(trimmed)
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' &&
+    !(parsed.protocol === 'file:' && !parsed.hostname)) {
     throw new Error(`unsupported url scheme: ${trimmed}`)
   }
   return trimmed
@@ -145,6 +148,7 @@ export class ElectronPreviewService {
   private parent: PreviewParentWindowLike | null = null
   private requestedBounds: PreviewBounds | null = null
   private zoomFactor = 1
+  private visible = true
   private pickerArmed = false
   private fullCapture: {
     webContents: PreviewWebContentsLike
@@ -164,13 +168,16 @@ export class ElectronPreviewService {
     this.requestedBounds = normalizePreviewBounds(bounds)
     const view = this.ensureView(parent)
     this.applyBounds(view)
+    await view.authorizeLocalFile?.(normalizedUrl)
     await view.webContents.loadURL(normalizedUrl)
   }
 
   async navigate(url: string): Promise<void> {
     this.pickerArmed = false
     const view = this.requireView()
-    await view.webContents.loadURL(normalizePreviewUrl(url))
+    const normalizedUrl = normalizePreviewUrl(url)
+    await view.authorizeLocalFile?.(normalizedUrl)
+    await view.webContents.loadURL(normalizedUrl)
   }
 
   setBounds(bounds: PreviewBounds): void {
@@ -179,6 +186,8 @@ export class ElectronPreviewService {
   }
 
   setVisible(visible: boolean): void {
+    // The renderer may suppress the preview before asynchronous open creates it.
+    this.visible = visible
     this.view?.setVisible?.(visible)
   }
 
@@ -223,6 +232,9 @@ export class ElectronPreviewService {
     if (typeof raw !== 'string') return
     const message = parsePreviewAgentMessage(raw)
     if (!message) return
+    // Page scripts may emit bridge messages; navigation identity belongs to
+    // Chromium, especially when a remote document tries to claim a file URL.
+    if (message.type === 'navigated' && sender.getURL && message.url !== sender.getURL()) return
     if (message.type === 'selection') {
       if (!this.pickerArmed) return
       // Consume before the asynchronous native capture so a page cannot replay
@@ -240,6 +252,7 @@ export class ElectronPreviewService {
   private ensureView(parent: PreviewParentWindowLike): PreviewViewLike {
     if (this.view) return this.view
     const view = this.createView()
+    view.setVisible?.(this.visible)
     parent.contentView.addChildView(view)
     view.webContents.on('did-finish-load', () => {
       this.pickerArmed = false

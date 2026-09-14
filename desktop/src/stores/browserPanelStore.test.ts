@@ -128,7 +128,7 @@ describe('browserPanelStore', () => {
     expect(s.canGoBack).toBe(false)
   })
 
-  it('setNavigated clears loading and updates url/title without growing history', () => {
+  it('setNavigated records in-page links once so Back and Forward work', () => {
     const st = useBrowserPanelStore.getState()
     st.open('s1', 'http://x/a')
     expect(useBrowserPanelStore.getState().bySession['s1']!.loading).toBe(true)
@@ -137,7 +137,13 @@ describe('browserPanelStore', () => {
     expect(s.url).toBe('http://x/b')
     expect(s.title).toBe('B')
     expect(s.loading).toBe(false)
-    expect(s.history).toEqual(['http://x/a'])
+    expect(s.history).toEqual(['http://x/a', 'http://x/b'])
+    useBrowserPanelStore.getState().setNavigated('s1', 'http://x/b', 'B')
+    useBrowserPanelStore.getState().goBack('s1')
+    expect(useBrowserPanelStore.getState().bySession.s1?.url).toBe('http://x/a')
+    useBrowserPanelStore.getState().setNavigated('s1', 'http://x/a', 'A')
+    useBrowserPanelStore.getState().goForward('s1')
+    expect(useBrowserPanelStore.getState().bySession.s1?.url).toBe('http://x/b')
   })
 
   it('setReady clears loading', () => {

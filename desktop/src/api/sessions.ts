@@ -427,6 +427,8 @@ export type WorkspaceWriteRequest = {
 }
 
 export type SessionTurnCheckpoint = {
+  /** Script-reported outputs without an implied restore baseline. */
+  reportedFiles?: string[]
   target: SessionRewindResponse['target']
   conversation?: SessionRewindResponse['conversation']
   code: SessionRewindResponse['code']
