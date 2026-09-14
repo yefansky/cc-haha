@@ -319,10 +319,13 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const pendingSlashUiAction = !isMemberSession && input.trim().startsWith('/')
     ? resolveSlashUiAction(input.trim().slice(1))
     : null
+  const hasComposerContent = input.trim().length > 0 ||
+    (!isMemberSession && (attachments.length > 0 || hasWorkspaceReferences))
+  const showStopAction = !isMemberSession && isActive && !hasComposerContent
   const canSubmit = !isWorkspaceMissing &&
     !launchTransitioning &&
     (!showLaunchControls || launchReady || !!pendingSlashUiAction) &&
-    (input.trim().length > 0 || (!isMemberSession && (attachments.length > 0 || hasWorkspaceReferences)))
+    hasComposerContent
   const composerAttachments = useMemo(
     () => [
       ...attachments,
@@ -1623,14 +1626,14 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                   send without a word next to it. Dropping the label is why the
                   name now lives only in `aria-label`, on both breakpoints. */}
               <Button
-                variant={!isMemberSession && isActive ? 'danger' : 'primary'}
+                variant={showStopAction ? 'danger' : 'primary'}
                 size="base"
                 shape="circle"
-                onClick={!isMemberSession && isActive ? () => stopGeneration(activeTabId!) : handleSubmit}
-                disabled={!isMemberSession && isActive ? false : !canSubmit}
-                aria-label={!isMemberSession && isActive ? t('common.stop') : isMemberSession ? t('common.send') : t('common.run')}
+                onClick={showStopAction ? () => stopGeneration(activeTabId!) : handleSubmit}
+                disabled={showStopAction ? false : !canSubmit}
+                aria-label={showStopAction ? t('common.stop') : isMemberSession ? t('common.send') : t('common.run')}
                 title={
-                  !isMemberSession && isActive
+                  showStopAction
                     ? t('chat.stopTitle')
                     : isMemberSession
                       ? t('common.send')
@@ -1641,7 +1644,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                 className={`shrink-0 ${isMobileComposer ? 'h-11 w-11' : ''}`}
                 icon={(
                   <span className="material-symbols-outlined text-[18px]">
-                    {!isMemberSession && isActive ? 'stop' : 'arrow_upward'}
+                    {showStopAction ? 'stop' : 'arrow_upward'}
                   </span>
                 )}
               />

@@ -811,6 +811,81 @@ describe('ChatInput file mentions', () => {
     })
   })
 
+  it.each([false, true])('switches the shared action with draft content and queues by click (mobile=%s)', async (mobile) => {
+    viewportMocks.isMobile = mobile
+    render(<ChatInput />)
+    act(() => useChatStore.getState().handleServerMessage(sessionId, { type: 'status', state: 'streaming' }))
+
+    const actions = within(screen.getByTestId('chat-input-toolbar-trailing'))
+    expect(actions.getByRole('button', { name: 'Stop' })).toBeEnabled()
+    setComposerText('change direction', 16)
+    const send = actions.getByRole('button', { name: 'Run' })
+    expect(actions.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
+    if (mobile) expect(send).toHaveClass('h-11', 'w-11')
+    fireEvent.click(send)
+
+    expect(getComposerText()).toBe('')
+    expect(screen.getByTestId('pending-user-message')).toHaveTextContent('change direction')
+    expect(mocks.wsSend).not.toHaveBeenCalledWith(sessionId, expect.objectContaining({ type: 'stop_generation' }))
+    expect(mocks.wsSend).not.toHaveBeenCalledWith(sessionId, expect.objectContaining({ type: 'user_message' }))
+    expect(actions.getByRole('button', { name: 'Stop' })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: /Guide now/i }))
+    expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, {
+      type: 'user_message', content: 'change direction', attachments: [], messageUuid: expect.any(String),
+    })
+    setComposerText('draft to clear', 14)
+    expect(actions.getByRole('button', { name: 'Run' })).toBeEnabled()
+    setComposerText('   ', 3)
+    fireEvent.click(actions.getByRole('button', { name: 'Stop' }))
+    expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, { type: 'stop_generation' })
+  })
+
+  it.each(['image', 'reference'])('queues content-only %s by click and sends it after completion', (kind) => {
+    viewportMocks.isMobile = true
+    render(<ChatInput />)
+    act(() => useChatStore.getState().handleServerMessage(sessionId, { type: 'status', state: 'streaming' }))
+    act(() => {
+      if (kind === 'image') {
+        useChatStore.getState().queueComposerPrefill(sessionId, {
+          text: '', mode: 'append',
+          attachments: [{ type: 'image', name: 'test.png', mimeType: 'image/png', data: 'data:image/png;base64,TEST' }],
+        })
+      } else {
+        useWorkspaceChatContextStore.getState().addReference(sessionId, {
+          kind: 'code-comment', path: 'src/a.ts', absolutePath: '/repo/src/a.ts', name: 'a.ts',
+          lineStart: 1, lineEnd: 1, note: 'Review this', quote: 'const a = 1',
+        })
+      }
+    })
+    expect(getComposerText()).toBe('')
+    const actions = within(screen.getByTestId('chat-input-toolbar-trailing'))
+    fireEvent.click(actions.getByRole('button', { name: 'Run' }))
+    expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(1)
+    expect(mocks.wsSend).not.toHaveBeenCalledWith(sessionId, expect.objectContaining({ type: 'stop_generation' }))
+    expect(actions.getByRole('button', { name: 'Stop' })).toBeEnabled()
+    act(() => useChatStore.getState().handleServerMessage(sessionId, {
+      type: 'message_complete', usage: { input_tokens: 1, output_tokens: 2 },
+    }))
+    expect(mocks.wsSend.mock.calls.filter(([, message]) => message.type === 'user_message')).toHaveLength(1)
+    expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(0)
+  })
+
+  it('keeps content on the send action when the workspace is unavailable during output', () => {
+    render(<ChatInput />)
+    act(() => useChatStore.getState().handleServerMessage(sessionId, { type: 'status', state: 'streaming' }))
+    setComposerText('keep this draft', 15)
+    act(() => useSessionStore.setState({
+      sessions: useSessionStore.getState().sessions.map((session) => ({ ...session, workDirExists: false })),
+    }))
+    const actions = within(screen.getByTestId('chat-input-toolbar-trailing'))
+    expect(actions.getByRole('button', { name: 'Run' })).toBeDisabled()
+    expect(actions.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
+    expect(getComposerText()).toBe('keep this draft')
+    setComposerText('', 0)
+    expect(actions.getByRole('button', { name: 'Stop' })).toBeEnabled()
+  })
+
   it('queues prompts submitted while a turn is running until the user guides them', async () => {
     useChatStore.setState({
       sessions: {
