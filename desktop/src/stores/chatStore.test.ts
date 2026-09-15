@@ -3726,12 +3726,11 @@ describe('chatStore history mapping', () => {
     } finally { vi.useRealTimers() }
   })
 
-  it('retries timed out runtime sync when guiding and delivers the selected queued message during a running turn', () => {
+  it('retries timed out runtime sync when guiding and delivers the selected queued message on an idle session', () => {
     vi.useFakeTimers()
     try {
       useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ chatState: 'idle' }) } })
       const store = useChatStore.getState()
-      store.handleServerMessage(TEST_SESSION_ID, { type: 'status', state: 'thinking' })
       store.setSessionRuntime(TEST_SESSION_ID, { providerId: 'a', modelId: 'shared' })
       const old = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
       store.queueUserMessage(TEST_SESSION_ID, { content: 'leave queued', displayContent: 'leave queued' })
@@ -3753,7 +3752,6 @@ describe('chatStore history mapping', () => {
   it.each([false, true])('remembers pending guide intent without sending cancelled input (cancel=%s)', (cancel) => {
     useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ chatState: 'idle' }) } })
     const store = useChatStore.getState()
-    store.handleServerMessage(TEST_SESSION_ID, { type: 'status', state: 'thinking' })
     store.setSessionRuntime(TEST_SESSION_ID, { providerId: 'a', modelId: 'shared' })
     const pending = useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig!
     const id = store.queueUserMessage(TEST_SESSION_ID, { content: 'pending guide', displayContent: 'pending guide' })
@@ -3762,6 +3760,25 @@ describe('chatStore history mapping', () => {
     expect(sendMock.mock.calls.filter(call => call[1]?.type === 'user_message')).toHaveLength(0)
     store.handleServerMessage(TEST_SESSION_ID, { type: 'runtime_config_applied', requestId: pending.requestId, ...pending.selection })
     expect(sendMock.mock.calls.filter(call => call[1]?.type === 'user_message')).toHaveLength(cancel ? 0 : 1)
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.runtimeGuideMessageId).toBeUndefined()
+  })
+
+  it('delivers a queued message while a turn runs even when a runtime change is still pending', () => {
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ chatState: 'idle' }) } })
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'status', state: 'thinking' })
+    store.setSessionRuntime(TEST_SESSION_ID, { providerId: 'a', modelId: 'shared' })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.pendingRuntimeConfig).toBeDefined()
+    const id = store.queueUserMessage(TEST_SESSION_ID, { content: 'remote follow-up', displayContent: 'remote follow-up' })
+    const queued = useChatStore.getState().sessions[TEST_SESSION_ID]!.queuedUserMessages!.find(message => message.id === id)!
+    store.sendQueuedUserMessage(TEST_SESSION_ID, id)
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
+      type: 'user_message',
+      messageUuid: queued.messageUuid,
+      content: 'remote follow-up',
+      attachments: undefined,
+    })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.queuedUserMessages).toHaveLength(0)
     expect(useChatStore.getState().sessions[TEST_SESSION_ID]!.runtimeGuideMessageId).toBeUndefined()
   })
 

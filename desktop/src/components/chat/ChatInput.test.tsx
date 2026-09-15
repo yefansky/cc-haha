@@ -2253,9 +2253,17 @@ describe('ChatInput file mentions', () => {
       expect(userSends()).toHaveLength(0)
       const queued = useChatStore.getState().sessions[sessionId]!.queuedUserMessages![0]!
       act(() => store.sendQueuedUserMessage(sessionId, queued.id))
+      if (running) {
+        // A running turn cannot wait for a runtime change that only lands at the
+        // next boundary: the follow-up goes out now and the queue drains. Holding
+        // it would leave remote clients with a composer that sends nothing.
+        expect(userSends()).toHaveLength(1)
+        expect(userSends()[0]![1]).toMatchObject({ content: 'Keep this correction queued', messageUuid: queued.messageUuid })
+        expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(0)
+        return
+      }
       expect(userSends()).toHaveLength(0)
       expect(useChatStore.getState().sessions[sessionId]!.queuedUserMessages).toHaveLength(1)
-      if (running) act(() => store.handleServerMessage(sessionId, { type: 'status', state: 'idle' }))
       act(() => store.setSessionRuntime(sessionId, selection))
       const retry = useChatStore.getState().sessions[sessionId]!.pendingRuntimeConfig!
       const ack = { type: 'runtime_config_applied' as const, requestId: retry.requestId, ...selection }

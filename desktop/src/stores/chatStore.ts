@@ -3044,7 +3044,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const session = get().sessions[sessionId]
     const queuedMessage = (session?.queuedUserMessages ?? []).find((message) => message.id === messageId)
     if (!session || !queuedMessage) return
-    if (session.pendingRuntimeConfig || session.runtimeConfigError) {
+    // A runtime change can only take effect at a turn boundary, so it may stay
+    // unconfirmed for as long as the running turn lasts. Holding input that long
+    // leaves remote clients with a composer that silently accepts nothing, so the
+    // hold only applies while the session is idle — there the next turn really
+    // would start with the model the user is still switching away from. Messages
+    // sent during a running turn travel as follow-ups and the pending change
+    // lands later.
+    if (session.chatState === 'idle'
+        && (session.pendingRuntimeConfig || session.runtimeConfigError)) {
       set(state => ({ sessions: updateSessionIn(state.sessions, sessionId, () => ({
         runtimeGuideMessageId: messageId,
       })) }))
