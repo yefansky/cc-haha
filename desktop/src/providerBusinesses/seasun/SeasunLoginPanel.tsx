@@ -8,12 +8,13 @@ import { useSeasunStore } from './store'
 export function SeasunLoginPanel() {
   const t = useTranslation()
   const { status, busy, cancelling, error, refresh, login, cancel } = useSeasunStore()
-  const { providers, activeId, activateProvider } = useProviderStore()
+  const { providers, activeId, activateProvider, refreshModelCatalog, modelRefreshStatus } = useProviderStore()
   const [switching, setSwitching] = useState(false)
   const [switchFailed, setSwitchFailed] = useState(false)
   const desktopLogin = !!getDesktopHost().providerBusinesses?.seasun
   const provider = providers.find(item => item.presetId === 'seasun' && (!status?.providerId || item.id === status.providerId))
   const models = provider?.modelCatalog ?? []
+  const refreshStatus = provider ? modelRefreshStatus[provider.id] : undefined
   const active = !!provider && activeId === provider.id
   useEffect(() => { void refresh() }, [refresh])
 
@@ -43,10 +44,20 @@ export function SeasunLoginPanel() {
       </Button>}
       {desktopLogin && busy && <Button size="sm" variant="secondary" disabled={cancelling} onClick={() => void cancel()}>{t('settings.seasun.cancel')}</Button>}
       <Button size="sm" variant="secondary" disabled={busy} onClick={() => void refresh()}>{t('settings.seasun.refresh')}</Button>
+      {provider && <Button size="sm" variant="secondary" disabled={busy || refreshStatus?.pending} onClick={() => void refreshModelCatalog(provider.id)}>
+        {t(refreshStatus?.pending ? 'settings.seasun.refreshingModels' : 'settings.seasun.refreshModels')}
+      </Button>}
       {provider && !active && <Button size="sm" variant="secondary" disabled={busy || switching || !models.length || status?.modelAccess === 'unassigned'} onClick={() => void activate()}>
         {t('settings.seasun.setDefault')}
       </Button>}
     </div>
+    {provider && <div role="status" className="text-xs text-[var(--color-text-secondary)]">
+      {refreshStatus?.reconnectRequired ? t('settings.seasun.modelReconnectRequired')
+        : refreshStatus?.failed ? t('settings.seasun.modelRefreshFailed')
+          : refreshStatus?.updatedAt ? t('settings.seasun.modelsUpdated', { time: new Date(refreshStatus.updatedAt).toLocaleTimeString() })
+            : t('settings.seasun.modelRefreshOnStartup')}
+      {refreshStatus?.defaultChanged && <p>{t('settings.seasun.modelDefaultChanged')}</p>}
+    </div>}
     {models.length > 0 && <details className="rounded-[var(--radius-md)] border border-[var(--color-border-separator)] p-3">
       <summary className="cursor-pointer focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]">{t('settings.seasun.models', { count: models.length })}</summary>
       <ul className="mt-2 flex flex-col gap-1 text-[var(--color-text-secondary)]">{models.map(model => <li key={model.id}>{model.name || model.id}</li>)}</ul>

@@ -37,6 +37,10 @@ export const useSeasunStore = create<SeasunState>((set, get) => ({
       if (current !== operation) return
       set({ status, error: status.errorCode === 'cancel_unconfirmed' ? 'cancel_unconfirmed' : status.phase === 'error' ? 'login_failed' : null })
       await get().refresh(false)
+      if (current === operation && status.phase === 'connected' && status.providerId &&
+        useProviderStore.getState().modelRefreshStatus[status.providerId]?.failed) {
+        await useProviderStore.getState().refreshModelCatalog(status.providerId)
+      }
     } catch { if (current === operation) set({ error: 'login_failed' }) }
     finally { if (current === operation) set({ busy: false }) }
   },

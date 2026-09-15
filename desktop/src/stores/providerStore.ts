@@ -32,7 +32,7 @@ import type { RuntimeSelection } from '../types/runtime'
 
 type ProviderStore = {
   modelRefreshAttempted: string[]
-  modelRefreshStatus: Record<string, { pending: boolean; updatedAt?: number; failed?: boolean; defaultChanged?: boolean }>
+  modelRefreshStatus: Record<string, { pending: boolean; updatedAt?: number; failed?: boolean; defaultChanged?: boolean; reconnectRequired?: boolean }>
   refreshModelCatalog: (id: string) => Promise<void>
   providers: SavedProvider[]
   providerOrder: string[]
@@ -173,6 +173,7 @@ function refreshConnectedSessionsForProvider(provider: SavedProvider, activeId: 
 
 const modelRefreshRequests = new Map<string, Promise<void>>()
 let providerListRequest = 0
+let latestProviderList: Promise<void> = Promise.resolve()
 
 export const useProviderStore = create<ProviderStore>((set, get) => ({
   modelRefreshAttempted: [],
@@ -189,8 +190,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         set(state => ({ modelRefreshStatus: { ...state.modelRefreshStatus, [id]: {
           pending: false, updatedAt: Date.now(), defaultChanged: !!before && JSON.stringify(before.models) !== JSON.stringify(provider.models),
         } } }))
-      } catch {
-        set(state => ({ modelRefreshStatus: { ...state.modelRefreshStatus, [id]: { ...state.modelRefreshStatus[id], pending: false, failed: true } } }))
+      } catch (error) {
+        const reconnectRequired = error instanceof Error && 'body' in error &&
+          (error.body as { error?: string } | null)?.error === 'PROVIDER_RECONNECT_REQUIRED'
+        set(state => ({ modelRefreshStatus: { ...state.modelRefreshStatus, [id]: { ...state.modelRefreshStatus[id], pending: false, failed: true, reconnectRequired } } }))
       }
     })()
     modelRefreshRequests.set(id, pending)
@@ -208,35 +211,40 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   fetchProviders: async (options) => {
     const request = ++providerListRequest
     set({ isLoading: true, error: null })
-    try {
-      const { providers, activeId, providerOrder, modelRefreshProviderIds = [] } = await providersApi.list()
-      if (request !== providerListRequest) {
-        if (options?.throwOnError) throw new Error('Provider list refresh superseded')
-        return
+    const pending = (async () => {
+      try {
+        const { providers, activeId, providerOrder, modelRefreshProviderIds = [] } = await providersApi.list()
+        if (request !== providerListRequest) {
+          // Another provider may finish at the same time. Its newer reload owns
+          // the list, and both refreshes must observe that reload's actual result.
+          return await latestProviderList
+        }
+        set({
+          providers,
+          providerOrder: normalizeProviderOrder(providerOrder, providers),
+          activeId,
+          hasLoadedProviders: true,
+          isLoading: false,
+        })
+        for (const id of modelRefreshProviderIds) {
+          if (get().modelRefreshAttempted.includes(id)) continue
+          set(state => ({ modelRefreshAttempted: [...state.modelRefreshAttempted, id] }))
+          void get().refreshModelCatalog(id)
+        }
+      } catch (err) {
+        if (request !== providerListRequest) {
+          return await latestProviderList
+        }
+        set({
+          isLoading: false,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        throw err
       }
-      set({
-        providers,
-        providerOrder: normalizeProviderOrder(providerOrder, providers),
-        activeId,
-        hasLoadedProviders: true,
-        isLoading: false,
-      })
-      for (const id of modelRefreshProviderIds) {
-        if (get().modelRefreshAttempted.includes(id)) continue
-        set(state => ({ modelRefreshAttempted: [...state.modelRefreshAttempted, id] }))
-        void get().refreshModelCatalog(id)
-      }
-    } catch (err) {
-      if (request !== providerListRequest) {
-        if (options?.throwOnError) throw err
-        return
-      }
-      set({
-        isLoading: false,
-        error: err instanceof Error ? err.message : String(err),
-      })
-      if (options?.throwOnError) throw err
-    }
+    })()
+    latestProviderList = pending
+    try { await pending }
+    catch (err) { if (options?.throwOnError) throw err }
   },
 
   createProvider: async (input) => {

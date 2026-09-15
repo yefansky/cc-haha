@@ -20,9 +20,13 @@ describe('registered Seasun business UI', () => {
   let access: 'ready' | 'unassigned' | 'unknown'
   let activeId: string
   let requestPaths: string[]
+  let savedProvider: typeof provider
+  let refreshError: string | undefined
+  let autoRefresh: boolean
   const status = () => parseSeasunStatus({ phase: connected ? 'connected' : 'idle', identityConnected: connected, loggedIn: connected, modelAccess: access, providerId: connected ? provider.id : undefined, active: activeId === provider.id })
   beforeEach(() => {
     connected = false; access = 'unknown'; activeId = 'other-test'; requestPaths = []
+    savedProvider = structuredClone(provider); refreshError = undefined; autoRefresh = false
     useSeasunStore.setState(initialSeasun)
     useProviderStore.setState({ ...initialProviders, providers: [], activeId: null })
     useSettingsStore.setState({ locale: 'zh' })
@@ -34,7 +38,12 @@ describe('registered Seasun business UI', () => {
       const url = new URL(raw); requestPaths.push(`${init?.method || 'GET'} ${url.pathname}`)
       if (url.pathname === '/api/provider-integrations/seasun/status') return Response.json(status())
       if (url.pathname === '/api/kscc-oauth') return Response.json({ loggedIn: false, pending: false, active: false })
-      if (url.pathname === '/api/providers') return Response.json({ providers: connected ? [provider] : [], activeId })
+      if (url.pathname === '/api/providers') return Response.json({ providers: connected ? [savedProvider] : [], activeId, modelRefreshProviderIds: autoRefresh && connected ? [provider.id] : [] })
+      if (url.pathname === `/api/providers/${provider.id}/refresh-models`) {
+        if (refreshError) return Response.json({ error: refreshError, message: 'Refresh unavailable' }, { status: 401 })
+        savedProvider = { ...savedProvider, modelCatalog: [{ id: 'new-seasun-model', capabilities: [] }] }
+        return Response.json({ provider: savedProvider })
+      }
       if (url.pathname === `/api/providers/${provider.id}/activate`) { activeId = provider.id; return Response.json({ ok: true }) }
       if (url.pathname === '/api/providers/other-test/activate') { activeId = 'other-test'; return Response.json({ ok: true }) }
       if (url.pathname === '/api/models/current') return Response.json({ model: { id: models[0], name: models[0] } })
@@ -76,6 +85,43 @@ describe('registered Seasun business UI', () => {
     expect(screen.getByText('模型权限尚未分配，已保留账号连接。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '设为默认' })).toBeDisabled()
     expect(useProviderStore.getState().providers).toHaveLength(1)
+  })
+
+  it('automatically refreshes Seasun once and displays added and removed models without activation', async () => {
+    connected = true; autoRefresh = true
+    render(<ProviderBusinessSections />); await act(flush)
+    expect(screen.getByText('new-seasun-model')).toBeInTheDocument()
+    expect(screen.queryByText(models[0]!)).not.toBeInTheDocument()
+    expect(screen.getByText(/模型已更新/)).toBeInTheDocument()
+    await act(async () => { await useSeasunStore.getState().refresh(); await flush() })
+    expect(requestPaths.filter(path => path.endsWith('/refresh-models'))).toHaveLength(1)
+    expect(requestPaths.some(path => path.endsWith('/activate'))).toBe(false)
+    expect(useProviderStore.getState().activeId).toBe('other-test')
+  })
+
+  it('explains old-login migration, retains cached models and retries through the manual model refresh button', async () => {
+    connected = true; autoRefresh = true; refreshError = 'PROVIDER_RECONNECT_REQUIRED'
+    render(<ProviderBusinessSections />); await act(flush)
+    expect(screen.getByText(/请重新连接 Seasun 以启用模型同步/)).toBeInTheDocument()
+    for (const model of models) expect(screen.getByText(model)).toBeInTheDocument()
+    refreshError = undefined
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '刷新模型' })); await flush() })
+    expect(screen.getByText('new-seasun-model')).toBeInTheDocument()
+    expect(screen.queryByText(/请重新连接 Seasun 以启用模型同步/)).not.toBeInTheDocument()
+    expect(requestPaths.filter(path => path.endsWith('/refresh-models'))).toHaveLength(2)
+    expect(useProviderStore.getState().activeId).toBe('other-test')
+  })
+
+  it('clears the reconnect hint after the user completes a new login', async () => {
+    connected = true; autoRefresh = true; refreshError = 'PROVIDER_RECONNECT_REQUIRED'
+    render(<ProviderBusinessSections />); await act(flush)
+    expect(screen.getByText(/请重新连接 Seasun 以启用模型同步/)).toBeInTheDocument()
+    window.desktopHost!.providerBusinesses!.seasun.login = vi.fn(async () => { refreshError = undefined; return status() })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新连接' })); await flush() })
+    expect(screen.queryByText(/请重新连接 Seasun 以启用模型同步/)).not.toBeInTheDocument()
+    expect(screen.getByText(/模型已更新/)).toBeInTheDocument()
+    expect(screen.getByText('new-seasun-model')).toBeInTheDocument()
+    expect(useProviderStore.getState().activeId).toBe('other-test')
   })
 
   it('explains the desktop login requirement in H5 while retaining existing provider use', async () => {

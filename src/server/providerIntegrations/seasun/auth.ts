@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import type { ProviderAuthorization, ProviderLoginAttempt, ProviderLoginStatus } from '../types.js'
 import { exchangeSeasunCallback, SEASUN_GATEWAY, SEASUN_LOGIN } from './protocol.js'
+import { clearSeasunCredentials, saveSeasunCredentials } from './credentials.js'
 
 type Attempt = ProviderLoginAttempt & { expiresAt: number; controller: AbortController; used: boolean; committing: boolean; operation?: Promise<ProviderLoginStatus> }
 type Options = { now?: () => number; exchange?: typeof exchangeSeasunCallback; save?: (value: ProviderAuthorization) => Promise<{ id: string }> }
@@ -85,8 +86,10 @@ export class SeasunAuthService {
           const { ProviderService } = await import('../../services/providerService.js')
           return new ProviderService().upsertIntegratedProvider('seasun', authorization)
         })
-        await save({ apiKey: result.apiKey, baseUrl: SEASUN_GATEWAY, modelCatalog: result.modelCatalog })
-      }
+        const provider = await save({ apiKey: result.apiKey, baseUrl: SEASUN_GATEWAY, modelCatalog: result.modelCatalog })
+        if (result.credentials) await saveSeasunCredentials(provider.id, result.apiKey, result.credentials)
+        else await clearSeasunCredentials()
+      } else await clearSeasunCredentials()
       const file = this.statePath()
       await fs.mkdir(path.dirname(file), { recursive: true })
       await fs.writeFile(file, JSON.stringify({ version: 1, identityConnected: true, updatedAt: this.now() }), { mode: 0o600 })

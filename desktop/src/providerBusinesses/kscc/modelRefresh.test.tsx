@@ -83,6 +83,19 @@ it('a new client startup refreshes again even after the previous successful sync
   expect(refresh).toHaveBeenCalledTimes(2)
 })
 
+it('refreshes two providers together without reporting the superseded list request as a failure', async () => {
+  const second = { ...structuredClone(provider), id: 'seasun-test', presetId: 'seasun' }
+  vi.mocked(providersApi.list).mockResolvedValue({ providers: [saved, second], activeId: provider.id, modelRefreshProviderIds: [provider.id, second.id] })
+  vi.spyOn(providersApi, 'refreshModelCatalog').mockImplementation(async id => ({ provider: id === second.id ? second : saved }))
+  await useProviderStore.getState().fetchProviders()
+  await Promise.all([provider.id, second.id].map(id => useProviderStore.getState().refreshModelCatalog(id)))
+  for (const id of [provider.id, second.id]) {
+    expect(useProviderStore.getState().modelRefreshStatus[id]).toMatchObject({ pending: false, updatedAt: expect.any(Number) })
+    expect(useProviderStore.getState().modelRefreshStatus[id]?.failed).not.toBe(true)
+  }
+  expect(useProviderStore.getState().activeId).toBe(provider.id)
+})
+
 it('does not report success when the saved catalog cannot be reloaded after the POST', async () => {
   vi.spyOn(providersApi, 'refreshModelCatalog').mockImplementation(async () => {
     vi.mocked(providersApi.list).mockRejectedValue(new Error('list offline'))
@@ -92,6 +105,16 @@ it('does not report success when the saved catalog cannot be reloaded after the 
   await useProviderStore.getState().refreshModelCatalog(provider.id)
   expect(useProviderStore.getState().modelRefreshStatus[provider.id]).toMatchObject({ pending: false, failed: true })
   expect(useProviderStore.getState().modelRefreshStatus[provider.id]?.updatedAt).toBeUndefined()
+})
+
+it('both simultaneous refreshes report failure when their newest shared reload fails', async () => {
+  const second = { ...structuredClone(provider), id: 'seasun-test', presetId: 'seasun' }
+  vi.mocked(providersApi.list).mockResolvedValueOnce({ providers: [saved, second], activeId: null, modelRefreshProviderIds: [provider.id, second.id] })
+    .mockRejectedValue(new Error('list offline'))
+  vi.spyOn(providersApi, 'refreshModelCatalog').mockImplementation(async id => ({ provider: id === second.id ? second : saved }))
+  await useProviderStore.getState().fetchProviders()
+  await Promise.all([provider.id, second.id].map(id => useProviderStore.getState().refreshModelCatalog(id)))
+  for (const id of [provider.id, second.id]) expect(useProviderStore.getState().modelRefreshStatus[id]).toMatchObject({ pending: false, failed: true })
 })
 
 it('marks an existing session model unavailable after removal without silently switching it', async () => {

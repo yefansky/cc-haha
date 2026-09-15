@@ -3,6 +3,7 @@ import { SEASUN_GATEWAY } from './protocol.js'
 
 export const seasunIntegration: ProviderIntegration = {
   id: 'seasun', presetId: 'seasun', activateOnAuthorization: false, saveOnlyOnAuthorization: true,
+  fetchModelCatalog: async provider => (await import('./credentials.js')).refreshSeasunModelCatalog(provider),
   validateTransport(transport) {
     const suffix = transport.apiFormat === 'openai_responses' ? '/responses' : transport.apiFormat === 'openai_chat' ? '/v1/chat/completions' : '/anthropic/v1/messages'
     if (transport.endpoint !== SEASUN_GATEWAY + suffix) throw new Error('Invalid Seasun model endpoint')
