@@ -270,6 +270,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     hasLoadedProviders,
     isLoading: providersLoading,
     fetchProviders,
+    modelRefreshStatus,
   } = useProviderStore()
   const claudeOAuthStatus = useHahaOAuthStore((s) => s.status)
   const fetchClaudeOAuthStatus = useHahaOAuthStore((s) => s.fetchStatus)
@@ -471,8 +472,11 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     : null
 
   const needsProviderConfiguration = isRuntimeScoped && providerChoices.length === 0
+  const catalogModelUnavailable = activeRuntimeSelection?.providerId
+    && modelRefreshStatus[activeRuntimeSelection.providerId]?.updatedAt
+    && !selectedProviderChoice?.models.some(model => model.id === activeRuntimeSelection.modelId)
   const buttonModelLabel = isRuntimeScoped
-    ? selectedRuntimeModel?.name
+    ? (catalogModelUnavailable ? t('model.catalogUnavailable', { model: selectedRuntimeModel?.name ?? '' }) : selectedRuntimeModel?.name)
       ?? (needsProviderConfiguration ? t('model.configureProvider') : t('model.selectModel'))
     : selectedModel?.name ?? t('model.selectModel')
   const buttonProviderLabel = isRuntimeScoped

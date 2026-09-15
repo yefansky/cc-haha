@@ -14,7 +14,7 @@ import type {
 } from '../types/provider'
 
 type ProvidersResponse = { providers: SavedProvider[]; activeId: string | null }
-type ProvidersListResponse = ProvidersResponse & { providerOrder?: string[] }
+type ProvidersListResponse = ProvidersResponse & { providerOrder?: string[]; modelRefreshProviderIds?: string[] }
 type ProvidersReorderResponse = { providers: SavedProvider[]; providerOrder?: string[] }
 type ProviderResponse = { provider: SavedProvider }
 type TestResultResponse = { result: ProviderTestResult }
@@ -25,6 +25,9 @@ type AuthStatusResponse = {
 }
 
 export const providersApi = {
+  refreshModelCatalog(id: string) {
+    return api.post<ProviderResponse>(`/api/providers/${encodeURIComponent(id)}/refresh-models`)
+  },
   list() {
     return api.get<ProvidersListResponse>('/api/providers')
   },

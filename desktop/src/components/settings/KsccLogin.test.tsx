@@ -12,7 +12,7 @@ vi.mock('@/providerBusinesses/kscc/api', () => ({
   ksccOAuthApi: { start: startMock, status: statusMock },
 }))
 
-import { KsccLogin } from './KsccLogin'
+import { KsccLogin } from '@/providerBusinesses/kscc/KsccLogin'
 import { useKsccOAuthStore } from '../../stores/ksccOAuthStore'
 import { useProviderStore } from '../../stores/providerStore'
 import { browserHost } from '../../lib/desktopHost/browserHost'
@@ -116,6 +116,7 @@ describe('KsccLogin', () => {
 
     await waitFor(() => expect(useKsccOAuthStore.getState().status?.active).toBe(true))
     await waitFor(() => expect(container.textContent).toContain('KSCC'))
-    expect(container.querySelectorAll('button')).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: '切换为 KSCC' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '刷新模型' })).toBeInTheDocument()
   })
 })

@@ -42,6 +42,7 @@ export type ProviderIntegration = {
   ) => Omit<SavedProvider, 'id' | 'presetId'>
   activateOnAuthorization?: boolean
   saveOnlyOnAuthorization?: boolean
+  fetchModelCatalog?: (provider: SavedProvider) => Promise<NonNullable<SavedProvider['modelCatalog']>>
   validateTransport?: (transport: ProviderModelTransport) => void
   managedEnvKeys?: readonly string[]
   buildRuntimeEnv?: (context: { provider: SavedProvider; workDir: string }) => Record<string, string>

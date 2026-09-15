@@ -31,6 +31,9 @@ import type { ProviderPreset } from '../types/providerPreset'
 import type { RuntimeSelection } from '../types/runtime'
 
 type ProviderStore = {
+  modelRefreshAttempted: string[]
+  modelRefreshStatus: Record<string, { pending: boolean; updatedAt?: number; failed?: boolean; defaultChanged?: boolean }>
+  refreshModelCatalog: (id: string) => Promise<void>
   providers: SavedProvider[]
   providerOrder: string[]
   activeId: string | null
@@ -39,7 +42,7 @@ type ProviderStore = {
   isLoading: boolean
   error: string | null
 
-  fetchProviders: () => Promise<void>
+  fetchProviders: (options?: { throwOnError?: boolean }) => Promise<void>
   createProvider: (input: CreateProviderInput) => Promise<SavedProvider>
   updateProvider: (id: string, input: UpdateProviderInput) => Promise<SavedProvider>
   deleteProvider: (id: string) => Promise<void>
@@ -168,7 +171,32 @@ function refreshConnectedSessionsForProvider(provider: SavedProvider, activeId: 
   }
 }
 
+const modelRefreshRequests = new Map<string, Promise<void>>()
+let providerListRequest = 0
+
 export const useProviderStore = create<ProviderStore>((set, get) => ({
+  modelRefreshAttempted: [],
+  modelRefreshStatus: {},
+  refreshModelCatalog: (id) => {
+    const existing = modelRefreshRequests.get(id)
+    if (existing) return existing
+    const before = get().providers.find(provider => provider.id === id)
+    set(state => ({ modelRefreshStatus: { ...state.modelRefreshStatus, [id]: { ...state.modelRefreshStatus[id], pending: true, failed: false } } }))
+    const pending = (async () => {
+      try {
+        const { provider } = await providersApi.refreshModelCatalog(id)
+        await get().fetchProviders({ throwOnError: true })
+        set(state => ({ modelRefreshStatus: { ...state.modelRefreshStatus, [id]: {
+          pending: false, updatedAt: Date.now(), defaultChanged: !!before && JSON.stringify(before.models) !== JSON.stringify(provider.models),
+        } } }))
+      } catch {
+        set(state => ({ modelRefreshStatus: { ...state.modelRefreshStatus, [id]: { ...state.modelRefreshStatus[id], pending: false, failed: true } } }))
+      }
+    })()
+    modelRefreshRequests.set(id, pending)
+    void pending.finally(() => modelRefreshRequests.delete(id))
+    return pending
+  },
   providers: [],
   providerOrder: [...BUILT_IN_PROVIDER_IDS],
   activeId: null,
@@ -177,10 +205,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   isLoading: false,
   error: null,
 
-  fetchProviders: async () => {
+  fetchProviders: async (options) => {
+    const request = ++providerListRequest
     set({ isLoading: true, error: null })
     try {
-      const { providers, activeId, providerOrder } = await providersApi.list()
+      const { providers, activeId, providerOrder, modelRefreshProviderIds = [] } = await providersApi.list()
+      if (request !== providerListRequest) {
+        if (options?.throwOnError) throw new Error('Provider list refresh superseded')
+        return
+      }
       set({
         providers,
         providerOrder: normalizeProviderOrder(providerOrder, providers),
@@ -188,11 +221,21 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         hasLoadedProviders: true,
         isLoading: false,
       })
+      for (const id of modelRefreshProviderIds) {
+        if (get().modelRefreshAttempted.includes(id)) continue
+        set(state => ({ modelRefreshAttempted: [...state.modelRefreshAttempted, id] }))
+        void get().refreshModelCatalog(id)
+      }
     } catch (err) {
+      if (request !== providerListRequest) {
+        if (options?.throwOnError) throw err
+        return
+      }
       set({
         isLoading: false,
         error: err instanceof Error ? err.message : String(err),
       })
+      if (options?.throwOnError) throw err
     }
   },
 

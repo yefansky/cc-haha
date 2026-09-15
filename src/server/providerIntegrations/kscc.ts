@@ -15,6 +15,10 @@ export const ksccIntegration: ProviderIntegration = {
     status: () => runKsccAuth('status'),
   },
   activateOnAuthorization: true,
+  async fetchModelCatalog(provider) {
+    const { ksccOAuthService } = await import('../services/ksccOAuthService.js')
+    return ksccOAuthService.fetchModels(provider.apiKey, provider.baseUrl.replace(/\/+$/, ''))
+  },
   buildAuthorizedProvider(input, existing) {
     const ids = new Set(input.modelCatalog?.map(model => model.id) ?? [])
     const model = existing && ids.has(existing.models.main)

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   isTauriRuntime: false,
   isMobile: false,
   fetchAll: vi.fn(),
+  fetchProviders: vi.fn(),
   restoreTabs: vi.fn(),
   connectToSession: vi.fn(),
   setActiveTab: vi.fn(),
@@ -40,6 +41,10 @@ vi.mock('../../lib/desktopRuntime', () => ({
 vi.mock('../../stores/settingsStore', () => ({
   useSettingsStore: (selector: (state: { fetchAll: typeof mocks.fetchAll }) => unknown) =>
     selector({ fetchAll: mocks.fetchAll }),
+}))
+
+vi.mock('../../stores/providerStore', () => ({
+  useProviderStore: { getState: () => ({ fetchProviders: mocks.fetchProviders }) },
 }))
 
 vi.mock('../../hooks/useMobileViewport', () => ({
@@ -136,6 +141,7 @@ describe('AppShell boot flow', () => {
     mocks.isMobile = false
     mocks.initializeDesktopServerUrl.mockResolvedValue('http://127.0.0.1:3456')
     mocks.fetchAll.mockResolvedValue(undefined)
+    mocks.fetchProviders.mockResolvedValue(undefined)
     mocks.restoreTabs.mockResolvedValue(undefined)
     mocks.getDesktopUiPreferences.mockResolvedValue({
       exists: true,
@@ -191,6 +197,17 @@ describe('AppShell boot flow', () => {
     expect(screen.getByText('tabs loaded')).toBeInTheDocument()
     expect(screen.getByText('content loaded')).toBeInTheDocument()
     expect(screen.getByText('updates loaded')).toBeInTheDocument()
+  })
+
+  it('starts provider refresh after server initialization without blocking a non-chat startup', async () => {
+    let ready!: () => void
+    mocks.initializeDesktopServerUrl.mockImplementationOnce(() => new Promise<void>(resolve => { ready = resolve }))
+    mocks.fetchProviders.mockImplementationOnce(() => new Promise<void>(() => {}))
+    render(<AppShell />)
+    expect(mocks.fetchProviders).not.toHaveBeenCalled()
+    await act(async () => { ready() })
+    expect(await screen.findByText('content loaded')).toBeInTheDocument()
+    expect(mocks.fetchProviders).toHaveBeenCalledTimes(1)
   })
 
   it('moves the unchanged session sidebar to the far right from the layout preference', async () => {

@@ -6,6 +6,7 @@ import { UpdateChecker } from '@/components/layout/UpdateChecker'
 import { StatusDot } from '@/components/ui/Badge'
 import { IconButton } from '@/components/ui/IconButton'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { useProviderStore } from '@/stores/providerStore'
 import { useUIStore, type SettingsTab } from '../../stores/uiStore'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { useElectronWindowDragRegions } from '../../hooks/useElectronWindowDragRegions'
@@ -118,6 +119,7 @@ export function AppShell() {
 
         if (!cancelled) {
           setReady(true)
+          void useProviderStore.getState().fetchProviders()
         }
 
         if (desktopRuntime && !traceLaunch.windowMode) {

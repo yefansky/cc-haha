@@ -148,7 +148,7 @@ export class KsccOAuthService {
     }
   }
 
-  private async fetchModels(token: string, baseUrl: string): Promise<ProviderModelCatalogEntry[]> {
+  async fetchModels(token: string, baseUrl: string): Promise<ProviderModelCatalogEntry[]> {
     const payload = await this.requestJson<KsccModelResponse>(
       `${baseUrl}/cli/models`,
       'model lookup',
@@ -162,13 +162,21 @@ export class KsccOAuthService {
       },
     )
     if (payload.code === 401) throw new Error('KSCC authorization expired')
+    if ((payload.code !== undefined && payload.code !== 200) || !Array.isArray(payload.data)) {
+      throw new Error('KSCC model lookup returned an invalid response')
+    }
+    const seen = new Set<string>()
     const models = (payload.data ?? []).flatMap((item) => {
-      const id = item.model?.trim()
-      if (!id) return []
+      if (!item || typeof item.model !== 'string' || !item.model.trim()) {
+        throw new Error('KSCC model lookup returned an invalid model')
+      }
+      const id = item.model.trim()
+      if (seen.has(id)) return []
+      seen.add(id)
       return [{
         id,
         name: id,
-        ...(item.modelType ? { description: item.modelType } : {}),
+        ...(typeof item.modelType === 'string' ? { description: item.modelType } : {}),
         capabilities: [...KSCC_MODEL_CAPABILITIES],
       }]
     })

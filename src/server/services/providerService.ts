@@ -159,10 +159,71 @@ function appendNewProviderToOrder(providerOrder: string[], providerId: string, e
 }
 
 export class ProviderService {
+  private static catalogRefreshes = new Map<string, Promise<SavedProvider>>()
+  private static indexWrites = new Map<string, Promise<unknown>>()
   private static serverPort = 3456
   private managedSettingsService = new ManagedSettingsService()
 
   constructor(private readonly integrations: ProviderIntegrationRegistry = providerIntegrations) {}
+
+  // Serialize the short read/modify/write transaction, never the upstream request.
+  private mutateIndex<T>(operation: () => Promise<T>): Promise<T> {
+    const key = this.getIndexPath()
+    const previous = ProviderService.indexWrites.get(key) ?? Promise.resolve()
+    const pending = previous.catch(() => {}).then(operation)
+    ProviderService.indexWrites.set(key, pending)
+    void pending.finally(() => {
+      if (ProviderService.indexWrites.get(key) === pending) ProviderService.indexWrites.delete(key)
+    }).catch(() => {})
+    return pending
+  }
+
+  modelRefreshProviderIds(providers: SavedProvider[]): string[] {
+    return providers.filter(provider => this.integrations.forPreset(provider.presetId)?.fetchModelCatalog).map(provider => provider.id)
+  }
+
+  refreshModelCatalog(id: string): Promise<SavedProvider> {
+    const key = `${this.getIndexPath()}:${id}`
+    const existing = ProviderService.catalogRefreshes.get(key)
+    if (existing) return existing
+    const pending = this.fetchAndSaveModelCatalog(id)
+    ProviderService.catalogRefreshes.set(key, pending)
+    void pending.finally(() => {
+      if (ProviderService.catalogRefreshes.get(key) === pending) ProviderService.catalogRefreshes.delete(key)
+    }).catch(() => {})
+    return pending
+  }
+
+  private async fetchAndSaveModelCatalog(id: string): Promise<SavedProvider> {
+    const before = await this.getProvider(id)
+    const fetchCatalog = this.integrations.forPreset(before.presetId)?.fetchModelCatalog
+    if (!fetchCatalog) throw ApiError.badRequest('Provider does not support model refresh')
+    const modelCatalog = await fetchCatalog(before)
+    if (!modelCatalog.length) throw ApiError.badRequest('Provider returned no available models')
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex()
+      const position = index.providers.findIndex(provider => provider.id === id)
+      const current = index.providers[position]
+      if (!current) throw ApiError.notFound('Provider was removed during model refresh')
+      if (current.presetId !== before.presetId || current.apiKey !== before.apiKey || current.baseUrl !== before.baseUrl) {
+        throw ApiError.badRequest('Provider credentials changed during model refresh; retry')
+      }
+      const ids = new Set(modelCatalog.map(model => model.id))
+      const fallback = ids.has(current.models.main) ? current.models.main : modelCatalog[0]!.id
+      const models = { ...current.models }
+      for (const slot of Object.keys(models) as Array<keyof typeof models>) {
+        if (models[slot] && !ids.has(models[slot]!)) models[slot] = fallback
+      }
+      if (!models.main) models.main = fallback
+      const updated = { ...current, modelCatalog, models }
+      SavedProviderSchema.parse(updated)
+      index.providers[position] = updated
+      await this.writeIndex(index)
+      // Settings affect future launches only; no runtime/session switch is sent.
+      if (index.activeId === id) await this.syncToSettings(updated)
+      return updated
+    })
+  }
 
   static setServerPort(port: number): void {
     ProviderService.serverPort = port
@@ -248,7 +309,11 @@ export class ProviderService {
     return provider
   }
 
-  async addProvider(input: CreateProviderInput): Promise<SavedProvider> {
+  addProvider(input: CreateProviderInput): Promise<SavedProvider> {
+    return this.mutateIndex(() => this.addProviderInTransaction(input))
+  }
+
+  private async addProviderInTransaction(input: CreateProviderInput): Promise<SavedProvider> {
     const index = await this.readIndex()
 
     const provider = buildSavedProvider(input)
@@ -266,7 +331,11 @@ export class ProviderService {
    * failure cannot leave half the batch behind. The persisted shape is identical
    * to addProvider, so no storage migration is involved.
    */
-  async importProviders(inputs: CreateProviderInput[]): Promise<SavedProvider[]> {
+  importProviders(inputs: CreateProviderInput[]): Promise<SavedProvider[]> {
+    return this.mutateIndex(() => this.importProvidersInTransaction(inputs))
+  }
+
+  private async importProvidersInTransaction(inputs: CreateProviderInput[]): Promise<SavedProvider[]> {
     if (inputs.length === 0) return []
 
     const index = await this.readIndex()
@@ -283,7 +352,11 @@ export class ProviderService {
     return imported
   }
 
-  async upsertIntegratedProvider(integrationId: string, authorization: ProviderAuthorization): Promise<SavedProvider> {
+  upsertIntegratedProvider(integrationId: string, authorization: ProviderAuthorization): Promise<SavedProvider> {
+    return this.mutateIndex(() => this.upsertIntegratedProviderInTransaction(integrationId, authorization))
+  }
+
+  private async upsertIntegratedProviderInTransaction(integrationId: string, authorization: ProviderAuthorization): Promise<SavedProvider> {
     const integration = this.integrations.get(integrationId)
     if (!integration?.buildAuthorizedProvider) throw ApiError.badRequest('Provider integration does not accept authorization')
     const index = await this.readIndex()
@@ -307,7 +380,11 @@ export class ProviderService {
     return provider
   }
 
-  async updateProvider(id: string, input: UpdateProviderInput): Promise<SavedProvider> {
+  updateProvider(id: string, input: UpdateProviderInput): Promise<SavedProvider> {
+    return this.mutateIndex(() => this.updateProviderInTransaction(id, input))
+  }
+
+  private async updateProviderInTransaction(id: string, input: UpdateProviderInput): Promise<SavedProvider> {
     const index = await this.readIndex()
     const idx = index.providers.findIndex((p) => p.id === id)
     if (idx === -1) throw ApiError.notFound(`Provider not found: ${id}`)
@@ -363,7 +440,11 @@ export class ProviderService {
     return updated
   }
 
-  async deleteProvider(id: string): Promise<void> {
+  deleteProvider(id: string): Promise<void> {
+    return this.mutateIndex(() => this.deleteProviderInTransaction(id))
+  }
+
+  private async deleteProviderInTransaction(id: string): Promise<void> {
     const index = await this.readIndex()
     const idx = index.providers.findIndex((p) => p.id === id)
     if (idx === -1) throw ApiError.notFound(`Provider not found: ${id}`)
@@ -385,7 +466,11 @@ export class ProviderService {
    * in that case the saved providers are reordered inside the current display
    * order without moving the built-in official rows.
    */
-  async reorderProviders(orderedIds: string[]): Promise<{ providers: SavedProvider[]; providerOrder: string[] }> {
+  reorderProviders(orderedIds: string[]): Promise<{ providers: SavedProvider[]; providerOrder: string[] }> {
+    return this.mutateIndex(() => this.reorderProvidersInTransaction(orderedIds))
+  }
+
+  private async reorderProvidersInTransaction(orderedIds: string[]): Promise<{ providers: SavedProvider[]; providerOrder: string[] }> {
     const index = await this.readIndex()
 
     const currentSavedIds = savedProviderIds(index.providers)
@@ -410,7 +495,11 @@ export class ProviderService {
 
   // --- Activation ---
 
-  async activateProvider(id: string): Promise<void> {
+  activateProvider(id: string): Promise<void> {
+    return this.mutateIndex(() => this.activateProviderInTransaction(id))
+  }
+
+  private async activateProviderInTransaction(id: string): Promise<void> {
     const index = await this.readIndex()
     const provider = isOpenAIOfficialProviderId(id)
       ? OPENAI_OFFICIAL_PROVIDER
@@ -431,7 +520,11 @@ export class ProviderService {
     }
   }
 
-  async activateOfficial(): Promise<void> {
+  activateOfficial(): Promise<void> {
+    return this.mutateIndex(() => this.activateOfficialInTransaction())
+  }
+
+  private async activateOfficialInTransaction(): Promise<void> {
     const index = await this.readIndex()
     index.activeId = null
     await this.writeIndex(index)

@@ -126,12 +126,17 @@ export async function handleProvidersApi(
     if (!id) {
       if (req.method === 'GET') {
         const { providers, activeId } = await providerService.listProviders()
-        return Response.json({ providers, activeId })
+        return Response.json({ providers, activeId, modelRefreshProviderIds: providerService.modelRefreshProviderIds(providers) })
       }
       if (req.method === 'POST') {
         return await handleCreate(req)
       }
       throw methodNotAllowed(req.method)
+    }
+
+    if (action === 'refresh-models') {
+      if (req.method !== 'POST') throw methodNotAllowed(req.method)
+      return Response.json({ provider: await providerService.refreshModelCatalog(id) })
     }
 
     // /api/providers/:id/activate
