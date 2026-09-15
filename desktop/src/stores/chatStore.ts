@@ -1,3 +1,4 @@
+import { createMessageUuid } from '../lib/messageUuid'
 import { create, type StoreApi } from 'zustand'
 import { isModelReasoningEffort } from '../../../src/shared/modelReasoning'
 import { wsManager } from '../api/websocket'
@@ -2152,7 +2153,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const isMemberSession = !!useTeamStore.getState().getMemberBySessionId(sessionId)
     const messageUuid = isMemberSession
       ? undefined
-      : options?.messageUuid ?? crypto.randomUUID()
+      : options?.messageUuid ?? createMessageUuid()
     const hideDisplayContent = !isMemberSession && options?.hideDisplayContent === true
     const userFacingContent =
       hideDisplayContent
@@ -2332,7 +2333,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     if (keepUntilResolved) {
       if (!wsManager.sendIfOpen(sessionId, response)) return 'not-dispatched'
-      const responseAttemptId = crypto.randomUUID()
+      const responseAttemptId = createMessageUuid()
       let watchdogArmed = false
       set((s) => ({
         sessions: updateSessionIn(s.sessions, sessionId, (session) => {
@@ -2421,11 +2422,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           responseToSend = previousAttempt.response
         } else if (interaction.mode === 'retryable') {
           if (previousAttempt?.nextAction !== 'retry_new_attempt') return {}
-          attemptId = crypto.randomUUID()
+          attemptId = createMessageUuid()
           responseToSend = previousAttempt.response
         } else {
           if (previousAttempt && previousAttempt.nextAction !== 'edit_response') return {}
-          attemptId = crypto.randomUUID()
+          attemptId = createMessageUuid()
           responseToSend = freezeUserDecisionResponse(response)
         }
         const nextAttempt: UserDecisionResponseAttempt = Object.freeze({
@@ -2519,7 +2520,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   setSessionRuntime: (sessionId, selection) => {
-    const requestId = crypto.randomUUID()
+    const requestId = createMessageUuid()
     const previous = get().sessions[sessionId]
     const confirmed = previous?.confirmedRuntimeConfig ?? useSessionRuntimeStore.getState().selections[sessionId]
     if (previous?.runtimeConfigTimer) clearTimeout(previous.runtimeConfigTimer)
@@ -2990,7 +2991,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   queueUserMessage: (sessionId, message) => {
     const id = `queued-user-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const messageUuid = crypto.randomUUID()
+    const messageUuid = createMessageUuid()
     set((state) => {
       const session = state.sessions[sessionId] ?? createDefaultSessionState()
       return {

@@ -96,6 +96,7 @@ try {
   $sidecarSources = @(
     (Join-Path $repoRoot 'src\services\api\traceCapture.ts'),
     (Join-Path $repoRoot 'src\server\index.ts'),
+    (Join-Path $repoRoot 'src\server\staticH5.ts'),
     (Join-Path $repoRoot 'src\server\h5AccessPolicy.ts'),
     (Join-Path $repoRoot 'src\server\api\sessions.ts'),
     (Join-Path $repoRoot 'src\server\api\traces.ts'),

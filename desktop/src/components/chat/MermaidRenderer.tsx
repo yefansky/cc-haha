@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import DOMPurify from 'dompurify'
-import mermaid from 'mermaid'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 import { Modal } from '@/components/ui/Modal'
@@ -215,7 +214,7 @@ function getMermaidThemeColors(theme: ThemeMode): MermaidThemeColors {
   }
 }
 
-function initMermaid(theme: ThemeMode) {
+function initMermaid(mermaid: typeof import('mermaid')['default'], theme: ThemeMode) {
   const {
     textColor,
     mutedTextColor,
@@ -456,25 +455,24 @@ export function MermaidRenderer({ code }: Props) {
 
   useEffect(() => {
     let cancelled = false
-    const { lineColor } = initMermaid(theme)
-
     const id = `mermaid-${++mermaidIdCounter}`
     const renderCode = normalizeGeneratedFlowchartSyntax(code)
 
-    mermaid.render(id, renderCode).then(
-      ({ svg: renderedSvg }) => {
-        if (!cancelled) {
-          setSvg(normalizeMermaidSvg(renderedSvg, lineColor))
-          setError(null)
-        }
-      },
-      (err) => {
-        if (!cancelled) {
-          setError(String(err?.message || err))
-          setSvg(null)
-        }
-      },
-    )
+    // Diagram code is large; load it only when a diagram is actually displayed.
+    import('mermaid').then(async ({ default: mermaid }) => {
+      if (cancelled) return
+      const { lineColor } = initMermaid(mermaid, theme)
+      const { svg: renderedSvg } = await mermaid.render(id, renderCode)
+      if (!cancelled) {
+        setSvg(normalizeMermaidSvg(renderedSvg, lineColor))
+        setError(null)
+      }
+    }).catch((err) => {
+      if (!cancelled) {
+        setError(String(err?.message || err))
+        setSvg(null)
+      }
+    })
 
     return () => { cancelled = true }
   }, [code, theme])

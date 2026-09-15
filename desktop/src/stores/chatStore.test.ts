@@ -11399,6 +11399,28 @@ describe('chatStore history mapping', () => {
     },
   )
 
+  it.each(['idle', 'streaming'] as const)('sends through the queue over HTTP without crypto.randomUUID (%s)', (chatState) => {
+    vi.useFakeTimers()
+    const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
+    vi.stubGlobal('crypto', { getRandomValues })
+    try {
+      useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ chatState }) } })
+      const id = useChatStore.getState().queueUserMessage(TEST_SESSION_ID, {
+        content: 'HTTP gateway probe', displayContent: 'HTTP gateway probe',
+      })
+      const queued = useChatStore.getState().sessions[TEST_SESSION_ID]?.queuedUserMessages?.find(message => message.id === id)
+      expect(queued?.messageUuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+      useChatStore.getState().sendQueuedUserMessage(TEST_SESSION_ID, id)
+      expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, expect.objectContaining({
+        type: 'user_message', content: 'HTTP gateway probe', messageUuid: queued?.messageUuid,
+      }))
+    } finally {
+      vi.unstubAllGlobals()
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
   it('confirms a replay strictly by UUID even when a later pending message has identical content', () => {
     useChatStore.setState({
       sessions: {

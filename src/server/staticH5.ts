@@ -1,5 +1,21 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { gzip } from 'node:zlib'
+import { promisify } from 'node:util'
+
+const gzipAsync = promisify(gzip)
+const COMPRESSIBLE_ASSET_RE = /\.(?:js|css|html|json|svg|txt|map)$/i
+
+function acceptsGzip(value: string | null): boolean {
+  const encodings = (value ?? '').split(',').map((entry) => {
+    const [name, ...parameters] = entry.trim().toLowerCase().split(';')
+    const quality = parameters.find((parameter) => parameter.trim().startsWith('q='))
+    return { name, quality: quality ? Number(quality.trim().slice(2)) : 1 }
+  })
+  const selected = encodings.find((entry) => entry.name === 'gzip')
+    ?? encodings.find((entry) => entry.name === '*')
+  return !!selected && selected.quality > 0 && selected.quality <= 1
+}
 
 const CACHEABLE_ASSET_RE = /^\/assets\//
 
@@ -40,6 +56,19 @@ export async function handleStaticH5Request(req: Request, url: URL): Promise<Res
       ? 'public, max-age=31536000, immutable'
       : 'no-store',
   })
+
+  if (COMPRESSIBLE_ASSET_RE.test(filePath)) {
+    headers.set('Vary', 'Accept-Encoding')
+    const stat = await fs.stat(filePath)
+    if (stat.size >= 1024 && acceptsGzip(req.headers.get('Accept-Encoding'))) {
+      // Compress before the tunnel carries the bytes. Large H5 bundles otherwise
+      // dominate startup time on remote links. Never compress API responses here.
+      const compressed = await gzipAsync(await fs.readFile(filePath))
+      headers.set('Content-Encoding', 'gzip')
+      headers.set('Content-Length', String(compressed.byteLength))
+      return new Response(req.method === 'HEAD' ? null : compressed, { status: 200, headers })
+    }
+  }
 
   if (req.method === 'HEAD') {
     const stat = await fs.stat(filePath)
