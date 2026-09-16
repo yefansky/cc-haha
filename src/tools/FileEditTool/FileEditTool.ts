@@ -269,20 +269,8 @@ export const FileEditTool = buildTool({
     }
 
     const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
-    if (!readTimestamp || readTimestamp.isPartialView) {
-      return {
-        result: false,
-        behavior: 'ask',
-        message:
-          'File has not been read yet. Read it first before writing to it.',
-        meta: {
-          isFilePathAbsolute: String(isAbsolute(file_path)),
-        },
-        errorCode: 6,
-      }
-    }
-
-    // Check if file exists and get its last modified time
+    // A prior Read is optional: Edit decodes the file itself and matches old_string.
+    // Keep stale-read protection when an actual read snapshot is available.
     if (readTimestamp) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
       if (lastWriteTime > readTimestamp.timestamp) {
@@ -290,6 +278,7 @@ export const FileEditTool = buildTool({
         // without content changes (cloud sync, antivirus, etc.). For full reads,
         // compare content as a fallback to avoid false positives.
         const isFullRead =
+          !readTimestamp.isPartialView &&
           readTimestamp.offset === undefined &&
           readTimestamp.limit === undefined
         if (isFullRead && fileContent === readTimestamp.content) {
@@ -453,12 +442,13 @@ export const FileEditTool = buildTool({
     if (fileExists) {
       const lastWriteTime = getFileModificationTime(absoluteFilePath)
       const lastRead = readFileState.get(absoluteFilePath)
-      if (!lastRead || lastWriteTime > lastRead.timestamp) {
+      if (lastRead && lastWriteTime > lastRead.timestamp) {
         // Timestamp indicates modification, but on Windows timestamps can change
         // without content changes (cloud sync, antivirus, etc.). For full reads,
         // compare content as a fallback to avoid false positives.
         const isFullRead =
           lastRead &&
+          !lastRead.isPartialView &&
           lastRead.offset === undefined &&
           lastRead.limit === undefined
         const contentUnchanged =
@@ -472,6 +462,21 @@ export const FileEditTool = buildTool({
     // 3. Use findActualString to handle quote normalization
     const actualOldString =
       findActualString(originalFileContents, old_string) || old_string
+
+    // Recheck the target against the current file after all awaits. Validation
+    // may have happened before another editor changed or duplicated the target.
+    if (old_string === '' && originalFileContents.trim() !== '') {
+      throw new Error('Cannot create new file - file already exists.')
+    }
+    if (old_string !== '') {
+      const matches = originalFileContents.split(actualOldString).length - 1
+      if (matches === 0) {
+        throw new Error('String not found in file. Failed to apply edit.')
+      }
+      if (matches > 1 && !replace_all) {
+        throw new Error(`Found ${matches} matches of the string to replace, but replace_all is false.`)
+      }
+    }
 
     // Preserve file typography and indentation in new_string when possible
     const actualNewString = preserveIndentationStyle(

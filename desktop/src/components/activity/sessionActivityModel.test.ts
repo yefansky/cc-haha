@@ -1493,7 +1493,7 @@ describe('buildSessionActivityModel', () => {
       expect.objectContaining({ label: '新轮次任务', status: 'completed' }),
       expect.objectContaining({
         label: 'Earlier tasks',
-        status: 'stopped',
+        status: 'unconfirmed',
         taskHistory: { completed: 1, total: 2, turnCount: 1 },
       }),
     ])
@@ -1569,7 +1569,7 @@ describe('buildSessionActivityModel', () => {
 
     expect(model.sections.tasks.rows).toEqual([
       expect.objectContaining({ id: '1', status: 'completed' }),
-      expect.objectContaining({ id: '2', status: 'stopped' }),
+      expect.objectContaining({ id: '2', status: 'unconfirmed' }),
     ])
     expect(model.badgeCount).toBe(0)
   })
@@ -1718,4 +1718,50 @@ describe('buildSessionActivityModel', () => {
     ])
     expect(model.badgeCount).toBe(1)
   })
+})
+
+
+describe('activity identity and readable history', () => {
+  it.each(['Agent', 'Task'])('merges untyped completion into the original %s row by tool identity', (toolName) => {
+    const messages = agentMessages.map(message => message.type === 'tool_use' ? { ...message, toolName } : message)
+    const model = buildSessionActivityModel({ sessionId: 'session-1', messages, tasks: [], completedAndDismissed: false,
+      backgroundTasks: [background({taskId: 'child-1', toolUseId: 'agent-tool-1', taskType: undefined, description: undefined, summary: '核实入口', status: 'completed'})], agentNotifications: [] })
+    expect(model.sections.backgroundTasks.rows).toEqual([])
+    expect(model.sections.subagents.rows).toHaveLength(2)
+    expect(model.sections.subagents.rows[0]).toMatchObject({ label: '审查代码结构', taskId: 'child-1', toolUseId: 'agent-tool-1', status: 'completed', openable: true })
+  })
+  it('uses recorded agentId without toolUseId, keeping same-named commands separate', () => {
+    const model = buildSessionActivityModel({ sessionId: 'session-1', messages: agentMessages, tasks: [], completedAndDismissed: false,
+      backgroundTasks: [background({taskId: 'child-1', toolUseId: undefined, taskType: undefined, description: undefined, summary: '完成摘要', status: 'completed'}),
+        background({taskId: 'shell-1', toolUseId: 'shell-call', taskType: undefined, description: '审查代码结构'})], agentNotifications: [] })
+    expect(model.sections.subagents.rows).toHaveLength(2)
+    expect(model.sections.subagents.rows[0]).toMatchObject({ taskId: 'child-1', toolUseId: 'agent-tool-1', label: '审查代码结构' })
+    expect(model.sections.backgroundTasks.rows).toHaveLength(1)
+    expect(model.sections.backgroundTasks.rows[0]?.taskId).toBe('shell-1')
+  })
+  it('uses an available summary for a background title and keeps its technical identity', () => {
+    const model = buildSessionActivityModel({ sessionId: 'session-1', tasks: [], completedAndDismissed: false,
+      backgroundTasks: [background({taskId: 'a90f61205b4569406', taskType: undefined, description: undefined, summary: '核实攻略窗口NPC入口与GM指令'})], agentNotifications: [] })
+    expect(model.sections.backgroundTasks.rows[0]).toMatchObject({label: '核实攻略窗口NPC入口与GM指令', taskId: 'a90f61205b4569406'})
+  })
+  it('never mutates recorded statuses when an idle conversation lacks completion marks', () => {
+    const tasks = [task({id:'pending',status:'pending'}), task({id:'active',subject:'Continue',status:'in_progress'})]
+    const input = {sessionId: 'session-1', tasks, completedAndDismissed:false, backgroundTasks:[],agentNotifications:[]}
+    expect(buildSessionActivityModel({...input,isForegroundTurnActive:false}).sections.tasks.rows.map(row=>row.status)).toEqual(['unconfirmed','unconfirmed'])
+    expect(tasks.map(row=>row.status)).toEqual(['pending','in_progress'])
+    expect(buildSessionActivityModel({...input,isForegroundTurnActive:true}).sections.tasks.rows.map(row=>row.status)).toEqual(['pending','in_progress'])
+  })
+  it('keeps different agent calls with the same title separate', () => {
+    const messages = agentMessages.map(message => message.type === 'tool_use' ? {...message, input:{description:'同一标题'}} : message)
+    const model = buildSessionActivityModel({sessionId:'session-1',messages,tasks:[],completedAndDismissed:false,backgroundTasks:[],agentNotifications:[]})
+    expect(model.sections.subagents.rows.map(row=>row.toolUseId)).toEqual(['agent-tool-1','agent-tool-2'])
+  })
+})
+
+
+it('restores a notification summary when the known agent previously had only a technical id', () => {
+  const model = buildSessionActivityModel({sessionId:'session-1',tasks:[],completedAndDismissed:false,
+    backgroundTasks:[background({taskId:'technical-id',description:undefined,toolUseId:'tool-1'})],
+    agentNotifications:[notification({taskId:'technical-id',summary:'核实攻略窗口入口'})]})
+  expect(model.sections.subagents.rows[0]?.label).toBe('核实攻略窗口入口')
 })

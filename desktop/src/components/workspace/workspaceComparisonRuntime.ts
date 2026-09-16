@@ -55,22 +55,23 @@ function comparisonInputCacheKey(input: Omit<WorkspaceComparisonRuntimeRequest, 
         side.source.kind,
         side.source.path,
         side.source.revision,
-        side.contentFingerprint ?? '',
+        side.content ?? null,
         side.state,
         side.exists ? '1' : '0',
         side.requestedEncoding,
-      ].join('\0')
-    : '-'
-  return [
+      ]
+    : null
+  // Session revisions are local counters, and fingerprints describe saved
+  // bytes rather than edited buffers. Key the computation by its actual input
+  // so different edits cannot collide and saving unchanged text can reuse it.
+  return JSON.stringify([
     input.path,
     input.comparison ? '' : input.value,
-    String(input.sessionRevision),
-    String(input.settingsRevision),
     sideIdentity(input.comparison?.left),
     sideIdentity(input.comparison?.right),
-    JSON.stringify(input.anchors),
-    JSON.stringify(input.settings),
-  ].join('\u0001')
+    input.anchors,
+    input.settings,
+  ])
 }
 
 function cacheComparisonModel(cacheKey: string, model: WorkspaceSideBySideModel) {
@@ -136,7 +137,12 @@ export function requestWorkspaceComparisonModel(
     })
   }
   const inFlight = pendingByCacheKey.get(cacheKey)
-  if (inFlight) return inFlight.then((result) => ({ ...result, id: request.id }))
+  if (inFlight) return inFlight.then((result) => ({
+    ...result,
+    id: request.id,
+    sessionRevision: request.sessionRevision,
+    settingsRevision: request.settingsRevision,
+  }))
 
   const activeWorker = comparisonWorker()
   const calculation = !activeWorker

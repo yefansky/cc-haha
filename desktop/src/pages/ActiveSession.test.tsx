@@ -70,6 +70,9 @@ vi.mock('./TerminalSettings', () => ({
 }))
 
 import { ActiveSession } from './ActiveSession'
+import { SessionActivityButton } from '../components/activity/SessionActivityButton'
+import { sessionsApi } from '../api/sessions'
+import type { PerSessionState } from '../stores/chatStore'
 import { useChatStore } from '../stores/chatStore'
 import { useCLITaskStore } from '../stores/cliTaskStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -105,6 +108,50 @@ afterEach(() => {
 })
 
 describe('ActiveSession task polling', () => {
+  it('loads multiple completed historical subagents into a cold store and opens each without sending a message', async () => {
+    const sessionId = 'cold-history-subagents'
+    useSettingsStore.setState({ locale: 'en' })
+    useTabStore.setState({ tabs: [{ sessionId, title: 'History', type: 'session', status: 'idle' }], activeTabId: sessionId })
+    useSessionStore.setState({ sessions: [{ id: sessionId, title: 'History', createdAt: '', modifiedAt: '', messageCount: 4, projectPath: '/workspace', workDir: '/workspace', workDirExists: true }] })
+    useChatStore.setState({ sessions: { [sessionId]: {
+      messages: [], chatState: 'idle', connectionState: 'disconnected', historyStatus: 'idle',
+      streamingText: '', streamingToolInput: '', activeToolUseId: null, activeToolName: null,
+      activeThinkingId: null, pendingPermission: null, pendingComputerUsePermission: null,
+      tokenUsage: { input_tokens: 0, output_tokens: 0 }, streamingResponseChars: 0,
+      elapsedSeconds: 0, statusVerb: '', slashCommands: [], backgroundAgentTasks: {},
+      agentTaskNotifications: {}, elapsedTimer: null,
+    } as PerSessionState } })
+    const history = vi.spyOn(sessionsApi, 'getMessages').mockResolvedValue({ messages: ['Agent', 'Task'].flatMap((name, index) => [
+      { id: `use-${index}`, type: 'assistant' as const, timestamp: '2026-09-01T00:00:00Z', content: [{ type: 'tool_use', name, id: `tool-${index}`, input: { description: `Historical review ${index}` } }] },
+      { id: `result-${index}`, type: 'user' as const, timestamp: '2026-09-01T00:00:01Z', content: [{ type: 'tool_result', tool_use_id: `tool-${index}`, content: `Review ${index} complete\nagentId: child-${index}` }] },
+    ]) })
+    const send = vi.spyOn(useChatStore.getState(), 'sendMessage')
+    useWorkspacePanelStore.getState().openPanel(sessionId)
+    const view = render(<><SessionActivityButton sessionId={sessionId} /><ActiveSession /></>)
+    try {
+      await act(async () => { await useChatStore.getState().loadHistory(sessionId) })
+      expect(useChatStore.getState().sessions[sessionId]?.historyStatus).toBe('ready')
+      expect(useChatStore.getState().sessions[sessionId]?.agentTaskNotifications).toEqual({})
+      fireEvent.click(screen.getByRole('button', { name: 'Activity' }))
+      await waitFor(() => expect(screen.getByTestId('session-activity-panel')).toBeInTheDocument())
+      expect(useWorkspacePanelStore.getState().isPanelOpen(sessionId)).toBe(false)
+      expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(true)
+      for (const index of [0, 1]) {
+        fireEvent.click(screen.getByRole('button', { name: new RegExp(`Open run Historical review ${index}.*Completed`) }))
+        expect(useTabStore.getState().tabs.find(tab => tab.sessionId === `__subagent__${sessionId}__tool-${index}`)).toMatchObject({
+          sourceSessionId: sessionId, subagentToolUseId: `tool-${index}`, type: 'subagent',
+        })
+        act(() => { useTabStore.getState().setActiveTab(sessionId) })
+      }
+      expect(send).not.toHaveBeenCalled()
+      expect(history).toHaveBeenCalledWith(sessionId)
+    } finally {
+      view.unmount()
+      history.mockRestore()
+      send.mockRestore()
+    }
+  })
+
   it('shows cleaned worktrees as retained history and uses the source project for tools', () => {
     const sessionId = 'cleaned-worktree-session'
     useSettingsStore.setState({ locale: 'en' })
@@ -794,7 +841,7 @@ describe('ActiveSession task polling', () => {
       }))
     })
 
-    expect(within(screen.getByTestId('session-activity-panel')).getByLabelText('Stopped')).toBeInTheDocument()
+    expect(within(screen.getByTestId('session-activity-panel')).getByLabelText('Not marked complete')).toBeInTheDocument()
     expect(within(screen.getByTestId('session-activity-panel')).queryByLabelText('Task in progress')).not.toBeInTheDocument()
     expect(screen.queryByText(/session active|会话活跃中/)).not.toBeInTheDocument()
   })

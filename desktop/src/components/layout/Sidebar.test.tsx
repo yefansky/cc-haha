@@ -119,6 +119,7 @@ vi.mock('../../i18n', () => ({
 }))
 
 import { Sidebar } from './Sidebar'
+import { sessionsApi } from '@/api/sessions'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTabStore } from '../../stores/tabStore'
@@ -1179,6 +1180,56 @@ describe('Sidebar', () => {
         pinnedSessions: [],
       }))
     })
+  })
+
+  it.each(['Enter', 'blur', 'Escape', 'empty'] as const)('renames a session after pinning it: %s', async (finish) => {
+    const rename = vi.spyOn(sessionsApi, 'rename').mockResolvedValue({ ok: true })
+    const sessionId = 'pinned-rename-session'
+    useSessionStore.setState({
+      sessions: [makeSession(sessionId, 'Original title', '/workspace/project', '2026-05-01T00:00:00.000Z')],
+    })
+
+    try {
+      render(<Sidebar />)
+      fireEvent.contextMenu(screen.getByRole('button', { name: /Original title/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Pin session' }))
+      const pinned = screen.getByTestId('sidebar-pinned-sessions')
+      fireEvent.contextMenu(within(pinned).getByRole('button', { name: /Original title/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+
+      const input = within(pinned).getByRole('textbox')
+      expect(input).toHaveFocus()
+      expect(input).toHaveValue('Original title')
+      fireEvent.change(input, { target: { value: finish === 'empty' ? '   ' : '  置顶新名称  ' } })
+      if (finish === 'blur' || finish === 'empty') fireEvent.blur(input)
+      else fireEvent.keyDown(input, { key: finish })
+
+      await waitFor(() => expect(within(pinned).queryByRole('textbox')).not.toBeInTheDocument())
+      const saved = finish === 'Enter' || finish === 'blur'
+      const expectedTitle = saved ? '置顶新名称' : 'Original title'
+      expect(within(pinned).getByRole('button', { name: new RegExp(expectedTitle) })).toBeInTheDocument()
+      expect(useSessionStore.getState().sessions[0]?.title).toBe(expectedTitle)
+      if (saved) {
+        expect(rename).toHaveBeenCalledExactlyOnceWith(sessionId, '置顶新名称')
+      } else {
+        expect(rename).not.toHaveBeenCalled()
+      }
+
+      fireEvent.contextMenu(within(pinned).getByRole('button', { name: new RegExp(expectedTitle) }))
+      fireEvent.click(screen.getByRole('button', { name: 'Unpin session' }))
+      fireEvent.contextMenu(screen.getByRole('button', { name: new RegExp(expectedTitle) }))
+      fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+      const ordinaryInput = screen.getByRole('textbox')
+      expect(ordinaryInput).toHaveFocus()
+      expect(ordinaryInput).toHaveValue(expectedTitle)
+      fireEvent.change(ordinaryInput, { target: { value: 'Unpinned rename' } })
+      fireEvent.keyDown(ordinaryInput, { key: 'Enter' })
+      await waitFor(() => expect(screen.getByRole('button', { name: /Unpinned rename/ })).toBeInTheDocument())
+      expect(rename).toHaveBeenLastCalledWith(sessionId, 'Unpinned rename')
+    } finally {
+      rename.mockRestore()
+      window.localStorage.removeItem('cc-haha-sidebar-pinned-sessions')
+    }
   })
 
   it('selects and deletes multiple sessions from batch mode', async () => {

@@ -571,3 +571,14 @@ describe('MarkdownRenderer bare-URL autolink', () => {
     expect(container.querySelector('a')?.className).toContain(CODE_LINK_CLASS)
   })
 })
+
+
+describe('MarkdownRenderer caller-provided link titles', () => {
+  it('escapes title markup and preserves unrelated authored URL titles', () => {
+    const title = 'G:/repo/" onmouseover="alert(1)<img src=x>/send.py'
+    const { container } = render(<MarkdownRenderer content={'[send](send.py) [web](https://example.com "Website")'} resolveLinkTitle={(href) => href === 'send.py' ? title : undefined} />)
+    expect(screen.getByRole('link', { name: 'send' })).toHaveAttribute('title', title)
+    expect(screen.getByRole('link', { name: 'web' })).toHaveAttribute('title', 'Website')
+    expect(container.querySelector('[onmouseover], img')).toBeNull()
+  })
+})

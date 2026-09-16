@@ -1925,7 +1925,7 @@ const MeasuredRenderItem = memo(function MeasuredRenderItem({
   )
 })
 
-function ToolActivityHistoryFold({
+export function ToolActivityHistoryFold({
   item,
   sessionId,
   resultMap,

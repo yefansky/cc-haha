@@ -552,7 +552,7 @@ export function WorkspaceSideBySideDiffSurface({
     cacheKey: string | null
     result: WorkspaceDiffHighlightResult
   }>({ cacheKey: null, result: plainHighlightResult })
-  const highlightResult = !usePlainLargePreview && highlightState.cacheKey === highlightCacheKey
+  const highlightResult = !recomputing && !usePlainLargePreview && highlightState.cacheKey === highlightCacheKey
     ? highlightState.result
     : plainHighlightResult
   const [commentDraft, setCommentDraft] = useState<CommentDraft | null>(null)
@@ -679,7 +679,9 @@ export function WorkspaceSideBySideDiffSurface({
   const hasNextSection = model.sections.length > 0 && activeSectionIndex < model.sections.length - 1
 
   useEffect(() => {
-    if (usePlainLargePreview) {
+    // While alignment is pending, sourceFiles still belongs to the previous
+    // model (or patch fallback). Never cache those tokens under the new input.
+    if (recomputing || usePlainLargePreview) {
       setHighlightState({ cacheKey: null, result: plainHighlightResult })
       return
     }
@@ -691,7 +693,7 @@ export function WorkspaceSideBySideDiffSurface({
     return () => {
       cancelled = true
     }
-  }, [highlightCacheKey, path, sourceFiles, usePlainLargePreview])
+  }, [highlightCacheKey, path, recomputing, sourceFiles, usePlainLargePreview])
 
   useEffect(() => {
     setCommentDraft(null)

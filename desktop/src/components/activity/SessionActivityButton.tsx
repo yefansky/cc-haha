@@ -2,6 +2,7 @@ import { ListChecks } from 'lucide-react'
 import { IconButton } from '@/components/ui/IconButton'
 import { useTranslation } from '../../i18n'
 import { useActivityPanelStore } from '../../stores/activityPanelStore'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 
 type SessionActivityButtonProps = {
   sessionId: string
@@ -29,7 +30,15 @@ export function SessionActivityButton({
       filled={isOpen}
       aria-expanded={isOpen}
       aria-pressed={isOpen}
-      onClick={() => toggle(sessionId)}
+      onClick={() => {
+        const workspace = useWorkspacePanelStore.getState()
+        if (workspace.isPanelOpen(sessionId)) {
+          workspace.closePanel(sessionId)
+          useActivityPanelStore.getState().open(sessionId)
+        } else {
+          toggle(sessionId)
+        }
+      }}
       data-active={isOpen ? 'true' : 'false'}
       data-session-activity-trigger="true"
     />

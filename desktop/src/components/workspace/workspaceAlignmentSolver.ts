@@ -260,11 +260,24 @@ function advancedInterval(
   profile: 'balanced' | 'precise',
   maxWorkUnits: number,
 ) {
-  const exactPairs = fastInterval(left, right, 0, 0).pairs.filter((pair) => (
+  // Blank lines and punctuation-only separators carry too little information
+  // to split a comparison. Matching one to the end of a modified function can
+  // otherwise prevent closeness matching from ever seeing the two bodies.
+  // They still participate in the local comparison between content anchors.
+  const informative = (lines: PreparedWorkspaceComparisonLine[]) => lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /[\p{L}\p{N}_]/u.test(line.equivalenceKey))
+  const leftContent = informative(left)
+  const rightContent = informative(right)
+  const exactPairs = fastInterval(leftContent.map(({ line }) => line), rightContent.map(({ line }) => line), 0, 0).pairs.filter((pair) => (
     pair.leftIndex !== null
     && pair.rightIndex !== null
-    && exact(left[pair.leftIndex]!, right[pair.rightIndex]!)
-  ))
+    && exact(leftContent[pair.leftIndex]!.line, rightContent[pair.rightIndex]!.line)
+  )).map((pair) => ({
+    leftIndex: leftContent[pair.leftIndex!]!.index,
+    rightIndex: rightContent[pair.rightIndex!]!.index,
+    soft: false,
+  }))
   const pairs: WorkspaceAlignmentPair[] = []
   let leftCursor = 0
   let rightCursor = 0

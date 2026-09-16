@@ -13,6 +13,40 @@ const lines = (values: string[]) => values.map((text, index) => ({
 }))
 
 describe('workspaceAlignmentSolver', () => {
+  it.each(['balanced', 'precise'] as const)('keeps a similar function together across repeated blank lines (%s)', (profile) => {
+    const body = Array.from({ length: 18 }, (_, i) => `    validate_argument_${i}(value, label)`)
+    const left = lines(['before', '', 'def validate_path(value):', ...body, '', '', 'after'])
+    const right = lines(['before', 'def validate_path(value, label):', ...body.map((line) => `${line} # checked`), '', '', 'after'])
+    const result = solveWorkspaceAlignment(left, right, [], profile)
+    expect(result.pairs.find((pair) => pair.leftIndex === 2)?.rightIndex).toBe(1)
+    for (let i = 0; i < body.length; i += 1) {
+      expect(result.pairs.find((pair) => pair.leftIndex === i + 3)?.rightIndex).toBe(i + 2)
+    }
+  })
+
+  it.each(['balanced', 'precise'] as const)('does not anchor a changed code block to a repeated closing brace (%s)', (profile) => {
+    const left = lines(['header', '}', 'function validate(value) {', '  return check(value);', '}', 'tail'])
+    const right = lines(['header', 'function validate(value, label) {', '  return check(value, label);', '}', 'tail'])
+    const result = solveWorkspaceAlignment(left, right, [], profile)
+    expect(result.pairs.find((pair) => pair.leftIndex === 2)?.rightIndex).toBe(1)
+    expect(result.pairs.find((pair) => pair.leftIndex === 3)?.rightIndex).toBe(2)
+    expect(result.pairs.filter((pair) => pair.leftIndex !== null).map((pair) => pair.leftIndex)).toEqual(left.map((_, i) => i))
+    expect(result.pairs.filter((pair) => pair.rightIndex !== null).map((pair) => pair.rightIndex)).toEqual(right.map((_, i) => i))
+  })
+
+  it.each(['balanced', 'precise'] as const)('keeps identical function text aligned when line endings change (%s)', (profile) => {
+    const body = ['def validate_path(value, label):', '    if invalid(value):', '        raise ValueError(label)',
+      '    try:', '        encoded = value.encode("gbk")', '    except UnicodeEncodeError:',
+      '        raise ValueError(label)', '    if encoded.decode("gbk") != value:', '        raise ValueError(label)']
+    const left = lines(['header', '', ...body, '', '', 'tail'])
+    const right = lines(['header', 'inserted', ...body, '', '', 'tail'])
+    left.forEach((line) => { if (line.ending) { line.ending = '\r\n'; line.comparisonEnding = '\r\n' } })
+    const result = solveWorkspaceAlignment(left, right, [], profile)
+    for (let i = 0; i < body.length; i += 1) {
+      expect(result.pairs.find((pair) => pair.leftIndex === i + 2)?.rightIndex).toBe(i + 2)
+    }
+  })
+
   it('uses genuinely different fast and balanced candidate strategies', () => {
     const left = lines(['header', 'const answer = 41;', 'tail'])
     const right = lines(['header', 'inserted', 'const answer = 42;', 'tail'])

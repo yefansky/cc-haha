@@ -3431,7 +3431,7 @@ export class WorkspaceService {
     leftRequestedEncoding: WorkspaceTextEncoding,
     rightRequestedEncoding: WorkspaceTextEncoding,
   ): Promise<WorkspaceDiffResult> {
-    const statusEntries = await this.getSvnStatusEntries(svnRoot)
+    const statusEntries = await this.getSvnStatusEntries(svnRoot, resolvedPath.canonicalTargetPath)
     if (statusEntries.kind === 'error') {
       return { state: 'error', path: resolvedPath.relativePath, error: statusEntries.message }
     }
@@ -3526,17 +3526,35 @@ export class WorkspaceService {
 
   private async getSvnStatusEntries(
     workspaceRoot: string,
+    canonicalTargetPath?: string,
   ): Promise<{ kind: 'ok'; entries: StatusEntry[] } | { kind: 'error'; message: string }> {
-    const result = await this.runSvn(
-      workspaceRoot,
-      ['status', '--xml'],
+    // Keep single-file previews out of whole-working-copy scans. A canonical
+    // parent cwd also preserves Unicode paths with Windows SVN executables.
+    let cwd = canonicalTargetPath
+      ? await this.findNearestExistingDirectory(path.dirname(canonicalTargetPath), workspaceRoot)
+      : workspaceRoot
+    let args = canonicalTargetPath
+      ? ['status', '--xml', '--depth', cwd === path.dirname(canonicalTargetPath) ? 'files' : 'infinity', '--', '.']
+      : ['status', '--xml']
+    let result = await this.runSvn(
+      cwd,
+      args,
       MAX_SVN_STATUS_BUFFER_BYTES,
       SVN_STATUS_TIMEOUT_MS,
     )
+    // Inside an unversioned directory SVN can succeed with W155010 and no
+    // entries. Ascend only until SVN recognizes a parent, without recursion.
+    while (canonicalTargetPath && /W155010|W155007/.test(result.stderr) && cwd !== workspaceRoot) {
+      const parent = path.dirname(cwd)
+      if (parent === cwd || !this.isWithinRoot(parent, workspaceRoot)) break
+      cwd = parent
+      args = ['status', '--xml', '--depth', 'immediates', '--', '.']
+      result = await this.runSvn(cwd, args, MAX_SVN_STATUS_BUFFER_BYTES, SVN_STATUS_TIMEOUT_MS)
+    }
     if (result.code !== 0) {
       return {
         kind: 'error',
-        message: this.formatSvnError('Failed to read SVN status', ['status', '--xml'], workspaceRoot, result),
+        message: this.formatSvnError('Failed to read SVN status', args, cwd, result),
       }
     }
     const entries: StatusEntry[] = []
@@ -3549,10 +3567,27 @@ export class WorkspaceService {
       const status = this.parseSvnStatus(item, props)
       if (!status) continue
       entries.push({
-        path: this.normalizeRelativePath(rawPath),
+        path: this.normalizeRelativePath(path.relative(workspaceRoot, path.resolve(cwd, rawPath))),
         code: item,
         status,
       })
+    }
+
+    if (canonicalTargetPath) {
+      const target = this.toRepoRelativePath(workspaceRoot, canonicalTargetPath)
+      const matchedEntries = entries.filter((entry) => entry.path === target)
+      // SVN reports only the unversioned parent when cwd is inside a new
+      // directory. Classify this one existing file without walking siblings.
+      if (matchedEntries.length === 0 && entries.some((entry) =>
+        entry.status === 'untracked'
+        && this.isWithinRoot(canonicalTargetPath, path.resolve(workspaceRoot, entry.path)),
+      )) {
+        const stat = await this.safeStat(canonicalTargetPath)
+        if (stat.kind === 'ok' && stat.stat.isFile()) {
+          matchedEntries.push({ path: target, code: 'unversioned', status: 'untracked' })
+        }
+      }
+      return { kind: 'ok', entries: matchedEntries }
     }
 
     const enrichedEntries = await Promise.all(entries.map(async (entry) => {

@@ -5,7 +5,7 @@ import {
   type SubagentRunResponse,
   type SubagentRunStatus,
 } from '../api/subagents'
-import { buildRenderModel, MessageBlock } from '../components/chat/MessageList'
+import { buildRenderModel, collapseEarlierToolActivity, MessageBlock, ToolActivityHistoryFold } from '../components/chat/MessageList'
 import { ToolCallGroup } from '../components/chat/ToolCallGroup'
 import { Badge, type Tone as BadgeTone } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -193,6 +193,11 @@ function ConversationSection({ data }: { data: SubagentRunResponse }) {
   const t = useTranslation()
   const conversationMessages = useMemo(() => buildSubagentConversationMessages(data), [data])
   const renderModel = useMemo(() => buildRenderModel(conversationMessages), [conversationMessages])
+  const renderItems = useMemo(() => collapseEarlierToolActivity(
+    renderModel.renderItems,
+    renderModel.toolResultMap,
+    renderModel.childToolCallsByParent,
+  ), [renderModel])
 
   if (renderModel.renderItems.length === 0) {
     return (
@@ -224,7 +229,19 @@ function ConversationSection({ data }: { data: SubagentRunResponse }) {
         ) : null}
       </div>
       <div data-testid="subagent-conversation" className="space-y-3">
-        {renderModel.renderItems.map((item) => {
+        {renderItems.map((item) => {
+          if (item.kind === 'tool_history') {
+            return (
+              <ToolActivityHistoryFold
+                key={item.id}
+                item={item}
+                resultMap={renderModel.toolResultMap}
+                childToolCallsByParent={renderModel.childToolCallsByParent}
+                agentTaskNotifications={EMPTY_AGENT_TASK_NOTIFICATIONS}
+                activeThinkingId={null}
+              />
+            )
+          }
           if (item.kind === 'tool_group') {
             return (
               <ToolCallGroup

@@ -108,6 +108,24 @@
   display: block;
 }
 
+/* Shiki includes literal newlines between its block-level .line elements.
+   Collapse only those separators; preserve whitespace inside each source line.
+   Prism has no separator text nodes and keeps its existing pre formatting. */
+.code-viewer-area [data-highlight-engine="shiki"] pre > code {
+  display: block;
+  white-space: normal;
+}
+
+.code-viewer-area [data-highlight-engine="shiki"] pre > code > .line {
+  white-space: pre;
+  min-height: var(--code-viewer-line-height);
+}
+
+.code-viewer-area[data-wrap-long-lines="true"] [data-highlight-engine="shiki"] pre > code > .line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .code-viewer-area .line {
   padding: 0 12px;
 }

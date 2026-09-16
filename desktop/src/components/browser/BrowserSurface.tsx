@@ -82,6 +82,10 @@ function resolveBrowserNavigationUrl(input: string, sessionId: string): string {
   return value
 }
 
+function hasBlockingDialog() {
+  return document.querySelector('[role="dialog"][aria-modal="true"]') !== null
+}
+
 export function BrowserSurface({ sessionId }: { sessionId: string }) {
   const t = useTranslation()
   const hostRef = useRef<HTMLDivElement>(null)
@@ -96,6 +100,19 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
   const appZoom = useSettingsStore((s) => s.uiZoom)
   const store = useBrowserPanelStore.getState()
   const overlayCount = useOverlayStore((s) => s.count)
+  const [dialogOpen, setDialogOpen] = useState(hasBlockingDialog)
+
+  // Native views own their stacking policy. Generic DOM dialogs remain usable
+  // without importing desktop stores or knowing about native browser surfaces.
+  useLayoutEffect(() => {
+    const update = () => setDialogOpen(hasBlockingDialog())
+    update()
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, {
+      childList: true, subtree: true, attributes: true, attributeFilter: ['aria-modal', 'role'],
+    })
+    return () => observer.disconnect()
+  }, [])
   const previewZoom = session?.zoom ?? DEFAULT_BROWSER_ZOOM
   const zoomPercent = Math.round(previewZoom * 100)
   const canZoomOut = previewZoom > MIN_BROWSER_ZOOM
@@ -152,7 +169,7 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
     requestedUrlRef.current = url
     loadNativePreview(url, async () => {
       await previewBridge.setZoom(previewZoom)
-      await previewBridge.setVisible(useOverlayStore.getState().count === 0)
+      await previewBridge.setVisible(useOverlayStore.getState().count === 0 && !hasBlockingDialog())
       if (hasNativePreviewRef.current) {
         await previewBridge.navigate(url)
         return
@@ -197,8 +214,8 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
   // The layout-effect teardown above still closes the webview on unmount.
   useEffect(() => {
     if (!session) return
-    previewBridge.setVisible(overlayCount === 0 && !loadError)
-  }, [overlayCount, session, loadError])
+    previewBridge.setVisible(overlayCount === 0 && !dialogOpen && !hasBlockingDialog() && !loadError)
+  }, [overlayCount, dialogOpen, session, loadError])
 
   useEffect(() => {
     if (!session) return

@@ -56,7 +56,65 @@ function deferred<T>() {
   return { promise, reject, resolve }
 }
 
+function toolTranscript(count: number): SubagentRunResponse['messages'] {
+  return Array.from({ length: count }, (_, index) => [
+    {
+      id: `thinking-${index}`, type: 'assistant', timestamp: TRANSCRIPT_TIMESTAMP,
+      content: [{ type: 'thinking', thinking: `Inspect step ${index}` }],
+    },
+    {
+      id: `call-${index}`, type: 'tool_use', timestamp: TRANSCRIPT_TIMESTAMP,
+      content: [{ type: 'tool_use', id: `bash-${index}`, name: 'Bash', input: { command: `echo step-${index}` } }],
+    },
+    {
+      id: `result-${index}`, type: 'tool_result', timestamp: TRANSCRIPT_TIMESTAMP,
+      content: [{ type: 'tool_result', tool_use_id: `bash-${index}`, content: `output-${index}`, is_error: index === 0 }],
+    },
+  ]).flat() as SubagentRunResponse['messages']
+}
+
 describe('SubagentRunPage', () => {
+  it('folds earlier completed tools like the parent page and preserves expansion as refreshed calls arrive', async () => {
+    vi.mocked(subagentsApi.getRunByTool)
+      .mockResolvedValueOnce(subagentRun({ status: 'running', messages: toolTranscript(5) }))
+      .mockResolvedValueOnce(subagentRun({ status: 'completed', messages: toolTranscript(6) }))
+    render(<SubagentRunPage sourceSessionId="session-1" toolUseId="tool-1" title="SubAgent" />)
+
+    const toggle = await screen.findByRole('button', { name: 'Expand 2 earlier tool calls' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('1 failed')).toBeInTheDocument()
+    expect(screen.queryByText('echo step-0')).not.toBeInTheDocument()
+    for (const index of [2, 3, 4]) expect(screen.getByText(`echo step-${index}`)).toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole('button', { name: /Bash.*echo step-0/i }))
+    expect(document.querySelector('[data-shell-output]')).toHaveTextContent('output-0')
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh SubAgent run' }))
+    expect(await screen.findByRole('button', { name: 'Collapse 3 earlier tool calls' })).toHaveAttribute('aria-expanded', 'true')
+    for (let index = 0; index < 6; index += 1) {
+      expect(screen.getAllByRole('button', { name: new RegExp(`Bash.*echo step-${index}`) })).toHaveLength(1)
+    }
+    expect(document.querySelector('[data-shell-output]')).toHaveTextContent('output-0')
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse 3 earlier tool calls' }))
+    expect(screen.queryByText('echo step-0')).not.toBeInTheDocument()
+    expect(screen.getByText('echo step-5')).toBeInTheDocument()
+  })
+
+  it('keeps prose and unfinished calls outside earlier activity folds', async () => {
+    const messages = toolTranscript(6)
+    messages.splice(9, 0, {
+      id: 'progress', type: 'assistant', timestamp: TRANSCRIPT_TIMESTAMP,
+      content: [{ type: 'text', text: 'Now check the second area.' }],
+    })
+    messages.pop()
+    vi.mocked(subagentsApi.getRunByTool).mockResolvedValue(subagentRun({ status: 'running', messages }))
+    render(<SubagentRunPage sourceSessionId="session-1" toolUseId="tool-1" title="SubAgent" />)
+    const conversation = await screen.findByTestId('subagent-conversation')
+    expect(screen.queryByTestId('earlier-tool-activity')).not.toBeInTheDocument()
+    expect(conversation.textContent).toMatch(/echo step-2[\s\S]*Now check the second area\.[\s\S]*echo step-3/)
+    expect(screen.getByText('echo step-5')).toBeInTheDocument()
+  })
+
   it('shows live output above a collapsed transcript and updates without a transcript refresh', async () => {
     vi.mocked(subagentsApi.getRunByTool).mockResolvedValue(subagentRun({ status: 'running' }))
     const store = useChatStore.getState()

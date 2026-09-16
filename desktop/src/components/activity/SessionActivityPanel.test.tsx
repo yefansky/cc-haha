@@ -48,6 +48,9 @@ vi.mock('../../i18n', () => ({
       'session.activity.tasks.earlier': 'Earlier tasks',
       'session.activity.tasksProgress': 'Task progress {completed}/{total}',
       'session.activity.tasks.earlierSummary': 'Earlier turns: {completed}/{total} completed',
+      'session.activity.status.unconfirmed': 'Not marked complete',
+      'session.activity.tasksMarkedComplete': 'Marked complete {completed}/{total}',
+      'session.activity.details.taskId': 'Task ID',
       'session.activity.status.pending': 'Pending',
       'session.activity.status.inProgress': 'In progress',
       'session.activity.status.completed': 'Completed',
@@ -126,7 +129,7 @@ describe('SessionActivityPanel', () => {
     expect(screen.getByText('Write tests')).toHaveAttribute('title', 'Write tests')
     expect(screen.getByText('Add panel coverage')).toHaveAttribute('title', 'Add panel coverage')
     expect(screen.getByLabelText('Task in progress')).toBeInTheDocument()
-    expect(screen.queryByText('In progress')).not.toBeInTheDocument()
+    expect(screen.getByText('In progress')).toBeInTheDocument()
     expect(screen.queryByText('Team')).not.toBeInTheDocument()
     expect(screen.queryByText('Background Tasks')).not.toBeInTheDocument()
     expect(screen.queryByText('SubAgents')).not.toBeInTheDocument()
@@ -137,7 +140,7 @@ describe('SessionActivityPanel', () => {
     expect(screen.queryByText('No sources')).not.toBeInTheDocument()
   })
 
-  it('renders task rows as checklist markers instead of status chips', () => {
+  it('renders task rows with checklist markers and readable status labels', () => {
     render(
       <SessionActivityPanel
         model={model({
@@ -174,8 +177,8 @@ describe('SessionActivityPanel', () => {
     expect(screen.getByLabelText('Task in progress').querySelector('svg')).toBeNull()
     expect(screen.getByText('Active task').closest('button,div')).toHaveClass('py-2.5')
     expect(screen.getByText('Finished task')).toHaveClass('line-through')
-    expect(screen.queryByText('Completed')).not.toBeInTheDocument()
-    expect(screen.queryByText('Pending')).not.toBeInTheDocument()
+    expect(screen.getByText('Completed')).toBeInTheDocument()
+    expect(screen.getByText('Pending')).toBeInTheDocument()
   })
 
   it('summarizes task completion as a labelled mini progress rail and a ratio', () => {
@@ -209,7 +212,7 @@ describe('SessionActivityPanel', () => {
     const progress = screen.getByRole('progressbar', { name: 'Task progress 2/4' })
 
     expect(progress).toHaveAttribute('aria-valuenow', '50')
-    expect(screen.getByText('2/4')).toBeInTheDocument()
+    expect(screen.getByText('Marked complete 2/4')).toBeInTheDocument()
   })
 
   it('leaves sections other than tasks without a progress rail', () => {
@@ -811,4 +814,14 @@ describe('SessionActivityPanel', () => {
 
     expect(screen.queryByRole('dialog', { name: /activity/i })).not.toBeInTheDocument()
   })
+})
+
+
+it('shows idle unconfirmed tasks as unmarked, not stopped or completed', () => {
+  const historyModel = model()
+  historyModel.sections.tasks.rows = [{id:'unmarked',section:'tasks',label:'Review UI',status:'unconfirmed',openable:false}]
+  render(<SessionActivityPanel model={historyModel} open onClose={vi.fn()} onOpenSubagent={vi.fn()} />)
+  expect(screen.getByText('Not marked complete')).toBeInTheDocument()
+  expect(screen.queryByText('Stopped')).not.toBeInTheDocument()
+  expect(screen.getByText('Marked complete 0/1')).toBeInTheDocument()
 })

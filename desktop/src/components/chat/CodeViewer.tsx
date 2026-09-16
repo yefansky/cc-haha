@@ -232,6 +232,8 @@ function CodeArea({
     <div
       ref={containerRef}
       data-has-line-numbers={showLineNumbers ? 'true' : 'false'}
+      data-wrap-long-lines={wrapLongLines ? 'true' : 'false'}
+      style={{ '--code-viewer-line-height': `${CODE_LINE_HEIGHT}em` } as CSSProperties}
       className="code-viewer-area relative max-h-[420px] overflow-auto bg-[var(--color-code-bg)]"
     >
       {(!ShikiHighlighter || !loaded) && (

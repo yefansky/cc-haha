@@ -4,7 +4,7 @@ import type { CLITask, TaskStatus } from '../../types/cliTask'
 import type { TeamMember } from '../../types/team'
 import { createBackgroundTaskDismissKey } from '../../lib/backgroundTasks'
 
-export type ActivityStatus = TaskStatus | BackgroundAgentTask['status'] | TeamMember['status']
+export type ActivityStatus = 'unconfirmed' | TaskStatus | BackgroundAgentTask['status'] | TeamMember['status']
 
 export type ActivitySectionId = 'output' | 'tasks' | 'team' | 'backgroundTasks' | 'subagents' | 'sources'
 
@@ -123,11 +123,11 @@ function isAgentLikeBackgroundTask(task: BackgroundAgentTask): boolean {
 }
 
 function backgroundLabel(task: BackgroundAgentTask): string {
-  return task.description || task.workflowName || task.taskId
+  return task.description?.trim() || task.workflowName?.trim() || (task.summary?.trim() ? compactText(task.summary, 120) : task.taskId)
 }
 
 function notificationLabel(notification: AgentTaskNotification): string {
-  return notification.taskId
+  return notification.summary?.trim() ? compactText(notification.summary, 120) : notification.taskId
 }
 
 function buildTaskRow(task: CLITask): ActivityRow {
@@ -484,14 +484,18 @@ function buildAgentRowsFromMessages(messages: UIMessage[]): ActivityRow[] {
 
   const rows: ActivityRow[] = []
   for (const message of messages) {
-    if (message.type !== 'tool_use' || message.toolName !== 'Agent') continue
+    // Older transcripts persisted the Agent tool under its previous name, Task.
+    if (message.type !== 'tool_use' || !['Agent', 'Task'].includes(message.toolName)) continue
 
     const result = resultsByToolUseId.get(message.toolUseId)
-    const resultText = result ? stripAgentMetadata(extractTextContent(result.content)) : ''
+    const rawResultText = result ? extractTextContent(result.content) : ''
+    const resultText = stripAgentMetadata(rawResultText)
+    const taskId = rawResultText.match(/(?:^|\n)\s*agentId:\s*([^\s(]+)/)?.[1]
     rows.push({
       id: message.toolUseId,
       section: 'subagents',
       label: agentToolLabel(message),
+      taskId,
       status: message.status === 'stopped'
         ? 'stopped'
         : result?.isError
@@ -659,7 +663,7 @@ function buildHistoricalTasksRow(groups: TaskTurnRows[]): ActivityRow | null {
     id: `task-history-${groups[0]?.turn.id ?? 'turn'}-${groups.length}-${rows.length}`,
     section: 'tasks',
     label: 'Earlier tasks',
-    status: completed === rows.length ? 'completed' : 'stopped',
+    status: completed === rows.length ? 'completed' : 'unconfirmed',
     taskHistory: {
       completed,
       total: rows.length,
@@ -708,7 +712,7 @@ function buildTaskRowsFromMessages(messages: UIMessage[], liveTasks: CLITask[]):
 
 function sealUnfinishedTaskRows(rows: ActivityRow[]): ActivityRow[] {
   return rows.map((row) => row.status === 'pending' || row.status === 'in_progress'
-    ? { ...row, status: 'stopped' }
+    ? { ...row, status: 'unconfirmed' }
     : row)
 }
 
@@ -743,7 +747,7 @@ function mergeNotificationRow(existing: ActivityRow | undefined, notification: A
     ...existing,
     id: notificationRow.id,
     section: notificationRow.section,
-    label: existing?.label || notification.taskId,
+    label: existing?.label && existing.label !== existing.taskId && existing.label !== 'Agent' ? existing.label : notificationLabel(notification),
     status: notification.status,
     description: existing?.description,
     summary: notification.summary ?? existing?.summary,
@@ -802,6 +806,7 @@ export function buildSessionActivityModel(input: BuildSessionActivityModelInput)
 
   for (const row of buildAgentRowsFromMessages(input.messages ?? [])) {
     subagentRowsByKey.set(row.id, mergeSubagentRow(subagentRowsByKey.get(row.id), row))
+    if (row.taskId) subagentKeyByTaskId.set(row.taskId, row.id)
   }
 
   for (const task of input.backgroundTasks) {
@@ -815,9 +820,14 @@ export function buildSessionActivityModel(input: BuildSessionActivityModelInput)
       continue
     }
 
-    const key = activityKey(task)
-    const sectionId: ActivitySectionId = isAgentLikeBackgroundTask(task) ? 'subagents' : 'backgroundTasks'
-    const row = buildBackgroundRow(task, sectionId)
+    // Missing task_type is common in completion notifications. Use recorded identity,
+    // never matching titles, to attach them to the original Agent/legacy Task call.
+    const linkedKey = task.toolUseId && subagentRowsByKey.has(task.toolUseId)
+      ? task.toolUseId
+      : subagentKeyByTaskId.get(task.taskId)
+    const key = linkedKey ?? activityKey(task)
+    const sectionId: ActivitySectionId = linkedKey || isAgentLikeBackgroundTask(task) ? 'subagents' : 'backgroundTasks'
+    const row = { ...buildBackgroundRow(task, sectionId), id: key }
     visibleBackgroundTaskIds.add(task.taskId)
 
     if (sectionId === 'subagents') {

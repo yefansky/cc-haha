@@ -238,7 +238,7 @@ export function resolveSubagentRunFromMessages(
     for (const block of contentBlocks(contentFromMessage(entry))) {
       if (
         block.type === 'tool_use' &&
-        block.name === 'Agent' &&
+        (block.name === 'Agent' || block.name === 'Task') &&
         block.id === toolUseId
       ) {
         foundAgentToolUse = true

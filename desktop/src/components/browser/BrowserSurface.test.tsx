@@ -1,3 +1,5 @@
+import { StrictMode } from 'react'
+import { Modal } from '@/components/ui/Modal'
 import '@testing-library/jest-dom'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -70,6 +72,29 @@ afterEach(() => {
 })
 
 describe('BrowserSurface', () => {
+  it('hides native browsing for real stacked modals and restores it after the last closes', async () => {
+    useBrowserPanelStore.getState().open('s1', 'https://example.com')
+    const view = (first: boolean, second: boolean) => (
+      <StrictMode>
+        <BrowserSurface sessionId="s1" />
+        <Modal open={first} onClose={vi.fn()} title="First">First</Modal>
+        <Modal open={second} onClose={vi.fn()} title="Second">Second</Modal>
+      </StrictMode>
+    )
+    const { rerender } = render(view(true, true))
+    await waitFor(() => expect(bridge.setVisible).toHaveBeenLastCalledWith(false))
+    expect(bridge.setVisible).not.toHaveBeenCalledWith(true)
+    rerender(view(false, true))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'First' })).not.toBeInTheDocument())
+    expect(bridge.setVisible).toHaveBeenLastCalledWith(false)
+    rerender(view(false, false))
+    await waitFor(() => expect(bridge.setVisible).toHaveBeenLastCalledWith(true))
+    rerender(view(true, false))
+    await waitFor(() => expect(bridge.setVisible).toHaveBeenLastCalledWith(false))
+    rerender(view(false, false))
+    await waitFor(() => expect(bridge.setVisible).toHaveBeenLastCalledWith(true))
+  })
+
   it('hands local documents to the system file opener instead of the web-only URL opener', async () => {
     useBrowserPanelStore.getState().open('s1', 'file:///G:/site/page.html')
     render(<BrowserSurface sessionId="s1" />)
@@ -496,10 +521,18 @@ describe('BrowserSurface', () => {
     fireEvent.submit(input.closest('form')!)
 
     expect(screen.getByText('离开本次批量选择？')).toBeInTheDocument()
+    await waitFor(() => expect(bridge.setVisible).toHaveBeenLastCalledWith(false))
     expect(bridge.navigate).not.toHaveBeenCalledWith('http://localhost:3000/')
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(bridge.setVisible).toHaveBeenLastCalledWith(true))
+    expect(usePreviewSelectionStore.getState().bySession.s1?.items).toHaveLength(1)
+    expect(bridge.navigate).not.toHaveBeenCalledWith('http://localhost:3000/')
+    fireEvent.submit(input.closest('form')!)
+    await waitFor(() => expect(bridge.setVisible).toHaveBeenLastCalledWith(false))
     fireEvent.click(screen.getByRole('button', { name: '丢弃并继续' }))
 
     await waitFor(() => expect(bridge.navigate).toHaveBeenCalledWith('http://localhost:3000/'))
+    await waitFor(() => expect(bridge.setVisible).toHaveBeenLastCalledWith(true))
     expect(bridge.message).toHaveBeenCalledWith({ v: 1, type: 'clear-selection-draft' })
   })
 })

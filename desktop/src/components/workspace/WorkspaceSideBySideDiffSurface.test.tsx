@@ -1320,6 +1320,8 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     )
 
     expect(instances).toHaveLength(1)
+    // The patch fallback belongs to old data, not the new comparison key.
+    expect(highlightRequestSpy).not.toHaveBeenCalled()
     expect(modelBuildSpy.mock.calls.some(([, currentComparison]) => currentComparison !== undefined)).toBe(false)
     expect(screen.getByRole('status')).toHaveTextContent('Recomputing comparison')
     const undo = screen.getByRole('button', { name: 'Undo last comparison action' })
@@ -1340,6 +1342,8 @@ describe('WorkspaceSideBySideDiffSurface', () => {
       await Promise.resolve()
     })
     expect(screen.queryByText('Recomputing comparison…')).not.toBeInTheDocument()
+    const highlightCount = highlightRequestSpy.mock.calls.length
+    expect(highlightCount).toBeGreaterThan(0)
 
     const changedComparison = comparison(fullComparison.left, side(fullComparison.right.content!.replace('new three', 'latest three')))
     modelBuildSpy.mockClear()
@@ -1354,6 +1358,8 @@ describe('WorkspaceSideBySideDiffSurface', () => {
     expect(modelBuildSpy.mock.calls.some(([, currentComparison]) => currentComparison !== undefined)).toBe(false)
     expect(screen.getByRole('status')).toHaveTextContent('Recomputing comparison')
     expect(screen.getByText('edited three')).toBeInTheDocument()
+    // Do not cache the last trusted model's tokens under latest three's key.
+    expect(highlightRequestSpy).toHaveBeenCalledTimes(highlightCount)
 
     await act(async () => {
       instances[0]!.onerror?.({ message: 'stop test worker' } as ErrorEvent)

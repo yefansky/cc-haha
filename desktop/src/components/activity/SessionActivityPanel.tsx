@@ -45,6 +45,8 @@ function fallbackStatusLabel(status: ActivityRow['status']): string {
 
 function getActivityStatusLabel(status: ActivityRow['status'], t: TranslationFn): string {
   switch (status) {
+    case 'unconfirmed':
+      return t('session.activity.status.unconfirmed')
     case 'pending':
       return t('session.activity.status.pending')
     case 'in_progress':
@@ -121,7 +123,8 @@ function formatBackgroundDuration(ms: number | undefined, t: TranslationFn): str
 
 function hasBackgroundTaskDetails(row: ActivityRow): boolean {
   return Boolean(
-    row.description ||
+    row.taskId ||
+      row.description ||
       row.summary ||
       row.outputFile ||
       row.taskType ||
@@ -191,7 +194,7 @@ function TaskStatusMarker({ status, t }: { status: ActivityRow['status']; t: Tra
 
   return (
     <span
-      aria-label={t('session.activity.task.pending')}
+      aria-label={status === 'unconfirmed' ? t('session.activity.status.unconfirmed') : t('session.activity.task.pending')}
       className="inline-flex h-5 w-5 shrink-0 rounded-full border-[1.8px] border-[var(--color-outline)]"
     />
   )
@@ -366,13 +369,11 @@ function ActivityRowView({
           </span>
         ) : null}
       </span>
-      {isTask ? null : (
-        <ActivityStatusIndicator
-          status={displayStatus}
-          label={statusLabel}
-          animated={row.section !== 'subagents'}
-        />
-      )}
+      <ActivityStatusIndicator
+        status={displayStatus}
+        label={statusLabel}
+        animated={row.section !== 'subagents'}
+      />
       {!isTask && row.openable ? (
         <ChevronRight size={13} strokeWidth={2.2} className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true" />
       ) : null}
@@ -475,6 +476,7 @@ function BackgroundTaskDetail({ row }: { row: ActivityRow }) {
     duration,
   ].filter(Boolean)
   const details = [
+    row.taskId ? { label: t('session.activity.details.taskId'), value: row.taskId } : null,
     row.taskType || row.workflowName
       ? { label: t('session.activity.details.type'), value: getTaskTypeLabel(row.taskType, t) }
       : null,
@@ -661,7 +663,7 @@ export function SessionActivityPanel({
                         })}
                       />
                     </span>
-                    {taskProgress.completed}/{taskProgress.total}
+                    {t('session.activity.tasksMarkedComplete', { completed: taskProgress.completed, total: taskProgress.total })}
                   </span>
                 ) : null}
                 {section.id === 'backgroundTasks' && finishedBackgroundTaskKeys.length > 0 && onClearFinishedBackgroundTasks ? (

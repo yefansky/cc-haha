@@ -1459,7 +1459,17 @@ describe('WorkspaceService', () => {
       deletions: 0,
     })
     expect(status.changedFiles.some((file) => file.path.endsWith('symbols.pdb'))).toBe(false)
+    const commandCalls: Array<{ cwd: string; args: string[] }> = []
+    const originalRunSvn = (service as any).runSvn.bind(service)
+    ;(service as any).runSvn = async (cwd: string, args: string[], ...rest: unknown[]) => {
+      commandCalls.push({ cwd, args })
+      return originalRunSvn(cwd, args, ...rest)
+    }
     const diff = await service.getDiff('session-1', trackedFile.path)
+    expect(commandCalls.filter((call) => call.args[0] === 'status')).toEqual([{
+      cwd: await fs.realpath(linkedSubdirectory),
+      args: ['status', '--xml', '--depth', 'files', '--', '.'],
+    }])
     expect(diff).toMatchObject({
       state: 'ok',
       diff: expect.stringContaining('+nested after'),

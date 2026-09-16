@@ -23,14 +23,15 @@ export const useOverlayStore = create<OverlayStore>((set) => ({
 }))
 
 /**
- * Mount-scoped helper: increments the overlay count on mount, decrements on
- * unmount. Pairs cleanly with strict-mode double-invoke because each effect
+ * Registers while open (or for the whole mount when no flag is supplied).
+ * Pairs cleanly with strict-mode double-invoke because each effect
  * run does exactly one inc + one dec.
  */
-export function useSuppressBrowserOverlay() {
+export function useSuppressBrowserOverlay(open = true) {
   useEffect(() => {
+    if (!open) return
     const { push, pop } = useOverlayStore.getState()
     push()
     return () => pop()
-  }, [])
+  }, [open])
 }

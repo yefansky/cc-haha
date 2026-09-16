@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveAssistantOutputFileHref } from '../../lib/assistantOutputTargets'
 
@@ -9,12 +9,15 @@ const ENCODED_ROOT_HREF = '/reports/session/%E8%88%AA%E8%A1%8C%E7%BA%AA%E8%A6%81
 
 const testDoubles = vi.hoisted(() => ({
   openPreviewLink: vi.fn(() => true),
+  buildMenu: vi.fn().mockResolvedValue([]),
   workspaceState: {
     statusBySession: {
       'session-orbit': { workDir: 'G:/workspace' },
     },
   },
 }))
+
+vi.mock('../../lib/openWithMenuItems', () => ({ buildOpenWithMenuItemsForHref: testDoubles.buildMenu }))
 
 vi.mock('../../lib/openPreviewLink', () => ({
   openPreviewLink: testDoubles.openPreviewLink,
@@ -118,4 +121,30 @@ describe('AssistantMessage root-relative link click boundary', () => {
     expect(testDoubles.openPreviewLink)
       .toHaveBeenCalledWith('星河项目/reports/session/航行纪要.md', 'session-orbit')
   })
+})
+
+
+describe('AssistantMessage file path hover', () => {
+  it.each(['send.py', '`send.py`', '[send.py](send.py)'])('shares the nested source target for %s', (reference) => {
+    render(<AssistantMessage sessionId="session-orbit" content={`| 文件 |\n| --- |\n| ${reference} |`} turnReferencedFiles={['G:/workspace/项目/scripts/send.py']} />)
+    const link = screen.getByRole('link', { name: 'send.py' })
+    expect(link).toHaveAttribute('title', 'G:/workspace/项目/scripts/send.py')
+    fireEvent.click(link)
+    expect(testDoubles.openPreviewLink).toHaveBeenCalledWith('G:/workspace/项目/scripts/send.py', 'session-orbit')
+  })
+
+  it('refreshes titles when evidence changes without changing Markdown', () => {
+    const { rerender } = render(<AssistantMessage sessionId="session-orbit" content="send.py" turnReferencedFiles={['G:/workspace/a/send.py']} />)
+    expect(screen.getByRole('link')).toHaveAttribute('title', 'G:/workspace/a/send.py')
+    rerender(<AssistantMessage sessionId="session-orbit" content="send.py" turnReferencedFiles={['G:/workspace/b/send.py']} />)
+    expect(screen.getByRole('link')).toHaveAttribute('title', 'G:/workspace/b/send.py')
+  })
+})
+
+
+it('uses the hover target for the context menu too', async () => {
+  render(<AssistantMessage sessionId="session-orbit" content="`send.py`" turnReferencedFiles={['G:/workspace/scripts/send.py']} />)
+  const link = screen.getByRole('link', { name: 'send.py' })
+  fireEvent.contextMenu(link)
+  await waitFor(() => expect(testDoubles.buildMenu).toHaveBeenCalledWith(link.title, expect.objectContaining({ sessionId: 'session-orbit', workDir: 'G:/workspace' })))
 })

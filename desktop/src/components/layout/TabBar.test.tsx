@@ -337,7 +337,7 @@ describe('TabBar', () => {
     expect(screen.queryByTestId('session-activity-badge')).not.toBeInTheDocument()
   })
 
-  it('shows the activity button for completed TodoWrite history and hides it while the workspace is open', async () => {
+  it('keeps historical activity accessible while the workspace is open and switches panels on click', async () => {
     const { TabBar } = await import('./TabBar')
     const { useTabStore } = await import('../../stores/tabStore')
     const { useChatStore } = await import('../../stores/chatStore')
@@ -372,7 +372,11 @@ describe('TabBar', () => {
       useWorkspacePanelStore.getState().openPanel(sessionId)
     })
 
-    expect(screen.queryByRole('button', { name: /activity/i })).not.toBeInTheDocument()
+    const activityButton = screen.getByRole('button', { name: /activity/i })
+    fireEvent.click(activityButton)
+    expect(useWorkspacePanelStore.getState().isPanelOpen(sessionId)).toBe(false)
+    const { useActivityPanelStore } = await import('../../stores/activityPanelStore')
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(true)
   })
 
   it('shows the activity button without a numeric badge for running or failed activity', async () => {

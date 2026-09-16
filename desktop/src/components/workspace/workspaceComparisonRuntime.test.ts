@@ -7,6 +7,7 @@ import {
   resetWorkspaceComparisonRuntimeForTests,
 } from './workspaceComparisonRuntime'
 import { createDefaultWorkspaceComparisonSettings } from './workspaceComparisonSettings'
+import { createWorkspaceComparisonSession, editWorkspaceComparisonSide, saveWorkspaceComparisonSession, workspaceComparisonSessionToComparison } from './workspaceComparisonSession'
 
 const comparison: WorkspaceComparison = {
   schemaVersion: 1,
@@ -21,6 +22,54 @@ const comparison: WorkspaceComparison = {
 }
 
 describe('workspaceComparisonRuntime', () => {
+  it.each([false, true])('reuses identical edited and saved content while returning each caller revision (pending=%s)', async (pendingSave) => {
+    const postMessage = vi.fn()
+    let finish!: (event: MessageEvent) => void
+    class FakeWorker {
+      set onmessage(handler: (event: MessageEvent) => void) { finish = handler }
+      onerror = null
+      terminate = vi.fn()
+      postMessage = postMessage
+    }
+    vi.stubGlobal('Worker', FakeWorker)
+    const edited = editWorkspaceComparisonSide(createWorkspaceComparisonSession(comparison)!, 'right', 'edited value\n')
+    const input = { sessionRevision: edited.revision, settingsRevision: edited.settingsRevision, value: '',
+      comparison: workspaceComparisonSessionToComparison(edited), path: 'a.cpp', anchors: edited.manualAnchors,
+      settings: edited.comparisonSettings }
+    const first = requestWorkspaceComparisonModel(input)
+    const complete = () => finish({ data: computeWorkspaceComparisonModel({ ...input, id: 1 }) } as MessageEvent)
+    if (!pendingSave) { complete(); await first }
+    const saved = await saveWorkspaceComparisonSession(edited, async () => ({
+      state: 'ok', path: 'a.cpp', content: 'edited value\n', contentFingerprint: 'new-fingerprint',
+    }))
+    expect(saved.session.revision).toBeGreaterThan(edited.revision)
+    const second = requestWorkspaceComparisonModel({ ...input, sessionRevision: saved.session.revision,
+      comparison: workspaceComparisonSessionToComparison(saved.session) })
+    expect(postMessage).toHaveBeenCalledOnce()
+    if (pendingSave) complete()
+    const [before, after] = await Promise.all([first, second])
+    expect(after.model).toBe(before.model)
+    expect(after.sessionRevision).toBe(saved.session.revision)
+    expect(before.sessionRevision).toBe(edited.revision)
+  })
+
+  it('does not confuse different edits with identical local revisions and origin fingerprints', async () => {
+    vi.stubGlobal('Worker', undefined)
+    const inputFor = (content: string) => {
+      const session = editWorkspaceComparisonSide(createWorkspaceComparisonSession(comparison)!, 'right', content)
+      return { sessionRevision: session.revision, settingsRevision: session.settingsRevision,
+        value: '', comparison: workspaceComparisonSessionToComparison(session), path: 'a.cpp',
+        anchors: session.manualAnchors, settings: session.comparisonSettings }
+    }
+    const firstInput = inputFor('first edit\n')
+    const secondInput = inputFor('second edit\n')
+    expect(firstInput.sessionRevision).toBe(secondInput.sessionRevision)
+    const first = await requestWorkspaceComparisonModel(firstInput)
+    const second = await requestWorkspaceComparisonModel(secondInput)
+    expect(first.model.files[0]!.rows.map((row) => row.right?.text)).toContain('first edit')
+    expect(second.model.files[0]!.rows.map((row) => row.right?.text)).toContain('second edit')
+  })
+
   afterEach(() => {
     resetWorkspaceComparisonRuntimeForTests()
     vi.unstubAllGlobals()

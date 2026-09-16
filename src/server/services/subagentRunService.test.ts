@@ -50,7 +50,7 @@ async function writeSubagentTranscriptFile(
   )
 }
 
-function makeAgentToolUseEntry(toolUseId: string): Record<string, unknown> {
+function makeAgentToolUseEntry(toolUseId: string, name = 'Agent'): Record<string, unknown> {
   return {
     type: 'assistant',
     message: {
@@ -58,7 +58,7 @@ function makeAgentToolUseEntry(toolUseId: string): Record<string, unknown> {
       content: [{
         type: 'tool_use',
         id: toolUseId,
-        name: 'Agent',
+        name,
         input: { description: 'Explore repo', prompt: 'Read files' },
       }],
     },
@@ -184,7 +184,31 @@ describe('getSubagentRunByTool', () => {
     delete process.env.CLAUDE_CONFIG_DIR
   })
 
-  it('returns parent metadata and visible persisted subagent transcript messages', async () => {
+  it('keeps two completed historical runs linked to their own transcript without notifications', async () => {
+    await setupTmpConfigDir()
+    const sessionId = '11111111-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const projectDir = '-tmp-multiple-historical-subagents'
+    const entries: Record<string, unknown>[] = []
+    for (const [index, name] of ['Agent', 'Task'].entries()) {
+      entries.push(
+        { ...makeAgentToolUseEntry(`tool-${index}`, name), uuid: `use-${index}` },
+        { ...makeAgentToolResultEntry(`tool-${index}`, `child-${index}`), uuid: `result-${index}` },
+      )
+      await writeSubagentTranscriptFile(projectDir, sessionId, `child-${index}`, [{
+        type: 'assistant', uuid: `child-answer-${index}`, timestamp: '2026-01-01T00:00:06.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: `Distinct review ${index}` }] },
+      }])
+    }
+    await writeSessionFile(projectDir, sessionId, entries)
+    for (const index of [0, 1]) {
+      const run = await getSubagentRunByTool(sessionId, `tool-${index}`)
+      expect(run).toMatchObject({ toolUseId: `tool-${index}`, agentId: `child-${index}`, status: 'completed', source: 'subagent-jsonl' })
+      expect(run?.messages).toHaveLength(1)
+      expect(run?.messages[0]?.content).toEqual([{ type: 'text', text: `Distinct review ${index}` }])
+    }
+  })
+
+  it.each(['Agent', 'Task'])('returns persisted %s subagent transcript without live task state', async (toolName) => {
     await setupTmpConfigDir()
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     const projectDir = '-tmp-subagent-run'
@@ -192,7 +216,7 @@ describe('getSubagentRunByTool', () => {
     const agentId = 'abc123'
 
     await writeSessionFile(projectDir, sessionId, [
-      makeAgentToolUseEntry(toolUseId),
+      makeAgentToolUseEntry(toolUseId, toolName),
       makeAgentToolResultEntry(toolUseId, agentId),
       {
         type: 'user',

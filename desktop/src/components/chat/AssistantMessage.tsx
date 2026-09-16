@@ -14,8 +14,8 @@ import { AssistantOutputTargetCard } from './AssistantOutputTargetCard'
 import { openPreviewLink } from '../../lib/openPreviewLink'
 import {
   extractAssistantOutputTargets,
-  resolveAssistantOutputFileHref,
 } from '../../lib/assistantOutputTargets'
+import { resolveAssistantFileLink } from '../../lib/assistantFileLink'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useTranslation, type TranslationKey } from '../../i18n'
 
@@ -42,19 +42,20 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
 
   const [openWith, setOpenWith] = useState<{ items: OpenWithItem[]; anchor: DOMRect } | null>(null)
 
+  const resolveFileLink = useCallback((href: string) => resolveAssistantFileLink(href, {
+    workDir, changedFiles: turnChangedFiles, referencedFiles: turnReferencedFiles,
+  }), [workDir, turnChangedFiles, turnReferencedFiles])
+  const resolveLinkTitle = useCallback((href: string) => resolveFileLink(href).title, [resolveFileLink])
+
   const handleLinkClick = useCallback(
     (href: string, event: ReactMouseEvent<HTMLDivElement>): boolean => {
       if (!sessionId) return false
-      const resolvedHref = resolveAssistantOutputFileHref(href, {
-        workDir,
-        changedFiles: turnChangedFiles,
-        referencedFiles: turnReferencedFiles,
-      })
+      const resolvedHref = resolveFileLink(href).href
       const handled = openPreviewLink(resolvedHref, sessionId)
       if (handled) event.preventDefault()
       return handled
     },
-    [sessionId, turnChangedFiles, turnReferencedFiles, workDir],
+    [sessionId, resolveFileLink],
   )
 
   // Right-clicking a reference in the prose opens the same menu the output cards
@@ -71,11 +72,7 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
       event.preventDefault()
       const anchor = link!.getBoundingClientRect()
       void (async () => {
-        const resolvedHref = resolveAssistantOutputFileHref(href, {
-          workDir,
-          changedFiles: turnChangedFiles,
-          referencedFiles: turnReferencedFiles,
-        })
+        const resolvedHref = resolveFileLink(href).href
         const items = await buildOpenWithMenuItemsForHref(resolvedHref, {
           sessionId,
           workDir,
@@ -86,7 +83,7 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
         if (items.length > 0) setOpenWith({ items, anchor })
       })()
     },
-    [sessionId, t, turnChangedFiles, turnReferencedFiles, workDir],
+    [sessionId, t, resolveFileLink, workDir],
   )
 
   const outputTargets = useMemo(
@@ -127,6 +124,7 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
             variant={documentLayout ? 'document' : 'default'}
             streaming={isStreaming}
             onLinkClick={sessionId ? handleLinkClick : undefined}
+            resolveLinkTitle={sessionId ? resolveLinkTitle : undefined}
           />
           {!isStreaming && (
             <InlineImageGallery

@@ -37,6 +37,7 @@ import {
 import {
   addWorkspaceManualAlignmentAnchor,
   editWorkspaceComparisonSide,
+  saveWorkspaceComparisonSession,
 } from '../components/workspace/workspaceComparisonSession'
 import * as workspacePreviewPersistentCache from '../lib/workspacePreviewPersistentCache'
 
@@ -738,6 +739,35 @@ describe('workspacePanelStore', () => {
     ])
     expect(useWorkspacePanelStore.getState().loading.previewByTabId['session-refresh::diff:src/a.ts']).toBe(false)
     expect(useWorkspacePanelStore.getState().activePreviewTabIdBySession['session-refresh']).toBe('diff:src/a.ts')
+  })
+
+  it.each(['success', 'failure'])('keeps saved content throughout a delayed forced refresh (%s)', async (outcome) => {
+    const sessionId = `saved-refresh-${outcome}`
+    const comparison = cachedComparisonFixture()
+    const refresh = deferred<WorkspaceDiffResult>()
+    mocks.getWorkspaceDiffMock.mockResolvedValueOnce({ state: 'ok', path: 'a.ts', diff: '', comparison })
+      .mockReturnValueOnce(refresh.promise)
+    const store = useWorkspacePanelStore.getState()
+    await store.openPreview(sessionId, 'a.ts', 'diff')
+    const tab = useWorkspacePanelStore.getState().previewTabsBySession[sessionId]![0]!
+    const edited = editWorkspaceComparisonSide(tab.comparisonSession!, 'right', 'saved edit\n')
+    store.setComparisonSession(sessionId, tab.id, edited)
+    const saved = await saveWorkspaceComparisonSession(edited, async () => ({
+      state: 'ok', path: 'a.ts', content: 'saved edit\n', contentFingerprint: 'saved',
+    }))
+    expect(saved.state).toBe('ok')
+    store.setComparisonSession(sessionId, tab.id, saved.session)
+    const pending = store.openPreview(sessionId, 'a.ts', 'diff', undefined, undefined, undefined, undefined, undefined, { force: true })
+    const current = () => useWorkspacePanelStore.getState().previewTabsBySession[sessionId]![0]!.comparisonSession!
+    expect(current().right.content).toBe('saved edit\n')
+    expect(current().right.dirty).toBe(false)
+    if (outcome === 'success') refresh.resolve({ state: 'ok', path: 'a.ts', diff: '', comparison: {
+      ...comparison, right: { ...comparison.right, content: 'saved edit\n', contentFingerprint: 'saved' },
+    } })
+    else refresh.reject(new Error('refresh unavailable'))
+    await pending
+    expect(current().right.content).toBe('saved edit\n')
+    expect(current().right.dirty).toBe(false)
   })
 
   it('shows the last successful comparison immediately after status invalidation and refreshes it in place', async () => {

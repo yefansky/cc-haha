@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { IconButton } from '@/components/ui/IconButton'
 import { Modal } from '@/components/ui/Modal'
-import { useOverlayStore } from '../../stores/overlayStore'
 import { useTranslation } from '../../i18n'
 
 type GalleryImage = {
@@ -21,16 +20,6 @@ type Props = {
 export function ImageGalleryModal({ open, images, activeIndex, onClose, onSelect }: Props) {
   const t = useTranslation()
   const activeImage = images[activeIndex]
-
-  // Native child webviews (e.g. the in-app browser preview) always render
-  // ABOVE the DOM, so this fullscreen overlay would be partially covered.
-  // Bump the overlay count while open so BrowserSurface can hide the webview.
-  useEffect(() => {
-    if (!open) return
-    const { push, pop } = useOverlayStore.getState()
-    push()
-    return () => pop()
-  }, [open])
 
   useEffect(() => {
     if (!open || images.length <= 1) return

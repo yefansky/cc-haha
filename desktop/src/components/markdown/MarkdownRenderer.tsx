@@ -35,6 +35,8 @@ type Props = {
    * sources survive, which blocks tracking pixels and loopback probes.
    */
   resolveImageSrc?: (src: string) => string | null
+  /** Caller-owned file context; undefined preserves the author-supplied title. */
+  resolveLinkTitle?: (href: string) => string | undefined
 }
 
 type CodeBlock = {
@@ -324,6 +326,7 @@ function enhanceMarkdownHtml(
   mathBlocks: MathBlock[],
   references: ReferenceLinking,
   resolveImageSrc?: (src: string) => string | null,
+  resolveLinkTitle?: (href: string) => string | undefined,
 ): string {
   const cleanHtml = DOMPurify.sanitize(html, MARKDOWN_SANITIZE_CONFIG)
 
@@ -391,6 +394,15 @@ function enhanceMarkdownHtml(
   // so the `target="_blank"` pass above cannot reach the file links it creates.
   if (wantsFilePathLinks) linkifyFilePaths(container)
   else if (wantsFileLinkStripping) unwrapFileLinks(container)
+
+  if (resolveLinkTitle) {
+    container.querySelectorAll<HTMLAnchorElement>('a[href], a[data-file-path]').forEach((link) => {
+      const href = fileRefFromElement(link) ?? link.getAttribute('href')
+      const title = href ? resolveLinkTitle(href) : undefined
+      // DOM assignment escapes quotes/markup before serialization.
+      if (title !== undefined) link.setAttribute('title', title)
+    })
+  }
 
   return container.innerHTML
 }
@@ -561,7 +573,7 @@ function getProseClasses(variant: 'default' | 'document' | 'compact', className?
     .join(' ')
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({ content, variant = 'default', className, cache = true, streaming = false, onLinkClick, resolveImageSrc }: Props) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, variant = 'default', className, cache = true, streaming = false, onLinkClick, resolveImageSrc, resolveLinkTitle }: Props) {
   const { html, codeBlocks, mathBlocks } = useMemo(
     () => cache ? getCachedMarkdownParse(content, streaming) : parseMarkdown(content),
     [cache, content, streaming],
@@ -591,7 +603,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, varian
     }
 
     if (codeBlocks.length === 0) {
-      return [{ type: 'html' as const, content: enhanceMarkdownHtml(html, mathBlocks, references, resolveImageSrc) }]
+      return [{ type: 'html' as const, content: enhanceMarkdownHtml(html, mathBlocks, references, resolveImageSrc, resolveLinkTitle) }]
     }
 
     const result: MarkdownPart[] = []
@@ -604,18 +616,18 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, varian
 
       const before = remaining.slice(0, idx)
       if (before) {
-        result.push({ type: 'html', content: enhanceMarkdownHtml(before, mathBlocks, references, resolveImageSrc) })
+        result.push({ type: 'html', content: enhanceMarkdownHtml(before, mathBlocks, references, resolveImageSrc, resolveLinkTitle) })
       }
       result.push({ type: 'code', block })
       remaining = remaining.slice(idx + marker.length)
     }
 
     if (remaining) {
-      result.push({ type: 'html', content: enhanceMarkdownHtml(remaining, mathBlocks, references, resolveImageSrc) })
+      result.push({ type: 'html', content: enhanceMarkdownHtml(remaining, mathBlocks, references, resolveImageSrc, resolveLinkTitle) })
     }
 
     return result
-  }, [html, codeBlocks, mathBlocks, streaming, onLinkClick, resolveImageSrc])
+  }, [html, codeBlocks, mathBlocks, streaming, onLinkClick, resolveImageSrc, resolveLinkTitle])
 
   const handleClick = useCallback(async (event: ReactMouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null

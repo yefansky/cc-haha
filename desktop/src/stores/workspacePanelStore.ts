@@ -472,7 +472,9 @@ function requestWorkspacePreviewPayload(
         && (!isLiveComparison || isFreshComparison(sessionId, cached.cachedAt))) {
         return Promise.resolve(cached.payload)
       }
-      options.onCached?.(cached.payload)
+      // A forced refresh can follow a successful save. The visible session is
+      // then newer than this cache; keep it in place until fresh data arrives.
+      if (!options.force) options.onCached?.(cached.payload)
     }
     const existing = previewPayloadRequestsInFlight.get(cacheKey)
     if (existing && !options.force) {

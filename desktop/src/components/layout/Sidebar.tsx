@@ -699,6 +699,24 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
     setRenameValue('')
   }, [renamingId, renameValue, renameSession])
 
+  const renameInput = (
+    <input
+      autoFocus
+      aria-label={t('common.rename')}
+      value={renameValue}
+      onChange={(e) => setRenameValue(e.target.value)}
+      onBlur={handleFinishRename}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') handleFinishRename()
+        if (e.key === 'Escape') {
+          setRenamingId(null)
+          setRenameValue('')
+        }
+      }}
+      className="w-full rounded-[var(--radius-md)] border border-[var(--color-border-focus)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none"
+    />
+  )
+
   useEffect(() => {
     if (!isBatchMode) return
 
@@ -977,26 +995,32 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                   </div>
                   <div className="pl-5">
                     {pinnedSessions.map((session) => (
-                      <PinnedSessionRow
-                        key={session.id}
-                        session={session}
-                        project={projectTitle(session.projectRoot || session.workDir || getSessionProjectKey(session))}
-                        isBatchMode={isBatchMode}
-                        isSelected={selectedSessionIds.has(session.id)}
-                        isActive={session.id === activeTabId}
-                        isRunning={runningSessionIds.has(session.id)}
-                        t={t}
-                        onClick={(event) => {
-                          if (isBatchMode) {
-                            handleBatchSessionClick(event, session.id)
-                            return
-                          }
-                          useTabStore.getState().openTab(session.id, session.title)
-                          useChatStore.getState().connectToSession(session.id)
-                          closeMobileDrawer()
-                        }}
-                        onContextMenu={(event) => handleContextMenu(event, session.id)}
-                      />
+                      renamingId === session.id ? (
+                        <div key={session.id} data-sidebar-session-id={session.id} className="relative mb-0.5 last:mb-0">
+                          {renameInput}
+                        </div>
+                      ) : (
+                        <PinnedSessionRow
+                          key={session.id}
+                          session={session}
+                          project={projectTitle(session.projectRoot || session.workDir || getSessionProjectKey(session))}
+                          isBatchMode={isBatchMode}
+                          isSelected={selectedSessionIds.has(session.id)}
+                          isActive={session.id === activeTabId}
+                          isRunning={runningSessionIds.has(session.id)}
+                          t={t}
+                          onClick={(event) => {
+                            if (isBatchMode) {
+                              handleBatchSessionClick(event, session.id)
+                              return
+                            }
+                            useTabStore.getState().openTab(session.id, session.title)
+                            useChatStore.getState().connectToSession(session.id)
+                            closeMobileDrawer()
+                          }}
+                          onContextMenu={(event) => handleContextMenu(event, session.id)}
+                        />
+                      )
                     ))}
                   </div>
                 </section>
@@ -1154,20 +1178,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                               className="relative mb-0.5 last:mb-0"
                             >
                               {renamingId === session.id ? (
-                                <input
-                                  autoFocus
-                                  value={renameValue}
-                                  onChange={(e) => setRenameValue(e.target.value)}
-                                  onBlur={handleFinishRename}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') handleFinishRename()
-                                    if (e.key === 'Escape') {
-                                      setRenamingId(null)
-                                      setRenameValue('')
-                                    }
-                                  }}
-                                  className="w-full rounded-[var(--radius-md)] border border-[var(--color-border-focus)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none"
-                                />
+                                renameInput
                               ) : (
                                 <button
                                   onClick={(event) => {
