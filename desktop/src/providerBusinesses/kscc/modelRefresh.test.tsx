@@ -31,30 +31,64 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-it('loads cache immediately, refreshes once at startup, and updates the real selector without changing its session', async () => {
-  let finish!: () => void
-  const refresh = vi.spyOn(providersApi, 'refreshModelCatalog').mockImplementation(() => new Promise(resolve => {
-    finish = () => {
-      saved = { ...saved, modelCatalog: ['kept', 'deepseekv-4.1-flash'].map(id => ({ id, capabilities: [] })) }
-      resolve({ provider: saved })
-    }
-  }))
+it('opens on the cached catalog, refreshes in the background, and reveals the synced model on the next open', async () => {
+  const nextCatalog = ['kept', 'deepseekv-4.1-flash'].map(id => ({ id, capabilities: [] }))
+  let finishPickerRefresh!: () => void
+  const refresh = vi.spyOn(providersApi, 'refreshModelCatalog')
+    .mockImplementationOnce(async () => ({ provider: saved })) // 启动自动刷新：目录未变
+    .mockImplementationOnce(() => new Promise(resolve => { // 打开列表触发的后台刷新
+      finishPickerRefresh = () => {
+        saved = { ...saved, modelCatalog: nextCatalog }
+        resolve({ provider: saved })
+      }
+    }))
   const onSelection = vi.fn()
   await useProviderStore.getState().fetchProviders()
+  await act(async () => {}) // 启动自动刷新落地，之后打开列表才会发起新的后台刷新
+  expect(useProviderStore.getState().modelRefreshStatus[provider.id]?.pending).toBe(false)
+  expect(useProviderStore.getState().modelRefreshProviderIds).toEqual([provider.id])
   expect(useProviderStore.getState().providers[0]?.modelCatalog?.map(model => model.id)).toContain('removed')
   expect(useProviderStore.getState().isLoading).toBe(false)
+  expect(refresh).toHaveBeenCalledTimes(1)
+
   render(<ModelSelector runtimeKey="busy-session" runtimeSelection={{ providerId: provider.id, modelId: 'kept' }} onRuntimeSelectionChange={onSelection} />)
-  await act(async () => {
-    finish()
-    await useProviderStore.getState().refreshModelCatalog(provider.id)
-  })
-  fireEvent.click(screen.getByRole('button', { name: /kept/ }))
-  expect(await screen.findByRole('button', { name: /deepseekv-4.1-flash/ })).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /removed/ })).not.toBeInTheDocument()
+  const trigger = screen.getByRole('button', { name: 'kept, KSCC' })
+  await act(async () => { fireEvent.click(trigger) })
+  // 打开瞬间显示本地缓存，刷新仍在后台，不阻塞列表。
+  expect(screen.getByRole('button', { name: 'removed' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'deepseekv-4.1-flash' })).not.toBeInTheDocument()
+  expect(refresh).toHaveBeenCalledTimes(2)
+
+  await act(async () => { fireEvent.click(trigger) }) // 关闭
+  await act(async () => { finishPickerRefresh() }) // 后台刷新完成并写入缓存
+  await act(async () => { fireEvent.click(trigger) }) // 再次打开：节流窗口内不重复请求
+  expect(await screen.findByRole('button', { name: 'deepseekv-4.1-flash' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'removed' })).not.toBeInTheDocument()
+  expect(refresh).toHaveBeenCalledTimes(2)
   expect(onSelection).not.toHaveBeenCalled()
   expect(useProviderStore.getState().activeId).toBeNull()
   await act(async () => { await useProviderStore.getState().fetchProviders() })
-  expect(refresh).toHaveBeenCalledTimes(1)
+  expect(refresh).toHaveBeenCalledTimes(2)
+})
+
+it('refreshes again on a later open once the picker throttle window has passed', async () => {
+  let now = 1_000_000
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
+  const refresh = vi.spyOn(providersApi, 'refreshModelCatalog').mockImplementation(async () => ({ provider: saved }))
+  await useProviderStore.getState().fetchProviders()
+  await act(async () => {}) // 启动自动刷新落地
+  render(<ModelSelector runtimeKey="later-open-session" runtimeSelection={{ providerId: provider.id, modelId: 'kept' }} />)
+  const trigger = screen.getByRole('button', { name: 'kept, KSCC' })
+
+  await act(async () => { fireEvent.click(trigger) }) // 打开 → 后台刷新
+  await act(async () => { fireEvent.click(trigger) }) // 关闭
+  await act(async () => { fireEvent.click(trigger) }) // 立刻重开：仍在节流窗口内
+  expect(refresh).toHaveBeenCalledTimes(2)
+
+  now += 61_000
+  await act(async () => { fireEvent.click(trigger) }) // 关闭
+  await act(async () => { fireEvent.click(trigger) }) // 窗口过后再打开 → 重新刷新
+  expect(refresh).toHaveBeenCalledTimes(3)
 })
 
 it('keeps cached models after startup failure and the manual button retries through the real store', async () => {

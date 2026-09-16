@@ -30,10 +30,16 @@ import type {
 import type { ProviderPreset } from '../types/providerPreset'
 import type { RuntimeSelection } from '../types/runtime'
 
+// 打开模型列表时的后台刷新节流：模型目录不常变，快速反复开关列表不应重复打上游。
+const PICKER_REFRESH_INTERVAL_MS = 60_000
+
 type ProviderStore = {
   modelRefreshAttempted: string[]
+  modelRefreshProviderIds: string[]
+  modelRefreshOpenedAt: Record<string, number>
   modelRefreshStatus: Record<string, { pending: boolean; updatedAt?: number; failed?: boolean; defaultChanged?: boolean; reconnectRequired?: boolean }>
   refreshModelCatalog: (id: string) => Promise<void>
+  refreshModelCatalogsOnPickerOpen: () => void
   providers: SavedProvider[]
   providerOrder: string[]
   activeId: string | null
@@ -177,6 +183,8 @@ let latestProviderList: Promise<void> = Promise.resolve()
 
 export const useProviderStore = create<ProviderStore>((set, get) => ({
   modelRefreshAttempted: [],
+  modelRefreshProviderIds: [],
+  modelRefreshOpenedAt: {},
   modelRefreshStatus: {},
   refreshModelCatalog: (id) => {
     const existing = modelRefreshRequests.get(id)
@@ -199,6 +207,25 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     modelRefreshRequests.set(id, pending)
     void pending.finally(() => modelRefreshRequests.delete(id))
     return pending
+  },
+  // 打开模型列表时调用：先用缓存渲染当前 UI，再在后台对支持目录刷新的
+  // provider 拉一次最新目录；结果写入 store 供下次打开显示。失败保留旧缓存。
+  refreshModelCatalogsOnPickerOpen: () => {
+    const { modelRefreshProviderIds, modelRefreshOpenedAt, modelRefreshStatus } = get()
+    if (modelRefreshProviderIds.length === 0) return
+    const now = Date.now()
+    const openedAt = { ...modelRefreshOpenedAt }
+    let changed = false
+    for (const id of modelRefreshProviderIds) {
+      // 在途刷新（含启动时的自动刷新）直接复用，不重复发起也不推进节流时间。
+      if (modelRefreshStatus[id]?.pending) continue
+      const last = openedAt[id]
+      if (last !== undefined && now - last < PICKER_REFRESH_INTERVAL_MS) continue
+      openedAt[id] = now
+      changed = true
+      void get().refreshModelCatalog(id)
+    }
+    if (changed) set({ modelRefreshOpenedAt: openedAt })
   },
   providers: [],
   providerOrder: [...BUILT_IN_PROVIDER_IDS],
@@ -225,6 +252,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           activeId,
           hasLoadedProviders: true,
           isLoading: false,
+          // 服务端标记的支持目录刷新的 provider，打开模型列表时按它触发后台刷新。
+          modelRefreshProviderIds,
         })
         for (const id of modelRefreshProviderIds) {
           if (get().modelRefreshAttempted.includes(id)) continue

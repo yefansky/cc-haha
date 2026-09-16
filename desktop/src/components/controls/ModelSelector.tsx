@@ -271,6 +271,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     isLoading: providersLoading,
     fetchProviders,
     modelRefreshStatus,
+    refreshModelCatalogsOnPickerOpen,
   } = useProviderStore()
   const claudeOAuthStatus = useHahaOAuthStore((s) => s.status)
   const fetchClaudeOAuthStatus = useHahaOAuthStore((s) => s.fetchStatus)
@@ -330,6 +331,13 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     void fetchOpenAIOAuthStatus()
     void fetchGrokOAuthStatus()
   }, [fetchClaudeOAuthStatus, fetchGrokOAuthStatus, fetchOpenAIOAuthStatus, isRuntimeScoped, open])
+
+  // 每次打开列表都先用缓存立刻渲染，后台再拉一次 provider 模型目录；刷新不阻塞
+  // 当前面板，同步到的结果缓存起来，下次打开就能看到新增或下架的模型。
+  useEffect(() => {
+    if (!isRuntimeScoped || !open) return
+    refreshModelCatalogsOnPickerOpen()
+  }, [isRuntimeScoped, open, refreshModelCatalogsOnPickerOpen])
 
   const closeSelector = useCallback(() => setOpen(false), [])
 
