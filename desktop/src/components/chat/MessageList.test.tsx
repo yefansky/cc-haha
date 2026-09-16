@@ -15,6 +15,7 @@ import {
 } from './MessageList'
 import type { ConversationNavigationItem } from './ConversationNavigator'
 import type { VirtualRenderItemMetric } from './virtualHeightCache'
+import { getHeightsForSession } from './virtualHeightCache'
 import { relativizeWorkspacePath } from './CurrentTurnChangeCard'
 import { sessionsApi } from '../../api/sessions'
 import { wsManager } from '../../api/websocket'
@@ -417,6 +418,64 @@ describe('MessageList nested tool calls', () => {
     for (const item of container.querySelectorAll('[data-virtual-message-item]')) {
       expect((item as HTMLElement).className).not.toContain('chat-render-item--cv')
     }
+  })
+
+  it.each([275, -125])('preserves the visible history message through a %ipx measurement shift', async (shift) => {
+    getHeightsForSession(ACTIVE_TAB).clear()
+    const observers: Array<{ callback: ResizeObserverCallback; target?: Element }> = []
+    class TestResizeObserver {
+      record: { callback: ResizeObserverCallback; target?: Element }
+      constructor(callback: ResizeObserverCallback) {
+        this.record = { callback }
+        observers.push(this.record)
+      }
+      observe(target: Element) { this.record.target = target }
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
+    useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSessionState({
+      messages: Array.from({ length: 220 }, (_, index) => ({
+        id: `anchor-${index}`, type: 'assistant_text', content: `history ${index}`, timestamp: index,
+      })),
+    }) } })
+    const { container } = render(<MessageList />)
+    const scroller = container.querySelector('.chat-scroll-area') as HTMLElement
+    let scrollTop = 1000
+    let layoutShift = 0
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 30000 },
+      scrollTop: { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value } },
+    })
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const index = Number(this.dataset.virtualMessageItem?.replace('anchor-', ''))
+      const top = Number.isFinite(index) ? index * 100 - scrollTop + (index >= 10 ? layoutShift : 0) : 0
+      const height = this === scroller ? 400 : 100
+      return { top, bottom: top + height, left: 0, right: 900, width: 900, height, x: 0, y: top, toJSON() {} }
+    })
+    await waitForProgrammaticScrollReset()
+    fireEvent.wheel(scroller, { deltaY: -120 })
+    fireEvent.scroll(scroller)
+    const anchor = container.querySelector<HTMLElement>('[data-virtual-message-item="anchor-10"]')!
+    expect(anchor).toBeTruthy()
+    const before = anchor.getBoundingClientRect().top
+    const measuredRow = observers.find(({ target }) => (target as HTMLElement)?.dataset?.virtualMessageItem === 'anchor-8')!
+    expect(measuredRow).toBeTruthy()
+    layoutShift = shift
+    act(() => measuredRow.callback([{
+      target: measuredRow.target, contentRect: { height: 28.25 },
+    } as ResizeObserverEntry], {} as ResizeObserver))
+    await waitFor(() => expect(scrollTop).toBe(1000 + shift))
+    expect(anchor.getBoundingClientRect().top).toBe(before)
+    expect(getHeightsForSession(ACTIVE_TAB).get('anchor-8')).toBe(28.25)
+    expect(anchor.className).toContain('flow-root')
+    // A subsequent user scroll must remain effective, with no stale-anchor pullback.
+    scrollTop -= 80
+    fireEvent.scroll(scroller)
+    await waitForProgrammaticScrollReset()
+    expect(scrollTop).toBe(920 + shift)
+    expect(anchor.getBoundingClientRect().top).toBe(before + 80)
   })
 
   it('positions the native viewport when an empty session receives a virtualized history batch', () => {

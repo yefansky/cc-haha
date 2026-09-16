@@ -1328,6 +1328,20 @@ const CHAT_RENDER_ITEM_CLASS = [
   'chat-render-item',
 ].join(' ')
 
+type ReadingAnchor = { key: string; offset: number; scrollTop: number }
+
+function captureReadingAnchor(container: HTMLElement): ReadingAnchor | null {
+  const top = container.getBoundingClientRect().top
+  const item = Array.from(container.querySelectorAll<HTMLElement>('[data-virtual-message-item]'))
+    .find((candidate) => candidate.getBoundingClientRect().bottom > top)
+  if (!item || item.getBoundingClientRect().top >= top + container.clientHeight) return null
+  return {
+    key: item.dataset.virtualMessageItem!,
+    offset: item.getBoundingClientRect().top - top,
+    scrollTop: container.scrollTop,
+  }
+}
+
 export function isRenderItemFullyVisibleInChatScroller(renderItem: HTMLElement) {
   const scroller = renderItem.closest<HTMLElement>('.chat-scroll-area')
   if (!scroller) return false
@@ -1892,7 +1906,7 @@ const MeasuredRenderItem = memo(function MeasuredRenderItem({
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0]
       if (entry && Number.isFinite(entry.contentRect.height) && entry.contentRect.height > 0) {
-        onHeightChange(itemKey, Math.ceil(entry.contentRect.height))
+        onHeightChange(itemKey, entry.contentRect.height)
       }
     })
     observer.observe(node)
@@ -1904,7 +1918,7 @@ const MeasuredRenderItem = memo(function MeasuredRenderItem({
       ref={itemRef}
       data-virtual-message-item={itemKey}
       data-chat-render-item-key={itemKey}
-      className={`${CHAT_RENDER_ITEM_CLASS} ${highlighted ? 'chat-render-item--navigation-target' : ''}`}
+      className={`${CHAT_RENDER_ITEM_CLASS} flow-root ${highlighted ? 'chat-render-item--navigation-target' : ''}`}
     >
       {children}
     </div>
@@ -2053,6 +2067,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   const messageListRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const scrollContentRef = useRef<HTMLDivElement>(null)
+  const readingAnchorRef = useRef<ReadingAnchor | null>(null)
   const virtualItemHeightsRef = useRef<Map<string, number>>(
     resolvedSessionId ? getHeightsForSession(resolvedSessionId) : new Map<string, number>(),
   )
@@ -2176,6 +2191,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [])
 
   const scrollToBottom = useCallback(() => {
+    readingAnchorRef.current = null
     shouldAutoScrollRef.current = true
     isProgrammaticScrollingRef.current = true
     ignoreProgrammaticScrollUntilRef.current = performance.now() + 250
@@ -2245,7 +2261,10 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [])
 
   const handleVirtualItemHeightChange = useCallback((itemKey: string, height: number) => {
-    const measuredHeight = clampNumber(height, VIRTUAL_MIN_ITEM_HEIGHT, VIRTUAL_MAX_ITEM_HEIGHT)
+    // Estimates are bounded; real geometry must not be clamped (thinking rows
+    // can be shorter than 48px and expanded messages taller than 24,000px).
+    if (!Number.isFinite(height) || height <= 0) return
+    const measuredHeight = height
     const previousHeight = virtualItemHeightsRef.current.get(itemKey)
     if (previousHeight !== undefined && Math.abs(previousHeight - measuredHeight) < 1) return
 
@@ -2274,6 +2293,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     // prevent the jump-to-latest button from flickering during auto-scroll.
     const container = scrollContainerRef.current
     if (!container) return
+    readingAnchorRef.current = captureReadingAnchor(container)
     const matchesProgrammaticScrollTop =
       ignoreProgrammaticScrollTopRef.current !== null &&
       Math.abs(container.scrollTop - ignoreProgrammaticScrollTopRef.current) < 1
@@ -2341,6 +2361,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
 
   useLayoutEffect(() => {
     if (lastSessionIdRef.current !== resolvedSessionId) {
+      readingAnchorRef.current = null
       const snapshot = resolvedSessionId ? sessionScrollSnapshots.get(resolvedSessionId) : undefined
       shouldAutoScrollRef.current = snapshot?.wasAtBottom ?? true
       lastSessionIdRef.current = resolvedSessionId
@@ -2640,6 +2661,35 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     ),
     [measuredItemsVersion, renderItemKeys, renderItemMetrics, renderItems, virtualViewport],
   )
+
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container || !virtualTranscriptWindow.enabled || shouldAutoScrollRef.current) {
+      readingAnchorRef.current = null
+      return
+    }
+    const anchor = readingAnchorRef.current
+    if (anchor) {
+      const item = Array.from(container.querySelectorAll<HTMLElement>('[data-virtual-message-item]'))
+        .find((candidate) => candidate.dataset.virtualMessageItem === anchor.key)
+      if (item) {
+        // Keep the same message at the same screen position when spacer or
+        // measured heights change, while preserving wheel movement since capture.
+        const correction = item.getBoundingClientRect().top - container.getBoundingClientRect().top
+          - anchor.offset + container.scrollTop - anchor.scrollTop
+        if (Math.abs(correction) >= 1) {
+          setScrollTopWithoutLayoutRead(container, container.scrollTop + correction)
+          ignoreProgrammaticScrollTopRef.current = container.scrollTop
+          ignoreProgrammaticScrollUntilRef.current = performance.now() + 250
+          // The native scroll event updates the virtual viewport. Updating
+          // React state here would repeatedly remount unmeasured rows before
+          // ResizeObserver can deliver their geometry.
+        }
+      }
+    }
+    readingAnchorRef.current = captureReadingAnchor(container)
+    if (resolvedSessionId) rememberSessionScroll(resolvedSessionId, container)
+  }, [resolvedSessionId, virtualTranscriptWindow])
   const activeConversationNavigationItemId = useMemo(
     () => isAwayFromLatest
       ? getActiveConversationNavigationItemId(
@@ -3014,6 +3064,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [toolResultMap])
 
   const handleNavigateToConversationItem = useCallback((item: ConversationNavigationItem) => {
+    readingAnchorRef.current = null
     const container = scrollContainerRef.current
     if (!container) return
 
@@ -3080,6 +3131,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   ])
 
   const navigateToConversationFindMatch = useCallback((match: ConversationFindMatch) => {
+    readingAnchorRef.current = null
     const container = scrollContainerRef.current
     if (!container) return
 
@@ -3177,6 +3229,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
   }, [activeConversationFindMatch, virtualTranscriptWindow.items])
 
   const restoreWorkspacePanelOrigin = useCallback((origin: WorkspacePanelOrigin, attempt = 0) => {
+    readingAnchorRef.current = null
     const container = scrollContainerRef.current
     const content = scrollContentRef.current
     if (!container || !content || !resolvedSessionId) return
