@@ -1418,6 +1418,14 @@ html, body, #root {
   app-region: drag;
   -webkit-app-region: drag;
 }
+/* Keep the sidebar wordmark and its full flexible blank area draggable.
+   Interactive header controls are siblings, outside this native drag surface. */
+.sidebar-title-drag-surface,
+.sidebar-title-drag-surface * {
+  app-region: drag;
+  -webkit-app-region: drag;
+  user-select: none;
+}
 button, input, textarea, select, a, [role="button"] {
   app-region: no-drag;
   -webkit-app-region: no-drag;
@@ -1426,10 +1434,16 @@ button, input, textarea, select, a, [role="button"] {
   app-region: no-drag;
   -webkit-app-region: no-drag;
 }
-.tab-bar-interactive,
-.tab-bar-interactive * {
+/* Native hit testing must use the visible viewport, not the offscreen rects
+   of horizontally scrolled tabs (which can overlap the sidebar title). */
+.tab-bar-scroll-viewport {
   app-region: no-drag;
   -webkit-app-region: no-drag;
+}
+.tab-bar-interactive,
+.tab-bar-interactive * {
+  app-region: initial;
+  -webkit-app-region: initial;
 }
 
 /* Chrome's hairline between two neighbouring idle tabs — the thing that keeps

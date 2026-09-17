@@ -759,7 +759,10 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
               nav icons, the search glyph and the settings gear below it —
               the section's own `px-3` alone left it sticking out on its own.
               Collapsed, the mark is centered on the rail instead. */}
-          <div className={`flex min-w-0 items-center ${expanded ? 'gap-2.5 pl-3' : 'justify-center'}`}>
+          <div
+            data-desktop-drag-region
+            className={`sidebar-title-drag-surface flex min-w-0 items-center self-stretch ${expanded ? 'flex-1 gap-2.5 pl-3' : 'justify-center'}`}
+          >
             {!expanded ? <BrandSeal size="sm" /> : null}
             {/* One form, at every width. The header used to carry "Claude Code
                 Haha" and swap to this below ~230px of title region, which meant
@@ -772,7 +775,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
               cc-<span className="text-[var(--color-brand)]">haha</span>
             </span>
           </div>
-          <div className={`flex items-center ${expanded ? 'gap-1.5' : 'flex-col gap-2'}`}>
+          <div className={`flex shrink-0 items-center ${expanded ? 'gap-1.5' : 'flex-col gap-2'}`}>
             <a
               href="https://github.com/NanmiCoder/cc-haha"
               target="_blank"

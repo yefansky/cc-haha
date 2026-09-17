@@ -1147,7 +1147,7 @@ describe('TabBar', () => {
     expect(screen.queryByTestId('window-controls')).not.toBeInTheDocument()
   })
 
-  it('marks the tab bar as a native drag region', async () => {
+  it('keeps native window dragging outside the interactive tab viewport', async () => {
     const { TabBar } = await import('./TabBar')
     const { useTabStore } = await import('../../stores/tabStore')
     const { useChatStore } = await import('../../stores/chatStore')
@@ -1168,7 +1168,7 @@ describe('TabBar', () => {
     })
 
     expect(screen.getByTestId('tab-bar')).toHaveAttribute('data-desktop-drag-region')
-    expect(screen.getByTestId('tab-bar-scroll-region')).toHaveAttribute('data-desktop-drag-region')
+    expect(screen.getByTestId('tab-bar-scroll-region')).not.toHaveAttribute('data-desktop-drag-region')
     expect(screen.getByTestId('tab-bar-drag-gutter')).toHaveAttribute('data-desktop-drag-region')
     const tab = screen.getByText('Untitled Session').closest('.tab-bar-interactive')
     expect(tab).toBeInTheDocument()
@@ -1212,9 +1212,9 @@ describe('TabBar', () => {
     // strip stops being 52px tall.
     expect(scrollRegion).toHaveClass('pt-[6px]')
     expect(tab).toHaveClass('min-h-[46px]')
-    // The giveback stays inside the drag region: it belongs to the scroll
-    // region, which carries the attribute, not to the tab, which must not.
-    expect(scrollRegion).toHaveAttribute('data-desktop-drag-region')
+    // The visible viewport owns no-drag hit testing, including its top padding.
+    // Scrolled tab rectangles must not contribute native regions outside it.
+    expect(scrollRegion).not.toHaveAttribute('data-desktop-drag-region')
     expect(tab).not.toHaveAttribute('data-desktop-drag-region')
   })
 
@@ -1615,7 +1615,7 @@ describe('TabBar', () => {
     expect(screen.queryByTestId('open-project-menu')).not.toBeInTheDocument()
   })
 
-  it('marks the empty tab-bar gutter as a native drag region without runtime dragging', async () => {
+  it('keeps the scroll viewport out of native and manual window dragging', async () => {
     const { TabBar } = await import('./TabBar')
     const { useTabStore } = await import('../../stores/tabStore')
     const { useChatStore } = await import('../../stores/chatStore')
@@ -1637,7 +1637,7 @@ describe('TabBar', () => {
 
     const scrollRegion = screen.getByTestId('tab-bar-scroll-region')
     expect(scrollRegion).toBeInTheDocument()
-    expect(scrollRegion).toHaveAttribute('data-desktop-drag-region')
+    expect(scrollRegion).not.toHaveAttribute('data-desktop-drag-region')
 
     fireEvent.mouseDown(scrollRegion)
 

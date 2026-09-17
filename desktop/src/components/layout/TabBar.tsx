@@ -547,14 +547,13 @@ export function TabBar() {
       <div
         ref={scrollRef}
         data-testid="tab-bar-scroll-region"
-        data-desktop-drag-region={isDesktopRuntime ? true : undefined}
         /*
           `pt-[6px]` is the shoulder: 52px strip minus 6px leaves the 46px tab,
           and those 6px are what makes the rounded top read as rounded rather
-          than as a corner clipped by the window frame. The strip, not the tab,
-          owns the giveback, so it stays inside the window drag region.
+          than as a corner clipped by the window frame. The visible viewport
+          owns native no-drag hit testing so offscreen tabs cannot mask the sidebar.
         */
-        className="flex-1 flex items-stretch gap-[2px] overflow-x-hidden pt-[6px]"
+        className="tab-bar-scroll-viewport flex-1 flex items-stretch gap-[2px] overflow-x-hidden pt-[6px]"
         onDragOver={(e) => e.preventDefault()}
       >
         {tabs.map((tab, index) => {
