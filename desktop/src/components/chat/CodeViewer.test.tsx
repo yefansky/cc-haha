@@ -1,8 +1,45 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { CodeViewer } from './CodeViewer'
+import { isTreeCode } from './TreeCodeContent'
 
 describe('CodeViewer', () => {
+  const tree = '项目/\n├── src/\n│   └── 文件.ts\n└── README.md\n'
+
+  it('preserves tree source, whitespace and blank lines while drawing prefix connectors', () => {
+    const { container } = render(<CodeViewer code={tree} />)
+    const content = container.querySelector('[data-highlight-engine="tree"]')!
+    expect(content.textContent).toBe(tree)
+    expect(content.querySelectorAll('.tree-code-line')).toHaveLength(5)
+    expect(content.querySelectorAll('[data-connector="│"]')).toHaveLength(1)
+    expect(content.querySelectorAll('[data-connector="└"]')).toHaveLength(2)
+  })
+
+  it('keeps tree rendering stable when the collapsed portion has no branches yet', () => {
+    const { container } = render(<CodeViewer code={tree} maxLines={1} />)
+    expect(container.querySelector('[data-highlight-engine="tree"]')?.textContent).toBe('项目/')
+    fireEvent.click(container.querySelector('button.w-full')!)
+    expect(container.querySelector('[data-highlight-engine="tree"]')?.textContent).toBe(tree)
+  })
+
+  it('retains tabs, label box characters, wrapping and line numbering', () => {
+    const code = '根/\n\t├── 文件│名\n\t└── 第二个'
+    const { container } = render(<CodeViewer code={code} language="tree" showLineNumbers wrapLongLines />)
+    expect(container.querySelector('pre')?.textContent).toBe(code)
+    expect(container.querySelector('.tree-code-label')?.getAttribute('style')).toContain('pre-wrap')
+    expect(container.querySelectorAll('[data-connector="│"]')).toHaveLength(0)
+    expect(container.querySelectorAll('.tree-code-line[data-line-number]')).toHaveLength(3)
+    expect((container.querySelectorAll('.tree-code-cell')[0] as HTMLElement).style.width).toBe('8ch')
+  })
+
+  it('does not classify normal code, isolated branches or tables as trees', () => {
+    expect(isTreeCode(tree)).toBe(true)
+    expect(isTreeCode(tree, 'text')).toBe(true)
+    expect(isTreeCode(tree, 'typescript')).toBe(false)
+    expect(isTreeCode('├── one')).toBe(false)
+    expect(isTreeCode('┌───┐\n│ a │\n└───┘')).toBe(false)
+    expect(isTreeCode('a | b\nc | d')).toBe(false)
+  })
   it('keeps the same inner padding for highlighted code content', () => {
     const { container } = render(
       <CodeViewer code={'cd testb\nnpm run dev'} language="bash" showLineNumbers />,

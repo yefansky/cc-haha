@@ -103,6 +103,51 @@
   src: url('../../public/fonts/material-symbols-outlined.woff2') format('woff2');
 }
 
+/* Tree connectors fill the line box, independent of font glyph metrics.
+   Keep source characters in the DOM for selection, search and accessibility. */
+.tree-code-content {
+  margin: 0;
+  padding: 0.5rem 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: var(--code-viewer-line-height);
+  color: var(--color-code-fg);
+  tab-size: 8;
+}
+.tree-code-content > code { display: block; white-space: normal; font: inherit; }
+.tree-code-line { display: flex; min-height: var(--code-viewer-line-height); }
+.tree-code-line[data-line-number]::before {
+  content: attr(data-line-number);
+  flex: none; min-width: 2.5ch; margin-right: 1.5ch;
+  text-align: right; color: var(--color-text-tertiary); user-select: none;
+}
+.tree-code-prefix { display: flex; flex: none; white-space: pre; }
+.tree-code-cell { position: relative; flex: none; }
+.tree-code-cell[data-connector] { color: transparent; }
+.tree-code-cell[data-connector]::before,
+.tree-code-cell[data-connector]::after {
+  position: absolute;
+  background: var(--color-code-fg);
+  pointer-events: none;
+}
+.tree-code-cell[data-connector="│"]::before,
+.tree-code-cell[data-connector="├"]::before,
+.tree-code-cell[data-connector="└"]::before {
+  content: '';
+  left: 50%; top: 0; bottom: 0; width: 1px;
+}
+.tree-code-cell[data-connector="└"]::before {
+  bottom: auto; height: calc(var(--code-viewer-line-height) / 2 + 0.5px);
+}
+.tree-code-cell[data-connector="├"]::after,
+.tree-code-cell[data-connector="└"]::after,
+.tree-code-cell[data-connector="─"]::after {
+  content: '';
+  left: 50%; right: 0; top: calc(var(--code-viewer-line-height) / 2); height: 1px;
+}
+.tree-code-cell[data-connector="─"]::after { left: 0; }
+.tree-code-label { min-width: 0; }
+
 .code-viewer-area .line,
 .code-viewer-area .token-line {
   display: block;

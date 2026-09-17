@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ComponentType, type CSSProperties } f
 import { Highlight, type PrismTheme } from 'prism-react-renderer'
 import { CopyButton } from '@/components/ui/CopyButton'
 import { useTranslation } from '../../i18n'
+import { isTreeCode, TreeCodeContent } from './TreeCodeContent'
 
 type Props = {
   code: string
@@ -185,17 +186,20 @@ function CodeArea({
   language,
   showLineNumbers,
   wrapLongLines,
+  tree,
 }: {
   code: string
   language?: string
   showLineNumbers: boolean
   wrapLongLines: boolean
+  tree: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [runtime, setRuntime] = useState<ShikiRuntime | null>(null)
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
+    if (tree) return
     let cancelled = false
     setLoaded(false)
     loadShikiRuntime().then((nextRuntime) => {
@@ -204,7 +208,7 @@ function CodeArea({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [tree])
 
   useEffect(() => {
     setLoaded(false)
@@ -226,7 +230,7 @@ function CodeArea({
     return () => observer.disconnect()
   }, [runtime, code, language])
 
-  const ShikiHighlighter = runtime?.Highlighter
+  const ShikiHighlighter = tree ? undefined : runtime?.Highlighter
 
   return (
     <div
@@ -236,7 +240,8 @@ function CodeArea({
       style={{ '--code-viewer-line-height': `${CODE_LINE_HEIGHT}em` } as CSSProperties}
       className="code-viewer-area relative max-h-[420px] overflow-auto bg-[var(--color-code-bg)]"
     >
-      {(!ShikiHighlighter || !loaded) && (
+      {tree && <TreeCodeContent code={code} wrapLongLines={wrapLongLines} showLineNumbers={showLineNumbers} />}
+      {!tree && (!ShikiHighlighter || !loaded) && (
         <PrismCodeContent
           code={code}
           language={language}
@@ -244,7 +249,7 @@ function CodeArea({
           wrapLongLines={wrapLongLines}
         />
       )}
-      {ShikiHighlighter && (
+      {ShikiHighlighter && runtime && (
         <div
           data-code-viewer-content=""
           data-highlight-engine="shiki"
@@ -314,6 +319,7 @@ export function CodeViewer({ code, language, maxLines = 20, showLineNumbers = fa
       {/* Code area */}
       <CodeArea
         code={visibleCode}
+        tree={isTreeCode(code, language)}
         language={language}
         showLineNumbers={effectiveShowLineNumbers}
         wrapLongLines={wrapLongLines}
