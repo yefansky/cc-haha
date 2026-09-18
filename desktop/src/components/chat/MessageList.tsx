@@ -1,3 +1,4 @@
+import { includeProjectedAsks } from '../../lib/projectedAskTimeline'
 import { useRef, useEffect, useMemo, memo, useState, useCallback, useDeferredValue, useLayoutEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowDown, BookMarked, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleStop, FileStack, LoaderCircle, MessageCircle, Settings, Target, XCircle } from 'lucide-react'
@@ -8,7 +9,6 @@ import {
   listPendingPermissions,
   selectAskUserDecisionProjection,
   useChatStore,
-  type AskUserDecisionProjection,
 } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
@@ -905,40 +905,6 @@ export function collapseEarlierToolActivity(
   }
   flushStreak()
   return output
-}
-
-function includeProjectedAsks(
-  messages: UIMessage[],
-  projection: AskUserDecisionProjection,
-): UIMessage[] {
-  if (projection.source !== 'server') return messages
-
-  const existingToolUseIds = new Set(messages.flatMap((message) =>
-    message.type === 'tool_use' && message.toolName === 'AskUserQuestion'
-      ? [message.toolUseId]
-      : []))
-  const projectedToolUseIds = new Set<string>()
-  const additions: UIMessage[] = []
-  for (const view of projection.views) {
-    if (
-      view.source !== 'server' ||
-      existingToolUseIds.has(view.toolUseId) ||
-      projectedToolUseIds.has(view.toolUseId)
-    ) {
-      continue
-    }
-    projectedToolUseIds.add(view.toolUseId)
-    additions.push({
-      id: `user-decision-${view.toolUseId}`,
-      type: 'tool_use',
-      toolName: 'AskUserQuestion',
-      toolUseId: view.toolUseId,
-      input: view.input,
-      timestamp: messages[messages.length - 1]?.timestamp ?? 0,
-      isPending: false,
-    })
-  }
-  return additions.length > 0 ? [...messages, ...additions] : messages
 }
 
 const TOOL_FILE_PATH_FIELDS = new Set([

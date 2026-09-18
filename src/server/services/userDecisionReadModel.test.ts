@@ -573,3 +573,23 @@ describe('projectUserDecisions', () => {
     })
   })
 })
+
+
+test('keeps original question time rather than answer or snapshot time', () => {
+  const original = askMessage('ask-timed')
+  const laterDuplicate = { ...original, timestamp: '2026-08-28T01:00:00.000Z' }
+  const snapshot = projectUserDecisions({
+    sessionId: SESSION_ID, messages: [original, resultMessage('ask-timed'), laterDuplicate],
+    pendingRequests: [], transcriptEvidenceComplete: true,
+  })
+  expect(snapshot.decisions[0]?.timestamp).toBe(Date.parse(original.timestamp))
+  expect(snapshot.decisions[0]?.decision.semanticState.status).toBe('answered')
+})
+
+test('does not invent an origin time for live-only or invalid timestamp evidence', () => {
+  const snapshot = projectUserDecisions({
+    sessionId: SESSION_ID, messages: [{ ...askMessage('invalid-time'), timestamp: 'invalid' }],
+    pendingRequests: [pendingAsk('request-live', 'live')], transcriptEvidenceComplete: true,
+  })
+  expect(snapshot.decisions.map(entry => entry.timestamp)).toEqual([undefined, undefined])
+})

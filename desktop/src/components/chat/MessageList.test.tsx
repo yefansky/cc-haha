@@ -1490,6 +1490,39 @@ describe('MessageList nested tool calls', () => {
     expect(screen.getByRole('button', { name: /^Second choice$/ })).toHaveProperty('disabled', true)
   })
 
+  it('keeps recovered answered history before the live question and allows selecting only the live card', () => {
+    const question = (name: string) => ({ questions: [{ question: name, options: [{ label: name + ' choice' }] }] })
+    const current = question('Current')
+    act(() => {
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_request', requestId: 'current-request', toolName: 'AskUserQuestion',
+        toolUseId: 'current', input: current,
+      })
+      useChatStore.getState().handleServerMessage(ACTIVE_TAB, {
+        type: 'permission_requests_snapshot', toolRequestIds: ['current-request'], computerUseRequestIds: [], turnActive: true,
+        userDecisions: {
+          transcriptEvidenceComplete: true,
+          userDecisionResponseProtocol: 'orphaned-permission-v1',
+          decisions: [
+            { decisionId: 'old', input: question('Old'), inputSource: 'transcript', conflicted: false,
+              semanticState: { status: 'answered' }, runtimeBinding: { status: 'detached' },
+              response: { kind: 'answer', answers: { Old: 'Old choice' } } },
+            { decisionId: 'current', input: current, inputSource: 'live', conflicted: false,
+              semanticState: { status: 'open' }, runtimeBinding: { status: 'attached', requestId: 'current-request' }, response: null },
+          ],
+        },
+      })
+    })
+    render(<MessageList />)
+    const oldChoice = screen.getByRole('button', { name: 'Old choice' })
+    const currentChoice = screen.getByRole('button', { name: 'Current choice' })
+    expect(oldChoice.compareDocumentPosition(currentChoice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(oldChoice).toHaveProperty('disabled', true)
+    expect(currentChoice).toHaveProperty('disabled', false)
+    fireEvent.click(currentChoice)
+    expect(currentChoice.getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('renders goal events as visible status cards', () => {
     useChatStore.setState({
       sessions: {

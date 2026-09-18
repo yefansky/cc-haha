@@ -102,6 +102,8 @@ export type UserDecisionRuntimeBinding =
   | { status: 'detached' }
 
 export type UserDecisionSnapshotEntry = {
+  /** Original transcript time in milliseconds; absent on older sidecars/live-only asks. */
+  timestamp?: number
   decisionId: string
   semanticState: UserDecisionSemanticState
   runtimeBinding: UserDecisionRuntimeBinding

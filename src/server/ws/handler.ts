@@ -4466,6 +4466,7 @@ function toUserDecisionSnapshot(input: SessionUserDecisionSnapshot): UserDecisio
         response: decision.response,
         input: entry.input,
         inputSource: entry.inputSource,
+        ...(entry.timestamp !== undefined ? { timestamp: entry.timestamp } : {}),
         conflicted: entry.conflicted,
         ...(entry.description ? { description: entry.description } : {}),
       }

@@ -23,6 +23,7 @@ export type UserDecisionReadEntry = {
   decision: UserDecision
   input: Record<string, unknown>
   inputSource: UserDecisionInputSource
+  timestamp?: number
   conflicted: boolean
   hasToolResultEvidence: boolean
   recoveryToolUseId?: string
@@ -46,6 +47,7 @@ type MutableReadEntry = {
   decision: UserDecision
   input: Record<string, unknown>
   inputSource: UserDecisionInputSource
+  timestamp?: number
   conflicted: boolean
   hasToolResultEvidence: boolean
   recoveryToolUseId?: string
@@ -125,6 +127,8 @@ export function projectUserDecisions(
         decision: createUserDecision({ decisionId }),
         input: transcriptInput,
         inputSource: 'transcript',
+        ...(Number.isFinite(Date.parse(message.timestamp))
+          ? { timestamp: Date.parse(message.timestamp) } : {}),
         conflicted: (originalAliasesByDecisionId.get(decisionId)?.size ?? 0) > 1,
         hasToolResultEvidence: false,
         ...(!originalAlias ? { recoveryToolUseId: decisionId } : {}),
