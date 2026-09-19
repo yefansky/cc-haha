@@ -1448,6 +1448,15 @@ export function createLocalIndexCoordinator(
       }
     },
 
+    getWorkspaceSnapshots(sessionId) {
+      if (!indexReadAllowed() || !index?.getWorkspaceSnapshots) return null
+      try {
+        return index.getWorkspaceSnapshots(sessionId)
+      } catch {
+        return null
+      }
+    },
+
     findSessionFiles(sessionId: string): SessionFileMatch[] {
       if (!indexReadAllowed() || !index) return []
       try {

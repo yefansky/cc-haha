@@ -121,6 +121,30 @@ describe('BrowserSurface', () => {
     await waitFor(() => expect(bridge.open).toHaveBeenCalledTimes(2))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+  it.each([true, false])('shows unresolved Windows paths without HTTP fallback, including retry (workDir available: %s)', async (hasWorkDir) => {
+    hostKind.value = 'electron'
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    setBaseUrl('http://127.0.0.1:8787')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    if (hasWorkDir) useWorkspacePanelStore.setState({ statusBySession: { s1: {
+      state: 'ok', workDir: 'G:/项目', repoName: '项目', branch: null,
+      isGitRepo: false, changedFiles: [],
+    } } })
+    const original = 'http://127.0.0.1:8787/local-file/看板/周报.html'
+    useBrowserPanelStore.getState().open('s1', original)
+    render(<BrowserSurface sessionId="s1" />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Windows 文件路径缺少盘符')
+    expect(bridge.open).not.toHaveBeenCalled()
+    expect(bridge.navigate).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(useBrowserPanelStore.getState().bySession.s1?.url).toBe(original)
+    expect(useBrowserPanelStore.getState().bySession.s1?.loading).toBe(false)
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Windows 文件路径缺少盘符')
+    expect(bridge.open).not.toHaveBeenCalled()
+    expect(bridge.navigate).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
   it('reports an HTTP rejection instead of leaving an empty preview', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('forbidden', { status: 403 }))
     useBrowserPanelStore.getState().open('s1', 'http://127.0.0.1:8787/local-file/no.html')

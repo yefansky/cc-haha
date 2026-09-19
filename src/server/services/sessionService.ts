@@ -61,6 +61,10 @@ import type {
 } from './localIndex/types.js'
 import { localIndexCoordinator } from './localIndex/coordinator.js'
 import { readSessionEntriesByLocator } from './localIndex/sessionEntries.js'
+import { deserializeSourceFingerprint } from './localIndex/sourceFingerprint.js'
+import { SESSION_SUMMARY_PARSER_VERSION } from './localIndex/sessionProjector.js'
+import { LOCAL_INDEX_BUSY_TIMEOUT_MS } from './localIndex/managedDatabasePath.js'
+import { FileReferenceIncompleteError, type FileReferenceOperation, type FileReferenceWorkDirSnapshot } from './workspaceFileReferenceResolver.js'
 import type {
   IndexedSessionRow,
   IndexedSessionSearchCandidate,
@@ -2358,6 +2362,7 @@ export class SessionService {
     projectDir: string,
     sessionId: string,
     projectsRoot: string,
+    assertActive: () => void = () => {},
   ): Promise<Stats> {
     const invalid = (): Error & { code: string } => Object.assign(
       new Error('Indexed transcript path failed scope validation'),
@@ -2376,9 +2381,11 @@ export class SessionService {
     const projectsDir = this.getProjectsDir()
     const expectedPath = path.join(projectsDir, projectDir, `${sessionId}.jsonl`)
     const indexedRealPath = await fs.realpath(filePath)
+    assertActive()
     const expectedRealPath = path.resolve(expectedPath) === path.resolve(filePath)
       ? indexedRealPath
       : await fs.realpath(expectedPath)
+    assertActive()
     const relativePath = path.relative(projectsRoot, indexedRealPath)
     if (
       expectedRealPath !== indexedRealPath ||
@@ -2390,6 +2397,7 @@ export class SessionService {
     }
 
     const stat = await fs.stat(indexedRealPath)
+    assertActive()
     if (!stat.isFile()) throw invalid()
     return stat
   }
@@ -3914,6 +3922,66 @@ export class SessionService {
    * Get the actual working directory for a session.
    * First checks for stored session-meta entry, then falls back to desanitizePath.
    */
+  /** Strict metadata-only path for automatic file resolution. Never falls back to JSONL. */
+  async getFileReferenceWorkDirSnapshot(
+    sessionId: string,
+    operation: FileReferenceOperation,
+    activeWorkDir: () => string = () => '',
+  ): Promise<FileReferenceWorkDirSnapshot> {
+    const check = (op: FileReferenceOperation) => {
+      if (op.signal.aborted || Date.now() >= op.deadline) {
+        throw new FileReferenceIncompleteError('Workspace metadata timed out')
+      }
+    }
+    const unavailable = () => new FileReferenceIncompleteError('Workspace metadata is not yet current')
+    check(operation)
+    const active = activeWorkDir()
+    if (active) return {
+      workDir: active,
+      validate: async op => {
+        check(op)
+        if (activeWorkDir() !== active) throw unavailable()
+      },
+    }
+    if (!this.isValidSessionId(sessionId) || this.getUsableIndexMode() !== 'on') throw unavailable()
+    const epoch = getSharedSessionMutationState(this.localIndexGateway).epoch
+    // SQLite's existing synchronous busy wait is bounded but cannot be aborted.
+    // Do not begin that query near the end of this request's deadline.
+    if (operation.deadline - Date.now() <= LOCAL_INDEX_BUSY_TIMEOUT_MS + 10) throw unavailable()
+    const rows = this.localIndexGateway.getWorkspaceSnapshots?.(sessionId)
+    check(operation)
+    if (!rows || rows.length !== 1) throw unavailable()
+    const row = rows[0]!
+    const source = row.source
+    if (source.fingerprint.length > 4096) throw unavailable()
+    const fingerprint = deserializeSourceFingerprint(source.fingerprint)
+    if (!row.workDir || row.workDir.length > 4096 || !path.isAbsolute(row.workDir)
+      || source.state !== 'ready' || source.indexedBytes !== source.size
+      || source.parserVersion !== SESSION_SUMMARY_PARSER_VERSION || !fingerprint
+      || fingerprint.size !== source.size || fingerprint.mtimeMs !== source.mtimeMs
+      || fingerprint.indexedBytes !== source.indexedBytes
+      || fingerprint.parserVersion !== source.parserVersion
+      || fingerprint.fileIdentity !== source.fileIdentity) throw unavailable()
+    const validate = async (op: FileReferenceOperation) => {
+      check(op)
+      if (activeWorkDir() || this.getUsableIndexMode() !== 'on'
+        || getSharedSessionMutationState(this.localIndexGateway).epoch !== epoch) throw unavailable()
+      try {
+        const projectsRoot = await fs.realpath(this.getProjectsDir())
+        check(op)
+        const stat = await this.validateIndexedTranscriptPath(row.filePath, row.projectDir, sessionId, projectsRoot, () => check(op))
+        check(op)
+        const identity = process.platform === 'win32' || stat.ino === 0 ? null : `${stat.dev}:${stat.ino}`
+        if (stat.size !== fingerprint.size || stat.mtimeMs !== fingerprint.mtimeMs
+          || stat.ctimeMs !== fingerprint.ctimeMs
+          || (fingerprint.fileIdentity !== null && identity !== fingerprint.fileIdentity)
+          || activeWorkDir() || getSharedSessionMutationState(this.localIndexGateway).epoch !== epoch) throw unavailable()
+      } catch { throw unavailable() }
+    }
+    await validate(operation)
+    return { workDir: row.workDir, validate }
+  }
+
   async getSessionWorkDir(sessionId: string): Promise<string | null> {
     const found = await this.findSessionFile(sessionId)
     if (!found) return null

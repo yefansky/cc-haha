@@ -41,6 +41,13 @@ export type SessionFileMatch = {
   projectDir: string
 }
 
+export type IndexedWorkspaceSnapshot = {
+  filePath: string
+  projectDir: string
+  workDir: string | null
+  source: SessionSourceRecord
+}
+
 export type SessionSearchCandidateFilters = {
   project?: string
   modifiedAfterMs?: number
@@ -64,6 +71,7 @@ export interface SessionIndexReader {
     offset?: number
   }): SessionIndexPage
   findSessionFiles(sessionId: string): SessionFileMatch[]
+  getWorkspaceSnapshots?(sessionId: string): IndexedWorkspaceSnapshot[] | null
   findSearchCandidates?(
     filters: SessionSearchCandidateFilters,
   ): IndexedSessionSearchCandidate[] | null
@@ -309,6 +317,19 @@ export function createSessionIndex(database: LocalIndexDatabase): SessionIndex {
 
         return { sessions: rows.map(sessionFromRow), total }
       })
+    },
+
+    getWorkspaceSnapshots(sessionId): IndexedWorkspaceSnapshot[] {
+      return database.read(operation => operation.all<SourceRow & { work_dir: string | null }>(`
+        SELECT source_files.*, sessions.work_dir
+        FROM sessions JOIN source_files ON source_files.path = sessions.transcript_path
+        WHERE sessions.session_id = ? LIMIT 2
+      `, sessionId).map(row => ({
+        filePath: row.path,
+        projectDir: row.path.replace(/\\/g, '/').split('/').at(-2) ?? '',
+        workDir: row.work_dir,
+        source: sourceFromRow(row),
+      })))
     },
 
     findSessionFiles(sessionId): SessionFileMatch[] {

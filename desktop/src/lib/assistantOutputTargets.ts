@@ -437,6 +437,10 @@ function matchChangedFile(mentioned: string, changedFiles: string[]): string | n
     return null
   }
 
+  // A qualified reference already supplies directory evidence. Falling back
+  // to a basename would discard it and can open an unrelated same-name file.
+  if (normalized.includes('/')) return null
+
   const basenameMatches = changedFiles.filter(
     (file) => getBasename(file).toLowerCase() === basename,
   )

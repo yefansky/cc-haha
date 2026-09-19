@@ -1,3 +1,4 @@
+import { invalidateAssistantFileNavigation } from '../../lib/useAssistantFileActions'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import {
@@ -116,6 +117,40 @@ describe('getEditableTurnTargets', () => {
 })
 
 describe('buildTurnReferencedFilesByMessageId', () => {
+  it('never manufactures absolute evidence from relative inline paths or URLs', () => {
+    const messages: UIMessage[] = [
+      { id: 'reply', type: 'assistant_text', timestamp: 1, content: '`lilin1/收件/2026-09-16-淬体成锋资料片全景复盘交付.md` `看板/叶帆周工作汇报_20260907至0913.html` lilin1/收件/a.md https://example.com/docs/a.md fooG:/repo/a.md' },
+    ]
+    expect(buildTurnReferencedFilesByMessageId(messages).get('reply')).toBeUndefined()
+  })
+
+  it('does not promote shell snippets or Bash command strings into path evidence', () => {
+    const messages: UIMessage[] = [
+      { id: 'bash', type: 'tool_use', toolName: 'Bash', toolUseId: 'b1', input: { command: 'cat /tmp/index.md' }, timestamp: 1 },
+      { id: 'reply', type: 'assistant_text', timestamp: 2, content: '`cat /tmp/index.md`\n```sh\ncd /tmp && cat /tmp/index.md\n```' },
+    ]
+    expect(buildTurnReferencedFilesByMessageId(messages).get('reply')).toBeUndefined()
+  })
+
+  it('preserves explicit absolute paths containing spaces and parentheses', () => {
+    const messages: UIMessage[] = [
+      { id: 'reply', type: 'assistant_text', timestamp: 1, content: '`G:/my docs/report (final).md` [report](</tmp/my docs/report (final).md>)' },
+    ]
+    expect(buildTurnReferencedFilesByMessageId(messages).get('reply')).toEqual(['G:/my docs/report (final).md', '/tmp/my docs/report (final).md'])
+  })
+
+  it('does not let later file evidence change earlier message targets', () => {
+    const messages: UIMessage[] = [
+      { id: 'read-1', type: 'tool_use', toolName: 'Read', toolUseId: 'r1', input: { file_path: 'G:/repo/a/index.md' }, timestamp: 1 },
+      { id: 'reply-1', type: 'assistant_text', content: '`index.md`', timestamp: 2 },
+      { id: 'read-2', type: 'tool_use', toolName: 'Read', toolUseId: 'r2', input: { file_path: 'G:/repo/b/index.md' }, timestamp: 3 },
+      { id: 'reply-2', type: 'assistant_text', content: '`index.md`', timestamp: 4 },
+    ]
+    const evidence = buildTurnReferencedFilesByMessageId(messages)
+    expect(evidence.get('reply-1')).toEqual(['G:/repo/a/index.md'])
+    expect(evidence.get('reply-2')).toEqual(['G:/repo/a/index.md', 'G:/repo/b/index.md'])
+  })
+
   it('keeps an explicit absolute HTML path available after a later user turn', () => {
     const report = 'G:\\Jx3_Classic\\sword3-products\\trunk\\tools\\AITools\\项目大脑\\看板\\2026-08-26-项目大脑使用态势综合分析.html'
     const messages: UIMessage[] = [
@@ -3427,9 +3462,12 @@ describe('MessageList nested tool calls', () => {
     )
   })
 
-  it('opens a short assistant file link at the unique path read earlier in the same turn', () => {
+  it.each(['absolute', 'relative'])('opens a short assistant file link at the unique path read earlier in the same turn (%s)', async (pathKind) => {
+    invalidateAssistantFileNavigation()
     const actualPath = 'G:\\Jx3_Classic\\Sword3_Classic\\项目大脑\\项目专家\\实习生\\策划编辑器\\lua-script-review\\references\\custom-value-rules.md'
+    useWorkspacePanelStore.setState({ statusBySession: { [ACTIVE_TAB]: { state: 'ok', workDir: 'G:/Jx3_Classic/Sword3_Classic', repoName: null, branch: null, isGitRepo: false, changedFiles: [] } } })
     const openPreview = vi.spyOn(useWorkspacePanelStore.getState(), 'openPreview').mockResolvedValue(undefined)
+    const resolve = vi.spyOn(sessionsApi, 'resolveFileReference').mockResolvedValue({ state: 'resolved', path: actualPath.replace(/\\/g, '/'), complete: true, scope: { workDir: 'G:/Jx3_Classic/Sword3_Classic', permissionGeneration: 1 } })
     useChatStore.setState({
       sessions: {
         [ACTIVE_TAB]: makeSessionState({ messages: [
@@ -3439,7 +3477,7 @@ describe('MessageList nested tool calls', () => {
             type: 'tool_use',
             toolName: 'Read',
             toolUseId: 'read-1',
-            input: { file_path: actualPath },
+            input: { file_path: pathKind === 'relative' ? actualPath.replace(/\\/g, '/').slice('G:/Jx3_Classic/Sword3_Classic/'.length) : actualPath },
             timestamp: 2,
           },
           { id: 'result-1', type: 'tool_result', toolUseId: 'read-1', content: '规则正文', isError: false, timestamp: 3 },
@@ -3456,6 +3494,8 @@ describe('MessageList nested tool calls', () => {
     render(<MessageList />)
     fireEvent.click(screen.getByRole('link', { name: 'custom-value-rules.md' }))
 
+    await waitFor(() => expect(openPreview).toHaveBeenCalled())
+    expect(resolve.mock.calls[0]?.[1].candidates).toContain(actualPath.replace(/\\/g, '/'))
     expect(openPreview).toHaveBeenCalledWith(
       ACTIVE_TAB,
       actualPath.replace(/\\/g, '/'),

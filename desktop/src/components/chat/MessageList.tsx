@@ -1,7 +1,9 @@
 import { includeProjectedAsks } from '../../lib/projectedAskTimeline'
+import { AssistantFileEvidenceIndex, type MessageFileEvidence, type FileEvidenceMessage } from '../../lib/assistantFileEvidence'
 import { useRef, useEffect, useMemo, memo, useState, useCallback, useDeferredValue, useLayoutEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowDown, BookMarked, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleStop, FileStack, LoaderCircle, MessageCircle, Settings, Target, XCircle } from 'lucide-react'
+import { parseFilePathRef } from '../../lib/filePathBoundary'
 import { ApiError } from '../../api/client'
 import { sessionsApi, type SessionRewindMode, type SessionTurnCheckpoint } from '../../api/sessions'
 import { loadSessionTurnCheckpoints } from '../../lib/sessionTurnCheckpoints'
@@ -921,7 +923,9 @@ const TOOL_FILE_PATH_FIELDS = new Set([
 // back to the session workdir. The final /local-file request remains subject to
 // the server's filesystem allow-list; this only selects a previously mentioned
 // candidate and never grants new file access.
-const ABSOLUTE_FILE_PATH_PATTERN = /(?:[A-Za-z]:[\\/]|\/)(?:[^\\/:*?"<>|\r\n]+[\\/])*[^\\/:*?"<>|\r\n]+\.[A-Za-z0-9]{1,16}/g
+// Only a real token boundary can start an absolute path. A slash inside
+// `lilin1/收件/file.md` must never manufacture `/收件/file.md` evidence.
+const ABSOLUTE_FILE_PATH_PATTERN = /(?:^|[\s`"'(<\[：])((?:[A-Za-z]:[\/\\]|\/(?!\/))(?:[^\\/:*?"'`<>|()\[\]\r\n]+[\/\\])*[^\\/:*?"'`<>|()\[\]\r\n]+\.[A-Za-z0-9]{1,16})/g
 
 function collectToolFilePaths(value: unknown, output: string[]) {
   if (!value || typeof value !== 'object') return
@@ -940,50 +944,46 @@ function collectToolFilePaths(value: unknown, output: string[]) {
 }
 
 function collectAbsoluteFilePathsFromText(value: string, output: string[]) {
-  for (const match of value.matchAll(ABSOLUTE_FILE_PATH_PATTERN)) {
-    const path = match[0]?.trim()
+  const addExplicit = (value: string) => {
+    const ref = parseFilePathRef(value)
+    if (ref && /^(?:[A-Za-z]:[\\/]|\/(?!\/))/.test(ref.path)) output.push(ref.path)
+  }
+  // Explicit code spans and angle-bracket Markdown destinations preserve legal
+  // spaces/parentheses. Remove them before scanning prose so no partial path
+  // can become a second, conflicting piece of evidence.
+  const prose = value.replace(/(`+)([^`]+)\1/g, (_whole, _ticks, path: string) => {
+    addExplicit(path)
+    return ' '
+  }).replace(/\]\(<([^>]+)>\)/g, (_whole, path: string) => {
+    addExplicit(path)
+    return ' '
+  })
+  for (const match of prose.matchAll(ABSOLUTE_FILE_PATH_PATTERN)) {
+    const path = match[1]?.trim()
     if (path) output.push(path)
   }
 }
 
-function collectSessionKnownFiles(messages: UIMessage[]): string[] {
-  const files: string[] = []
-  const seen = new Set<string>()
-  const add = (candidate: string) => {
-    const key = candidate.replace(/\\/g, '/').toLowerCase()
-    if (seen.has(key)) return
-    seen.add(key)
-    files.push(candidate)
-  }
-
-  for (const message of messages) {
-    if (message.type === 'tool_use') {
-      const candidates: string[] = []
-      collectToolFilePaths(message.input, candidates)
-      for (const candidate of candidates) add(candidate)
-      continue
-    }
-
-    if (message.type === 'assistant_text') {
-      const candidates: string[] = []
-      collectAbsoluteFilePathsFromText(message.content, candidates)
-      for (const candidate of candidates) add(candidate)
-    }
-  }
-
-  return files
-}
-
 export function buildTurnReferencedFilesByMessageId(messages: UIMessage[]): Map<string, string[]> {
   const result = new Map<string, string[]>()
-  const sessionKnownFiles = collectSessionKnownFiles(messages)
-
+  const files: string[] = []
+  const seen = new Set<string>()
   for (const message of messages) {
-    if (message.type === 'assistant_text' && sessionKnownFiles.length > 0) {
-      result.set(message.id, sessionKnownFiles)
+    const candidates: string[] = []
+    if (message.type === 'tool_use') collectToolFilePaths(message.input, candidates)
+    if (message.type === 'assistant_text') collectAbsoluteFilePathsFromText(message.content, candidates)
+    for (const candidate of candidates) {
+      const normalized = candidate.replace(/\\/g, '/')
+      const key = /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized
+      if (!seen.has(key)) {
+        seen.add(key)
+        files.push(candidate)
+      }
     }
+    // Snapshot at the message boundary: a later same-name file must not
+    // retroactively change an earlier link or create new ambiguity for it.
+    if (message.type === 'assistant_text' && files.length > 0) result.set(message.id, [...files])
   }
-
   return result
 }
 
@@ -2542,10 +2542,45 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
     () => collapseEarlierToolActivity(rawRenderItems, toolResultMap, childToolCallsByParent),
     [childToolCallsByParent, rawRenderItems, toolResultMap],
   )
-  const turnReferencedFilesByMessageId = useMemo(
-    () => buildTurnReferencedFilesByMessageId(messages),
-    [messages],
-  )
+  const evidenceWorkDir = useWorkspacePanelStore((state) => resolvedSessionId ? state.statusBySession[resolvedSessionId]?.workDir ?? '' : '')
+  const evidenceState = useMemo(() => ({ index: new AssistantFileEvidenceIndex(), extracted: new WeakMap<UIMessage, { text: unknown; files: string[] }>(), snapshots: new Map<string, MessageFileEvidence>() }), [resolvedSessionId, evidenceWorkDir])
+  const fileEvidenceByMessageId = useMemo(() => {
+    const records: FileEvidenceMessage[] = messages.map((message) => {
+      const text = message.type === 'assistant_text' ? message.content : message.type === 'tool_use' ? message.input : undefined
+      let cached = evidenceState.extracted.get(message)
+      if (!cached || cached.text !== text) {
+        const files: string[] = []
+        if (message.type === 'assistant_text') collectAbsoluteFilePathsFromText(message.content, files)
+        if (message.type === 'tool_use' && /^(?:Read|Write|Edit|MultiEdit|NotebookEdit|read_file|write_file|edit_file)$/i.test(message.toolName)) collectToolFilePaths(message.input, files)
+        const normalized = files.map((file) => {
+          const path = file.replace(/\\/g, '/')
+          if (/^(?:[a-z]:\/|\/|~)/i.test(path) || !evidenceWorkDir) return path
+          const parts = `${evidenceWorkDir.replace(/\\/g, '/')}/${path}`.split('/')
+          const result: string[] = []
+          for (const part of parts) { if (part === '.') continue; if (part === '..') result.pop(); else result.push(part) }
+          return result.join('/')
+        })
+        cached = { text, files: normalized }
+        evidenceState.extracted.set(message, cached)
+      }
+      return { id: message.id, revision: '', files: cached.files }
+    })
+    evidenceState.index.update(records)
+    const result = new Map<string, MessageFileEvidence>()
+    for (const message of messages) {
+      if (message.type !== 'assistant_text') continue
+      const revision = evidenceState.index.revisionFor(message.id)!
+      let snapshot = evidenceState.snapshots.get(message.id)
+      if (!snapshot || snapshot.revision !== revision) {
+        snapshot = { index: evidenceState.index, cutoff: evidenceState.index.cutoff(message.id)!, revision }
+        evidenceState.snapshots.set(message.id, snapshot)
+      }
+      result.set(message.id, snapshot)
+    }
+    for (const id of evidenceState.snapshots.keys()) if (!result.has(id)) evidenceState.snapshots.delete(id)
+    return result
+  }, [messages, evidenceState, evidenceWorkDir])
+
   // Defer the per-message branchable / completed-turn computations so the first
   // commit on tab switch can render the virtualization window without doing two
   // additional O(N) walks synchronously. They re-run in a low-priority render
@@ -3323,8 +3358,8 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
               onCancel: cancelEditMessage,
             } : undefined}
             turnChangedFiles={changedFilesByRenderIndex.get(index)}
-            turnReferencedFiles={item.message.type === 'assistant_text'
-              ? turnReferencedFilesByMessageId.get(item.message.id)
+            fileEvidence={item.message.type === 'assistant_text'
+              ? fileEvidenceByMessageId.get(item.message.id)
               : undefined}
             turnCompletion={turnCompletionByMessageId.get(item.message.id)}
           />
@@ -3482,6 +3517,7 @@ export const MessageBlock = memo(function MessageBlock({
   editComposer,
   turnChangedFiles,
   turnReferencedFiles,
+  fileEvidence,
   turnCompletion,
 }: {
   sessionId?: string | null
@@ -3510,6 +3546,7 @@ export const MessageBlock = memo(function MessageBlock({
   }
   turnChangedFiles?: string[]
   turnReferencedFiles?: string[]
+  fileEvidence?: MessageFileEvidence
   turnCompletion?: TurnCompletion
 }) {
   const t = useTranslation()
@@ -3549,6 +3586,7 @@ export const MessageBlock = memo(function MessageBlock({
             timestamp={message.timestamp}
             turnChangedFiles={turnChangedFiles}
             turnReferencedFiles={turnReferencedFiles}
+            fileEvidence={fileEvidence}
             turnCompletion={turnCompletion}
           />
         </SelectableChatMessage>

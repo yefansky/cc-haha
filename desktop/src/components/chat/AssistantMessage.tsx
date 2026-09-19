@@ -1,20 +1,20 @@
-import { memo, useCallback, useMemo, useState } from 'react'
+import { memo, useCallback, useMemo } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { OpenWithMenu } from '@/components/composite/OpenWithMenu'
-import { buildOpenWithMenuItemsForHref } from '../../lib/openWithMenuItems'
 import { fileRefFromElement } from '../../lib/markdownAutolink'
-import type { OpenWithItem } from '../../lib/openWithItems'
 import { MessageActionBar, type MessageBranchAction } from './MessageActionBar'
 import { TurnCompletionStamp } from './TurnCompletionStamp'
 import type { TurnCompletion } from '../../lib/turnCompletion'
 import { InlineImageGallery } from './InlineImageGallery'
 import { InlineVideoGallery } from './InlineVideoGallery'
 import { AssistantOutputTargetCard } from './AssistantOutputTargetCard'
-import { openPreviewLink } from '../../lib/openPreviewLink'
 import {
   extractAssistantOutputTargets,
 } from '../../lib/assistantOutputTargets'
+import { useAssistantFileActions } from '../../lib/useAssistantFileActions'
+import type { MessageFileEvidence } from '../../lib/assistantFileEvidence'
+import { parseFilePathRef } from '../../lib/filePathBoundary'
 import { resolveAssistantFileLink } from '../../lib/assistantFileLink'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useTranslation, type TranslationKey } from '../../i18n'
@@ -28,63 +28,41 @@ type Props = {
   /** This turn's real changed files (absolute), used to anchor output chips onto
    *  files that were actually written instead of guessing from the prose. */
   turnChangedFiles?: string[]
-  /** Files the Agent accessed through path-bearing tools earlier in this turn. */
+  /** File evidence available at this message, excluding later messages. */
   turnReferencedFiles?: string[]
+  fileEvidence?: MessageFileEvidence
   /** Set only on the last reply of a finished turn: when it ended and how long it took. */
   turnCompletion?: TurnCompletion
 }
 
 const MAX_CARDS = 3
 
-export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, branchAction, sessionId, timestamp, turnChangedFiles, turnReferencedFiles, turnCompletion }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, branchAction, sessionId, timestamp, turnChangedFiles, turnReferencedFiles, fileEvidence, turnCompletion }: Props) {
   const t = useTranslation()
   const workDir = useWorkspacePanelStore((s) => (sessionId ? s.statusBySession[sessionId]?.workDir : undefined))
 
-  const [openWith, setOpenWith] = useState<{ items: OpenWithItem[]; anchor: DOMRect } | null>(null)
-
-  const resolveFileLink = useCallback((href: string) => resolveAssistantFileLink(href, {
-    workDir, changedFiles: turnChangedFiles, referencedFiles: turnReferencedFiles,
-  }), [workDir, turnChangedFiles, turnReferencedFiles])
+  const rootsRevision = useWorkspacePanelStore((s) => JSON.stringify(s.mountedRoots ?? []))
+  const actions = useAssistantFileActions({ sessionId: sessionId ?? '', workDir: workDir ?? '', rootsRevision, evidence: fileEvidence, changedFiles: turnChangedFiles, referencedFiles: turnReferencedFiles }, (key, vars) => t(key as TranslationKey, vars))
+  const resolveFileLink = useCallback((href: string) => {
+    const ref = parseFilePathRef(href)
+    const candidates = ref && fileEvidence ? fileEvidence.index.lookup(ref.path, fileEvidence.cutoff, /^[a-z]:/i.test(workDir ?? '')).candidates : turnReferencedFiles
+    return resolveAssistantFileLink(href, { workDir, changedFiles: turnChangedFiles, referencedFiles: candidates })
+  }, [workDir, turnChangedFiles, turnReferencedFiles, fileEvidence])
   const resolveLinkTitle = useCallback((href: string) => resolveFileLink(href).title, [resolveFileLink])
-
-  const handleLinkClick = useCallback(
-    (href: string, event: ReactMouseEvent<HTMLDivElement>): boolean => {
-      if (!sessionId) return false
-      const resolvedHref = resolveFileLink(href).href
-      const handled = openPreviewLink(resolvedHref, sessionId)
-      if (handled) event.preventDefault()
-      return handled
-    },
-    [sessionId, resolveFileLink],
-  )
-
-  // Right-clicking a reference in the prose opens the same menu the output cards
-  // and the file tree use, so "open in VS Code" / "reveal in Finder" / "copy
-  // path" are reachable from the place the model actually names the file.
-  const handleContextMenu = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      if (!sessionId) return
-      const target = event.target as HTMLElement | null
-      const link = target?.closest<HTMLAnchorElement>('a[data-file-path], a[href]')
-      const href = fileRefFromElement(link) ?? link?.getAttribute('href')
-      if (!href) return
-
-      event.preventDefault()
-      const anchor = link!.getBoundingClientRect()
-      void (async () => {
-        const resolvedHref = resolveFileLink(href).href
-        const items = await buildOpenWithMenuItemsForHref(resolvedHref, {
-          sessionId,
-          workDir,
-          // Cast t: useTranslation takes TranslationKey, the builder takes string.
-          // Every key it looks up is a valid TranslationKey, so this is safe.
-          t: (key, vars) => t(key as TranslationKey, vars),
-        })
-        if (items.length > 0) setOpenWith({ items, anchor })
-      })()
-    },
-    [sessionId, t, resolveFileLink, workDir],
-  )
+  const handleLinkClick = useCallback((href: string, event: ReactMouseEvent<HTMLDivElement>): boolean => {
+    if (!sessionId) return false
+    event.preventDefault()
+    actions.activate(href)
+    return true
+  }, [sessionId, actions])
+  const handleContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!sessionId) return
+    const link = (event.target as HTMLElement | null)?.closest<HTMLAnchorElement>('a[data-file-path], a[href]')
+    const href = fileRefFromElement(link) ?? link?.getAttribute('href')
+    if (!href) return
+    event.preventDefault()
+    actions.activate(href, link!.getBoundingClientRect())
+  }, [sessionId, actions])
 
   const outputTargets = useMemo(
     () =>
@@ -92,7 +70,10 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
         ? []
         : // Image/video targets render inline (InlineImageGallery/InlineVideoGallery); never also as a card.
           extractAssistantOutputTargets(content, { workDir, changedFiles: turnChangedFiles }).filter(
-            (target) => target.kind !== 'image' && target.kind !== 'video',
+            (target) => {
+              if (target.kind === 'image' || target.kind === 'video') return false
+              return target.kind === 'localhost-url' || turnChangedFiles !== undefined
+            },
           ),
     [content, isStreaming, sessionId, workDir, turnChangedFiles],
   )
@@ -148,10 +129,15 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
           )}
         </div>
 
+        {actions.feedback && <div role="alert" className="mt-2 whitespace-pre-line text-sm text-[var(--color-text-secondary)]">
+          <p>{actions.feedback.text}</p>
+          {actions.feedback.candidates.map((path) => <button key={path} className="block text-left underline" onClick={() => actions.activate(path, actions.feedback?.anchor)}>{path}</button>)}
+        </div>}
+
         {!isStreaming && sessionId && outputTargets.length > 0 && (
           <div className="mt-1 flex w-full flex-col gap-2">
             {outputTargets.slice(0, MAX_CARDS).map((target) => (
-              <AssistantOutputTargetCard key={target.id} target={target} sessionId={sessionId} workDir={workDir} />
+              <AssistantOutputTargetCard key={target.id} target={target} sessionId={sessionId} workDir={workDir} resolveFileLink={resolveFileLink} onAction={actions.activate} />
             ))}
             {outputTargets.length > MAX_CARDS && (
               <div className="px-1 text-xs text-[var(--color-text-tertiary)]">
@@ -161,11 +147,11 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
           </div>
         )}
 
-        {openWith && (
+        {actions.menu && (
           <OpenWithMenu
-            items={openWith.items}
-            anchor={openWith.anchor}
-            onClose={() => setOpenWith(null)}
+            items={actions.menu.items}
+            anchor={actions.menu.anchor}
+            onClose={actions.closeMenu}
           />
         )}
 

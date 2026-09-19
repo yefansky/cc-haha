@@ -51,6 +51,7 @@ import { traceCaptureService, trimTraceCallPreviews } from '../services/traceCap
 import { getSubagentRunByTool } from '../services/subagentRunService.js'
 import { isValidPermissionMode } from '../services/settingsService.js'
 import { handleWorkspaceSearchRoute } from './workspaceSearch.js'
+import { handleWorkspaceFileReferenceRoute } from './workspaceFileReference.js'
 import { localIndexCoordinator } from '../services/localIndex/coordinator.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { isPetAccessAuthorized } from '../localAccessAuth.js'
@@ -67,6 +68,10 @@ const workspaceService = new WorkspaceService(
   ),
   async (sessionId) => sessionService.getSessionMessages(sessionId),
   async (sessionId) => sessionService.getSessionFileHistorySnapshots(sessionId),
+  undefined,
+  (sessionId, operation) => sessionService.getFileReferenceWorkDirSnapshot(
+    sessionId, operation, () => conversationService.getSessionWorkDir(sessionId),
+  ),
 )
 
 export async function handleSessionsApi(
@@ -248,6 +253,9 @@ export async function handleSessionsApi(
     }
 
     if (subResource === 'workspace') {
+      if (segments[4] === 'resolve-file-reference') {
+        return await handleWorkspaceFileReferenceRoute(req, sessionId, workspaceService)
+      }
       if (segments[4] === 'roots') {
         if (req.method !== 'POST') {
           return Response.json(

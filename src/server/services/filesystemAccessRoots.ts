@@ -7,6 +7,16 @@ import {
 
 const registeredRoots = new Set<string>()
 const registeredFiles = new Set<string>()
+let accessGeneration = 0
+
+/** Metadata callers already resolved realpath asynchronously; do not repeat sync I/O. */
+export function isWithinRegisteredCanonicalFilesystemRoot(canonicalTarget: string): boolean {
+  if (registeredFiles.has(canonicalTarget)) return true
+  for (const rootPath of registeredRoots) if (isWithinRoot(canonicalTarget, rootPath)) return true
+  return false
+}
+
+export function getFilesystemAccessGeneration(): number { return accessGeneration }
 
 function isWithinRoot(targetPath: string, rootPath: string): boolean {
   return isSameOrInsidePathForPlatform(targetPath, rootPath)
@@ -38,7 +48,8 @@ export function canonicalizeFilesystemAccessPath(filePath: string): string {
 
 export function registerFilesystemAccessRoot(rootPath: string | null | undefined): void {
   if (!rootPath) return
-  registeredRoots.add(canonicalizeFilesystemAccessPath(rootPath))
+  const canonical = canonicalizeFilesystemAccessPath(rootPath)
+  if (!registeredRoots.has(canonical)) { registeredRoots.add(canonical); accessGeneration++ }
 }
 
 /**
@@ -61,7 +72,7 @@ export function registerChangedFileAccessRoot(
     const root = canonicalizeFilesystemAccessPath(workDir)
     if (isWithinRoot(resolved, root)) return
   }
-  registeredFiles.add(resolved)
+  if (!registeredFiles.has(resolved)) { registeredFiles.add(resolved); accessGeneration++ }
 }
 
 export function isWithinRegisteredFilesystemRoot(targetPath: string): boolean {
@@ -74,6 +85,7 @@ export function isWithinRegisteredFilesystemRoot(targetPath: string): boolean {
 }
 
 export function clearFilesystemAccessRootsForTests(): void {
+  accessGeneration++
   registeredRoots.clear()
   registeredFiles.clear()
 }

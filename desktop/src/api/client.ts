@@ -9,6 +9,11 @@ const DEFAULT_BASE_URL = ENV_BASE_URL || 'http://127.0.0.1:3456'
 
 let baseUrl = DEFAULT_BASE_URL
 let authToken: string | null = null
+let contextRevision = 0
+const contextListeners = new Set<() => void>()
+export function getApiContextRevision() { return contextRevision }
+export function subscribeApiContext(listener: () => void) { contextListeners.add(listener); return () => { contextListeners.delete(listener) } }
+function contextChanged() { contextRevision++; for (const listener of contextListeners) listener() }
 const DIAGNOSTICS_PATH = '/api/diagnostics/events'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 const DIAGNOSTICS_REQUEST_TIMEOUT_MS = 5_000
@@ -26,7 +31,8 @@ function getErrorMessage(status: number, body: unknown) {
 }
 
 export function setBaseUrl(url: string) {
-  baseUrl = url.replace(/\/$/, '')
+  const next = url.replace(/\/$/, '')
+  if (next !== baseUrl) { baseUrl = next; contextChanged() }
 }
 
 export function getBaseUrl() {
@@ -44,7 +50,8 @@ export function getApiUrl(pathOrUrl: string) {
 
 export function setAuthToken(token: string | null) {
   const trimmed = token?.trim() ?? ''
-  authToken = trimmed.length > 0 ? trimmed : null
+  const next = trimmed.length > 0 ? trimmed : null
+  if (next !== authToken) { authToken = next; contextChanged() }
 }
 
 export function getAuthToken() {

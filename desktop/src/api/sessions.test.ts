@@ -3,6 +3,15 @@ import { setBaseUrl } from './client'
 import { sessionsApi } from './sessions'
 
 describe('sessionsApi', () => {
+  it('posts metadata reference resolution with the caller cancellation signal', async () => {
+    const request = { reference: '用户/yefan1/index.md', candidates: ['G:/work/用户/yefan1/index.md'], timeoutMs: 400 }
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ state: 'missing', complete: true, scope: { workDir: 'G:/work', permissionGeneration: 1 } })))
+    const controller = new AbortController()
+    await sessionsApi.resolveFileReference('s1', request, { timeout: 400, signal: controller.signal })
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:3456/api/sessions/s1/workspace/resolve-file-reference')
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify(request), signal: expect.any(AbortSignal) })
+  })
+
   afterEach(() => {
     setBaseUrl('http://127.0.0.1:3456')
     vi.restoreAllMocks()

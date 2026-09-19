@@ -1,4 +1,5 @@
-import { api } from './client'
+import { api, type ApiRequestOptions } from './client'
+import type { FileResolutionRequest, FileResolutionResult } from '../lib/assistantFileResolution'
 import type { SlashCommandOption } from '../types/slashCommand'
 import type { AgentTaskNotification } from '../types/chat'
 import type { LocalIndexStatus, SessionListItem, MessageEntry } from '../types/session'
@@ -592,8 +593,8 @@ export const sessionsApi = {
     return api.get<WorkspaceSearchResult>(`/api/sessions/${sessionId}/workspace/search?${params}`)
   },
 
-  getWorkspaceFile(sessionId: string, workspacePath: string, encoding: WorkspaceTextEncoding = 'auto') {
-    return api.get<WorkspaceReadFileResult>(buildWorkspacePath(sessionId, 'file', workspacePath, encoding))
+  getWorkspaceFile(sessionId: string, workspacePath: string, encoding: WorkspaceTextEncoding = 'auto', options?: ApiRequestOptions) {
+    return api.get<WorkspaceReadFileResult>(buildWorkspacePath(sessionId, 'file', workspacePath, encoding), options)
   },
 
   writeWorkspaceFile(
@@ -601,6 +602,10 @@ export const sessionsApi = {
     body: WorkspaceWriteRequest,
   ) {
     return api.put<WorkspaceWriteResult>(`/api/sessions/${sessionId}/workspace/file`, body)
+  },
+
+  resolveFileReference(sessionId: string, request: FileResolutionRequest, options?: ApiRequestOptions) {
+    return api.post<FileResolutionResult>(`/api/sessions/${sessionId}/workspace/resolve-file-reference`, request, options)
   },
 
   grantWorkspaceFileWriteAccess(sessionId: string, path: string) {

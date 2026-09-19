@@ -127,12 +127,13 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
   const loadNativePreview = (
     url: string,
     action: () => Promise<void>,
+    options?: { skipServerWait?: boolean },
   ) => {
     const seq = loadSeqRef.current + 1
     loadSeqRef.current = seq
     setLoadError(null)
     void (async () => {
-      if (shouldWaitForLocalPreview(url)) {
+      if (!options?.skipServerWait && shouldWaitForLocalPreview(url)) {
         await waitForLocalPreview(url)
       }
       if (loadSeqRef.current !== seq) return
@@ -157,12 +158,19 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
       const workDir = useWorkspacePanelStore.getState().statusBySession[sessionId]?.workDir
         ?? useSessionStore.getState().sessions.find((item) => item.id === sessionId)?.workDir
       try {
-        const nativeUrl = resolveNativeLocalPreview(url, getServerBaseUrl(), workDir)
+        const nativeUrl = resolveNativeLocalPreview(url, getServerBaseUrl(), workDir,
+          /win/i.test(navigator.platform) ? 'windows' : 'posix')
         if (nativeUrl !== url) {
           url = nativeUrl
           useBrowserPanelStore.getState().replaceCurrentUrl(sessionId, url)
         }
-      } catch { /* Normal loading reports malformed addresses to the user. */ }
+      } catch (error) {
+        // Use the normal failure lifecycle, but do not fall back to HTTP or pass
+        // an unresolved path to Electron after native path validation failed.
+        requestedUrlRef.current = url
+        loadNativePreview(url, async () => { throw error }, { skipServerWait: true })
+        return
+      }
     }
     if (!options?.force && requestedUrlRef.current === url) return
 

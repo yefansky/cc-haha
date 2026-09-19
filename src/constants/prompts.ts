@@ -1,4 +1,5 @@
 import { fileChangeTrackingInstruction } from './fileChangeTracking.js'
+import { FILE_REFERENCE_INSTRUCTION, fileReferenceInstructionFor } from './fileReferenceInstruction.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { type as osType, version as osVersion, release as osRelease } from 'os'
 import { env } from '../utils/env.js'
@@ -453,6 +454,7 @@ export async function getSystemPrompt(
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return [
       `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}\n\n${fileChangeTrackingInstruction(new Set(tools.map(tool => tool.name))) ?? ''}`,
+      FILE_REFERENCE_INSTRUCTION,
     ]
   }
 
@@ -475,6 +477,7 @@ export async function getSystemPrompt(
       `\nYou are an autonomous agent. Use the available tools to do useful work.
 
 ${CYBER_RISK_INSTRUCTION}`,
+      FILE_REFERENCE_INSTRUCTION,
       getSystemRemindersSection(),
       await loadMemoryPrompt(),
       envInfo,
@@ -571,6 +574,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     getActionsSection(),
     getUsingYourToolsSection(enabledTools),
     getSimpleToneAndStyleSection(),
+    FILE_REFERENCE_INSTRUCTION,
     getOutputEfficiencySection(),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===
     ...(shouldUseGlobalCacheScope() ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),
@@ -774,7 +778,7 @@ export async function enhanceSystemPromptWithEnvDetails(
 ): Promise<string[]> {
   const notes = `Notes:
 - Agent threads always have their cwd reset between bash calls, as a result please only use absolute file paths.
-- In your final response, share file paths (always absolute, never relative) that are relevant to the task. Include code snippets only when the exact text is load-bearing (e.g., a bug you found, a function signature the caller asked for) — do not recap code you merely read.
+- Include code snippets only when the exact text is load-bearing (e.g., a bug you found, a function signature the caller asked for) — do not recap code you merely read.
 - For clear communication with the user the assistant MUST avoid using emojis.
 - Do not use a colon before tool calls. Text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`
   // Subagents get skill_discovery attachments (prefetch.ts runs in query(),
@@ -793,6 +797,7 @@ export async function enhanceSystemPromptWithEnvDetails(
   const envInfo = await computeEnvInfo(model, additionalWorkingDirectories)
   return [
     ...existingSystemPrompt,
+    ...fileReferenceInstructionFor(existingSystemPrompt),
     notes,
     ...(discoverSkillsGuidance !== null ? [discoverSkillsGuidance] : []),
     envInfo,

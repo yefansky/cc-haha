@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom'
-import { fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { openBrowser } = vi.hoisted(() => ({ openBrowser: vi.fn() }))
 vi.mock('../../stores/browserPanelStore', () => ({
@@ -50,6 +50,15 @@ vi.mock('../../stores/settingsStore', () => ({
 }))
 
 import { AssistantMessage } from './AssistantMessage'
+import { invalidateAssistantFileNavigation } from '../../lib/useAssistantFileActions'
+vi.mock('../../api/sessions', () => ({ sessionsApi: { resolveFileReference: async (_id: string, request: { reference: string; candidates?: string[] }) => {
+  const scope = { workDir: 'G:/repo', permissionGeneration: 1 }
+  const absolute = /^(?:[a-z]:[\\/]|\/)/i.test(request.reference)
+  if (!absolute && (request.candidates?.length ?? 0) > 1) return { state: 'ambiguous', complete: true, scope, candidates: request.candidates!.map(path => ({ path, source: 'evidence' })) }
+  const path = absolute ? request.reference : request.candidates?.[0]
+  return path ? { state: 'resolved', path, complete: true, scope } : { state: 'missing', complete: true, scope }
+} } }))
+beforeEach(() => invalidateAssistantFileNavigation())
 
 afterEach(() => {
   openBrowser.mockReset()
@@ -106,7 +115,7 @@ describe('AssistantMessage link routing', () => {
     expect(openBrowser).toHaveBeenCalledWith('s1', 'http://localhost:3000/')
   })
 
-  it('routes a short file link to the verified changed file path', () => {
+  it('routes a short file link to the verified changed file path', async () => {
     render(
       <AssistantMessage
         sessionId="s1"
@@ -116,6 +125,7 @@ describe('AssistantMessage link routing', () => {
     )
 
     fireEvent.click(screen.getByRole('link', { name: 'SKILL.md' }))
+    await waitFor(() => expect(openPreviewFn).toHaveBeenCalled())
     expect(openPreviewFn).toHaveBeenCalledWith(
       's1',
       'I:/skills/agent/SKILL.md',
@@ -125,7 +135,7 @@ describe('AssistantMessage link routing', () => {
     )
   })
 
-  it('routes a mistaken root-relative file link to its unique verified file', () => {
+  it('preserves an explicit root-relative target instead of silently relocating it', async () => {
     render(
       <AssistantMessage
         sessionId="s1"
@@ -139,16 +149,17 @@ describe('AssistantMessage link routing', () => {
     fireEvent.click(screen.getByRole('link', {
       name: '项目大脑/docs/meeting/原始会议记录/会议.md',
     }))
+    await waitFor(() => expect(openPreviewFn).toHaveBeenCalled())
     expect(openPreviewFn).toHaveBeenCalledWith(
       's1',
-      'G:/Jx3_Classic/Sword3_Classic/项目大脑/docs/meeting/原始会议记录/会议.md',
+      '/docs/meeting/原始会议记录/会议.md',
       'file',
       undefined,
       undefined,
     )
   })
 
-  it('opens a short HTML reference through local-file when session evidence resolves it outside the workdir', () => {
+  it('opens a short HTML reference through local-file when session evidence resolves it outside the workdir', async () => {
     render(
       <AssistantMessage
         sessionId="s1"
@@ -160,6 +171,7 @@ describe('AssistantMessage link routing', () => {
     )
 
     fireEvent.click(screen.getByRole('link', { name: '看板/2026-08-26-项目大脑使用态势综合分析.html' }))
+    await waitFor(() => expect(openBrowser).toHaveBeenCalled())
     expect(openBrowser).toHaveBeenCalledWith(
       's1',
       'http://127.0.0.1:4321/local-file/G%3A/Jx3_Classic/sword3-products/trunk/tools/AITools/%E9%A1%B9%E7%9B%AE%E5%A4%A7%E8%84%91/%E7%9C%8B%E6%9D%BF/2026-08-26-%E9%A1%B9%E7%9B%AE%E5%A4%A7%E8%84%91%E4%BD%BF%E7%94%A8%E6%80%81%E5%8A%BF%E7%BB%BC%E5%90%88%E5%88%86%E6%9E%90.html',
@@ -203,6 +215,7 @@ describe('AssistantMessage output-target cards', () => {
       <AssistantMessage
         sessionId="s1"
         content={'见 [说明文档](docs/readme.md)'}
+        turnChangedFiles={['G:/repo/docs/readme.md']}
         isStreaming={false}
       />,
     )
@@ -272,6 +285,7 @@ describe('AssistantMessage output-target cards', () => {
           '见 [说明](docs/readme.md)',
           '页面 [首页](out/index.html)',
         ].join('\n')}
+        turnChangedFiles={['G:/repo/docs/readme.md', 'G:/repo/out/index.html']}
         isStreaming={false}
       />,
     )
@@ -312,4 +326,42 @@ describe('AssistantMessage output-target cards', () => {
     )
     expect(screen.queryByText('assistantOutputs.kind.localhost')).toBeNull()
   })
+})
+
+describe('shared message and card file resolution', () => {
+  it('opens prose and legacy cards at the same uniquely verified file', async () => {
+    render(<AssistantMessage sessionId="s1" content={'`index.md`'} turnChangedFiles={['G:/repo/用户/yefan1/index.md']} turnReferencedFiles={['G:/repo/用户/yefan1/index.md']} />)
+    fireEvent.click(screen.getByRole('link', { name: 'index.md' }))
+    await waitFor(() => expect(openPreviewFn).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: 'assistantOutputs.open' }))
+    await waitFor(() => expect(openPreviewFn).toHaveBeenCalledTimes(2))
+    for (const call of openPreviewFn.mock.calls) expect(call[1]).toBe('G:/repo/用户/yefan1/index.md')
+  })
+
+  it('blocks ambiguous prose and context navigation and omits unverified bare cards', async () => {
+    render(<AssistantMessage sessionId="s1" content={'`index.md`'} turnReferencedFiles={['G:/repo/a/index.md', 'G:/repo/b/index.md']} />)
+    fireEvent.click(screen.getByRole('link', { name: 'index.md' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('找到多个可能文件'))
+    expect(screen.queryByRole('button', { name: 'assistantOutputs.open' })).toBeNull()
+    fireEvent.contextMenu(screen.getByRole('link', { name: 'index.md' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('找到多个可能文件'))
+    expect(openPreviewFn).not.toHaveBeenCalled()
+    expect(openBrowser).not.toHaveBeenCalled()
+    expect(ensureTargets).not.toHaveBeenCalled()
+  })
+
+  it('does not turn read evidence into output cards when changed files are known empty', async () => {
+    render(<AssistantMessage sessionId="s1" content={'`index.md`'} turnChangedFiles={[]} turnReferencedFiles={['G:/repo/docs/index.md']} />)
+    expect(screen.queryByRole('button', { name: 'assistantOutputs.open' })).toBeNull()
+    fireEvent.click(screen.getByRole('link', { name: 'index.md' }))
+    await waitFor(() => expect(openPreviewFn.mock.calls[0]?.[1]).toBe('G:/repo/docs/index.md'))
+  })
+})
+
+it('keeps unresolved inline filenames but omits speculative bare output cards', async () => {
+  render(<AssistantMessage sessionId="s1" content={'`index.md`'} />)
+  expect(screen.queryByRole('button', { name: 'assistantOutputs.open' })).toBeNull()
+  fireEvent.click(screen.getByRole('link', { name: 'index.md' }))
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('未找到'))
+  expect(openPreviewFn).not.toHaveBeenCalled()
 })

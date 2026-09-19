@@ -14,7 +14,14 @@ import {
   isWithinRegisteredFilesystemRoot,
   registerChangedFileAccessRoot,
   registerFilesystemAccessRoot,
+  getFilesystemAccessGeneration,
+  isWithinRegisteredCanonicalFilesystemRoot,
 } from './filesystemAccessRoots.js'
+import {
+  resolveWorkspaceFileReference, FileReferenceIncompleteError,
+  type FileReferenceRequest, type FileReferenceResult, type FileReferenceOperation,
+  type PreparedFileReferenceScope, type FileReferenceDirectoryEntry, type FileReferenceWorkDirSnapshot,
+} from './workspaceFileReferenceResolver.js'
 import { collectErroredToolUseIds } from './transcriptToolResults.js'
 import {
   isSameOrInsidePathForPlatform,
@@ -47,6 +54,16 @@ const PLAINTEXT_FILE_NAMES = new Set([
   'cmakelists.txt', 'dockerfile', 'makefile', 'readme', 'license',
 ])
 const execFile = promisify(execFileCallback)
+
+type FileReferenceSnapshot = PreparedFileReferenceScope & {
+  canonicalWorkspaceRoot: string
+  roots: Set<string>
+  files: Set<string>
+}
+
+function assertMetadataActive(operation: FileReferenceOperation): void {
+  if (operation.signal.aborted || Date.now() >= operation.deadline) throw new FileReferenceIncompleteError('Metadata deadline reached')
+}
 
 export function resolveSvnExecutableCandidates(
   env: NodeJS.ProcessEnv = process.env,
@@ -449,7 +466,116 @@ export class WorkspaceService {
       sessionId: string,
     ) => Promise<FileHistorySnapshot[]> = async () => [],
     private readonly resolveSvnExecutables: () => string[] = resolveSvnExecutableCandidates,
+    private readonly prepareFileReferenceWorkDir?: (sessionId: string, operation: FileReferenceOperation) => Promise<FileReferenceWorkDirSnapshot>,
   ) {}
+
+  /** Bounded metadata only. Hints never register roots or read document bytes. */
+  async resolveFileReference(sessionId: string, request: FileReferenceRequest, signal?: AbortSignal): Promise<FileReferenceResult> {
+    let snapshot: FileReferenceSnapshot
+    let workDirSnapshot: FileReferenceWorkDirSnapshot | undefined
+    const generation = (workDir: string, canonicalRoot: string) => createHash('sha256').update(JSON.stringify([
+      workDir, canonicalRoot, getFilesystemAccessGeneration(),
+      [...(this.externalReadRootsBySession.get(sessionId) ?? [])].sort(),
+      [...(this.externalReadFilesBySession.get(sessionId) ?? [])].sort(),
+    ])).digest('hex')
+    const assertCurrent = async (operation: FileReferenceOperation) => {
+      assertMetadataActive(operation)
+      if (workDirSnapshot) await workDirSnapshot.validate(operation)
+      const workDir = workDirSnapshot ? snapshot.workDir : await this.requireWorkDir(sessionId)
+      assertMetadataActive(operation)
+      const canonicalRoot = normalizeDriveRootPathForPlatform(await fs.realpath(workDir))
+      assertMetadataActive(operation)
+      if (!this.isSamePath(workDir, snapshot.workDir)
+        || generation(workDir, canonicalRoot) !== snapshot.permissionGeneration) {
+        throw new FileReferenceIncompleteError('Workspace access changed')
+      }
+    }
+    const classifyError = (error: unknown) => {
+      if (error instanceof FileReferenceIncompleteError) throw error
+      return { state: error instanceof Error && error.message.includes('outside workspace') ? 'denied' as const : 'error' as const }
+    }
+    return resolveWorkspaceFileReference(request, {
+      prepareScope: async (operation) => {
+        workDirSnapshot = await this.prepareFileReferenceWorkDir?.(sessionId, operation)
+        const workDir = workDirSnapshot
+          ? path.resolve(normalizeDriveRootPathForPlatform(workDirSnapshot.workDir))
+          : await this.requireWorkDir(sessionId)
+        assertMetadataActive(operation)
+        const root = await this.getWorkspaceRoot(workDir, operation.signal)
+        assertMetadataActive(operation)
+        if (root.kind !== 'ok') throw new Error('Workspace metadata unavailable')
+        snapshot = {
+          workDir, canonicalWorkspaceRoot: root.canonicalWorkspaceRoot,
+          pathStyle: process.platform === 'win32' ? 'windows' : 'posix',
+          permissionGeneration: generation(workDir, root.canonicalWorkspaceRoot),
+          roots: new Set(this.externalReadRootsBySession.get(sessionId) ?? []),
+          files: new Set(this.externalReadFilesBySession.get(sessionId) ?? []),
+        }
+        await assertCurrent(operation)
+        return snapshot
+      },
+      probeFile: async (file, _scope, operation) => {
+        try {
+          assertMetadataActive(operation)
+          const resolved = await this.resolveWorkspacePath(sessionId, file, { snapshot, operation })
+          assertMetadataActive(operation)
+          const metadata = await this.safeStat(resolved.canonicalTargetPath)
+          assertMetadataActive(operation)
+          if (metadata.kind === 'error') return { state: 'error' }
+          if (metadata.kind === 'missing' || !metadata.stat.isFile()) return { state: 'missing' }
+          return { state: 'found', path: resolved.absolutePath, canonicalPath: resolved.canonicalTargetPath }
+        } catch (error) { return classifyError(error) }
+        finally { await assertCurrent(operation) }
+      },
+      listDirectory: async (directory, _scope, limit, operation) => {
+        try {
+          assertMetadataActive(operation)
+          const resolved = await this.resolveWorkspacePath(sessionId, directory, { snapshot, operation })
+          assertMetadataActive(operation)
+          // Avoid prefetching entries beyond the shared request entry budget.
+          const cursor = await fs.opendir(resolved.canonicalTargetPath, { bufferSize: 1 })
+          const entries: FileReferenceDirectoryEntry[] = []
+          try {
+            assertMetadataActive(operation)
+            while (entries.length < limit) {
+              assertMetadataActive(operation)
+              const entry = await cursor.read()
+              assertMetadataActive(operation)
+              if (!entry) return { state: 'ok', entries, complete: true }
+              entries.push({ name: entry.name, kind: entry.isSymbolicLink() ? 'symlink' : entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' })
+            }
+            return { state: 'ok', entries, complete: false }
+          } finally { await cursor.close() }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'ENOTDIR') return { state: 'missing' }
+          return classifyError(error)
+        } finally { await assertCurrent(operation) }
+      },
+    }, signal)
+  }
+
+  /** Read-only variant of the same realpath/session boundary; no symlink grants. */
+  private async resolveMetadataWorkspacePath(sessionId: string, requestedPath: string, snapshot: FileReferenceSnapshot, operation: FileReferenceOperation): Promise<WorkspacePathResolution> {
+    assertMetadataActive(operation)
+    const absolutePath = path.resolve(snapshot.workDir, requestedPath)
+    // Reuse canonical ancestor resolution, including missing leaves. Authorization
+    // below uses the captured session roots and the current global registry.
+    const canonicalTargetPath = await this.resolveCanonicalTargetPath(path.parse(absolutePath).root, absolutePath, requestedPath, operation.signal, false)
+    assertMetadataActive(operation)
+    const inside = this.isWithinRoot(absolutePath, snapshot.workDir)
+      && this.isWithinRoot(canonicalTargetPath, snapshot.canonicalWorkspaceRoot)
+    const targetKey = this.workspaceWriteTargetKey(canonicalTargetPath)
+    const externalAllowed = snapshot.files.has(targetKey) || [...snapshot.roots].some((root) => this.isWithinRoot(targetKey, root))
+    if (!inside && !(externalAllowed && isWithinRegisteredCanonicalFilesystemRoot(canonicalTargetPath))) {
+      throw new Error('Path is outside workspace')
+    }
+    return {
+      sessionId, absolutePath, requestedPath, canonicalTargetPath,
+      workspaceRoot: snapshot.workDir, canonicalWorkspaceRoot: snapshot.canonicalWorkspaceRoot,
+      isExternalRoot: !inside,
+      relativePath: inside ? this.normalizeRelativePath(path.relative(snapshot.workDir, absolutePath)) : requestedPath,
+    }
+  }
 
   /**
    * Explicitly grant the local file viewer read access to an additional root.
@@ -2803,12 +2929,14 @@ export class WorkspaceService {
 
   private async getWorkspaceRoot(
     workDir: string,
+    signal?: AbortSignal,
   ): Promise<
     | { kind: 'ok'; workspaceRoot: string; canonicalWorkspaceRoot: string }
     | { kind: 'missing' }
     | { kind: 'error'; message: string }
   > {
     const stat = await this.safeStat(workDir)
+    if (signal?.aborted) throw new FileReferenceIncompleteError('Metadata deadline reached')
     if (stat.kind === 'missing') {
       return { kind: 'missing' }
     }
@@ -2837,7 +2965,9 @@ export class WorkspaceService {
   private async resolveWorkspacePath(
     sessionId: string,
     requestedPath: string,
+    metadataOnly?: { snapshot: FileReferenceSnapshot; operation: FileReferenceOperation },
   ): Promise<WorkspacePathResolution> {
+    if (metadataOnly) return this.resolveMetadataWorkspacePath(sessionId, requestedPath, metadataOnly.snapshot, metadataOnly.operation)
     const workDir = await this.requireWorkDir(sessionId)
     const workspaceRoot = await this.getWorkspaceRoot(workDir)
     if (workspaceRoot.kind === 'missing') {
@@ -2974,24 +3104,29 @@ export class WorkspaceService {
     canonicalWorkspaceRoot: string,
     absolutePath: string,
     requestedPath: string,
+    signal?: AbortSignal,
+    enforceRoot = true,
   ): Promise<string> {
     let probePath = absolutePath
     const missingSuffix: string[] = []
 
     for (;;) {
+      if (signal?.aborted) throw new FileReferenceIncompleteError('Metadata deadline reached')
       try {
         const canonicalBase = await fs.realpath(probePath)
+        if (signal?.aborted) throw new FileReferenceIncompleteError('Metadata deadline reached')
         const canonicalTarget = path.resolve(canonicalBase, ...missingSuffix)
-        if (!this.isWithinRoot(canonicalTarget, canonicalWorkspaceRoot)) {
+        if (enforceRoot && !this.isWithinRoot(canonicalTarget, canonicalWorkspaceRoot)) {
           throw new Error(`Path is outside workspace: ${requestedPath}`)
         }
         return canonicalTarget
       } catch (error) {
+        if (error instanceof FileReferenceIncompleteError) throw error
         const err = error as NodeJS.ErrnoException
         if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
           if (probePath === canonicalWorkspaceRoot) {
             const candidate = path.resolve(canonicalWorkspaceRoot, ...missingSuffix)
-            if (!this.isWithinRoot(candidate, canonicalWorkspaceRoot)) {
+            if (enforceRoot && !this.isWithinRoot(candidate, canonicalWorkspaceRoot)) {
               throw new Error(`Path is outside workspace: ${requestedPath}`)
             }
             return candidate

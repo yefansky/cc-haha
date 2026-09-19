@@ -120,3 +120,13 @@ describe('AssistantOutputTargetCard', () => {
     expect(screen.queryByText('openWith.inAppBrowser')).not.toBeInTheDocument()
   })
 })
+
+it('blocks both navigation actions when its shared resolver reports ambiguity', () => {
+  render(<AssistantOutputTargetCard sessionId="s1" target={markdownTarget} resolveFileLink={() => ({ href: markdownTarget.href, blocked: true, title: '文件引用未唯一定位，请使用完整路径。' })} />)
+  fireEvent.click(screen.getByRole('button', { name: 'assistantOutputs.open' }))
+  fireEvent.click(screen.getByRole('button', { name: 'openWith.title' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('文件引用未唯一定位')
+  expect(openPreviewFn).not.toHaveBeenCalled()
+  expect(openBrowser).not.toHaveBeenCalled()
+  expect(ensureTargets).not.toHaveBeenCalled()
+})

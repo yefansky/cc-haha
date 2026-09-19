@@ -18,11 +18,14 @@ function classify(href: string) {
 export function resolveAssistantFileLink(href: string, options: Options): {
   href: string
   title?: string
+  blocked?: boolean
+  verified?: boolean
 } {
   // Explicit Markdown destinations may be URI-encoded. Preserve encoded
   // separators rather than letting them change the target's path semantics.
   let resolvedHref = resolveAssistantOutputFileHref(href, options)
   const reconciled = resolvedHref !== href
+  let verified = reconciled
   if (!reconciled && !/%(?:2f|5c)/i.test(href)) {
     try {
       const decoded = decodeURI(href)
@@ -52,9 +55,10 @@ export function resolveAssistantFileLink(href: string, options: Options): {
       .map((file) => { const p = file.replace(/\\/g, '/'); return [key(p), p] as const })).values()]
     const candidate = key(path.replace(/^\.\//, ''))
     const suffix = files.filter((file) => key(file).endsWith(`/${candidate}`))
-    const matches = suffix.length ? suffix : files.filter((file) => key(file.split('/').pop()!) === candidate.split('/').pop())
-    if (matches.length > 1) return { href: resolvedHref, title: `${path}\n文件引用未唯一定位` }
+    const matches = suffix.length ? suffix : candidate.includes('/') ? [] : files.filter((file) => key(file.split('/').pop()!) === candidate)
+    if (matches.length > 1) return { href: resolvedHref, title: `${path}\n文件引用未唯一定位，请使用完整路径。`, blocked: true }
     if (matches.length === 1) {
+      verified = true
       const position = classified.line ? `:${classified.line}${classified.column ? `:${classified.column}` : ''}` : ''
       resolvedHref = `${matches[0]}${position}`
       classified = classify(resolvedHref)
@@ -69,6 +73,7 @@ export function resolveAssistantFileLink(href: string, options: Options): {
   const position = classified.line ? `:${classified.line}${classified.column ? `:${classified.column}` : ''}` : ''
   return {
     href: resolvedHref,
+    ...(verified ? { verified: true } : {}),
     title: isAbsoluteLocalPath(absolute)
       ? `${absolute}${position}`
       : `${absolute}${position}\n完整路径尚未解析`,
