@@ -708,7 +708,8 @@ export function MermaidRenderer({ code }: Props) {
           ref={containerRef}
           data-testid="mermaid-diagram-surface"
           className="overflow-auto bg-[var(--color-surface-container-lowest)] p-4 cursor-pointer"
-          style={{ maxHeight: 400 }}
+          // Width-based scaling must not toggle its own scrollbar at the height cap.
+          style={{ maxHeight: 400, scrollbarGutter: 'stable' }}
           onClick={handlePreview}
         >
           <div className="mx-auto shrink-0 select-none" style={inlineFrameStyle}>
@@ -774,6 +775,7 @@ export function MermaidRenderer({ code }: Props) {
             className="overflow-auto rounded-xl bg-[var(--color-surface-container-lowest)]"
             style={{
               maxHeight: '75vh',
+              scrollbarGutter: 'stable',
               cursor: isDraggingPreview ? 'grabbing' : 'grab',
             }}
             onWheel={handlePreviewWheel}
