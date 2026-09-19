@@ -1,0 +1,3 @@
+# Public, self-signed identities used only by local proxy regression tests.
+!proxy-test-cert.pem
+!proxy-test-key.pem

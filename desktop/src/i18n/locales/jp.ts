@@ -197,6 +197,11 @@ export const jp: Record<TranslationKey, string> = {
 
   // ─── Open With ─────────────────────────────────────
   'openWith.title': '開く方法',
+  "settings.browserLinks.title": "Webリンクの開き方",
+  "settings.browserLinks.description": "この端末のみに保存します。ローカルファイルと開発プレビューはアプリ内で開きます。",
+  "settings.browserLinks.auto": "端末に応じて自動",
+  "settings.browserLinks.autoDescription": "デスクトップはシステムブラウザー、リモートはアプリ内プレビュー、OAuthは現在の端末のブラウザーで開きます。作業PCのブラウザーとは異なります。",
+  "openWith.currentDeviceBrowser": "この端末のブラウザー",
   'openWith.inAppBrowser': 'アプリ内ブラウザ',
   'openWith.systemBrowser': 'システムブラウザ',
   'openWith.workspacePreview': 'ワークスペースプレビュー',

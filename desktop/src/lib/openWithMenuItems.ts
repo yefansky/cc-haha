@@ -13,6 +13,8 @@ import type { OpenTarget } from '../stores/openTargetStore'
 import { useBrowserPanelStore } from '../stores/browserPanelStore'
 import { useOpenTargetStore } from '../stores/openTargetStore'
 import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
+import { remoteBrowserDestination, useBrowserLinkPreference } from './browserLinkPreference'
+import { classifyPreviewLink } from './previewLinkRouter'
 
 type Translate = (key: string, vars?: Record<string, string>) => string
 
@@ -43,10 +45,16 @@ export function openWithMenuDeps(
   ctx: OpenWithContext,
   { sessionId, t, omitCopyPath }: OpenWithMenuOptions,
 ): OpenWithDeps {
+  const host = getDesktopHost()
   return {
+    preferredBrowser: ctx.kind === 'url' && classifyPreviewLink(ctx.url).kind === 'remote'
+      ? remoteBrowserDestination(ctx.url, host.isDesktop, useBrowserLinkPreference.getState().preference)
+      : 'in-app',
     openInAppBrowser: (url) => useBrowserPanelStore.getState().open(sessionId, url),
     openSystem: (target) => {
-      void getDesktopHost().shell.openPath(target).catch(() => window.open(target, '_blank'))
+      const shell = getDesktopHost().shell
+      const opening = ctx.kind === 'url' ? shell.open(target) : shell.openPath(target)
+      void opening.catch(() => window.open(target, '_blank', 'noopener,noreferrer'))
     },
     openWorkspacePreview: (relPath) => {
       void useWorkspacePanelStore.getState().openPreview(sessionId, relPath, 'file')
@@ -74,7 +82,7 @@ export function openWithMenuDeps(
           },
         }
       : {}),
-    t,
+    t: (key, vars) => t(key === 'openWith.systemBrowser' && !host.isDesktop ? 'openWith.currentDeviceBrowser' : key, vars),
   }
 }
 

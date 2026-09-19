@@ -110,12 +110,17 @@ describe('handlePreviewLink', () => {
     expect(withColumn.openFilePreview).toHaveBeenCalledWith('s1', 'src/app.ts', { line: 42, column: 8 })
   })
 
-  it('routes remote http(s) to the in-app browser with the url', () => {
-    const deps = makeDeps()
-    const handled = handlePreviewLink('https://example.com/', deps)
+  it.each([
+    'https://example.com/',
+    'http://example.com/',
+    'https://openapi.wps.cn/oauth2/auth?state=test&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback',
+    'https://meeting.kdocs.cn/meeting/ai/example',
+  ])('routes remote links to the system browser without changing OAuth parameters: %s', (url) => {
+    const deps = makeDeps({ remoteBrowser: 'system' })
+    const handled = handlePreviewLink(url, deps)
     expect(handled).toBe(true)
-    expect(deps.openBrowser).toHaveBeenCalledWith('s1', 'https://example.com/')
-    expect(deps.openExternal).not.toHaveBeenCalled()
+    expect(deps.openExternal).toHaveBeenCalledWith(url)
+    expect(deps.openBrowser).not.toHaveBeenCalled()
     expect(deps.openFilePreview).not.toHaveBeenCalled()
   })
 

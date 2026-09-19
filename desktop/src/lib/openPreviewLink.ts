@@ -3,11 +3,12 @@ import { getServerBaseUrl } from './desktopRuntime'
 import { getDesktopHost } from './desktopHost'
 import { useBrowserPanelStore } from '../stores/browserPanelStore'
 import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
+import { remoteBrowserDestination, useBrowserLinkPreference } from './browserLinkPreference'
+import { classifyPreviewLink } from './previewLinkRouter'
 
 /**
- * Route a clicked link the way the chat surface always has: a loopback URL opens
- * the workbench browser on the right, a workspace file opens its preview, and a
- * remote URL goes to the system browser.
+ * Local artifacts and development URLs keep their workbench previews. Remote
+ * links follow the current device's preference, shared by body links and cards.
  *
  * {@link handlePreviewLink} stays dependency-injected for testing; this is the
  * one place that binds it to the real stores, so the markdown body, the output
@@ -16,7 +17,12 @@ import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
  * Returns true when the link was handled (the caller should preventDefault).
  */
 export function openPreviewLink(href: string, sessionId: string): boolean {
+  const host = getDesktopHost()
+  const classified = classifyPreviewLink(href)
   return handlePreviewLink(href, {
+    remoteBrowser: classified.kind === 'remote'
+      ? remoteBrowserDestination(classified.url!, host.isDesktop, useBrowserLinkPreference.getState().preference)
+      : undefined,
     sessionId,
     serverBaseUrl: getServerBaseUrl(),
     openBrowser: (id, url) => useBrowserPanelStore.getState().open(id, url),
@@ -24,8 +30,8 @@ export function openPreviewLink(href: string, sessionId: string): boolean {
       void useWorkspacePanelStore.getState().openPreview(id, path, 'file', undefined, reveal)
     },
     openExternal: (url) => {
-      void getDesktopHost().shell.open(url)
-        .catch(() => window.open(url, '_blank'))
+      void host.shell.open(url)
+        .catch(() => window.open(url, '_blank', 'noopener,noreferrer'))
     },
   })
 }

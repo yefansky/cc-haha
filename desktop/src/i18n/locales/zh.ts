@@ -197,6 +197,11 @@ export const zh: Record<TranslationKey, string> = {
 
   // ─── Open With ─────────────────────────────────────
   'openWith.title': '打开方式',
+  "settings.browserLinks.title": "网页打开方式",
+  "settings.browserLinks.description": "仅保存在当前设备；本地文件和开发预览仍在应用内打开。",
+  "settings.browserLinks.auto": "按设备自动选择",
+  "settings.browserLinks.autoDescription": "自动：桌面网页用系统浏览器；远程网页保留应用内预览；授权页用当前设备浏览器。手机浏览器不等于工作机浏览器。",
+  "openWith.currentDeviceBrowser": "当前设备浏览器",
   'openWith.inAppBrowser': '应用内浏览器',
   'openWith.systemBrowser': '系统浏览器',
   'openWith.workspacePreview': '工作台预览',

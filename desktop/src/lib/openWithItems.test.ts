@@ -103,18 +103,19 @@ const ideTarget: OpenTarget = { id: 'code', kind: 'ide', label: 'VS Code', icon:
 const fmTarget: OpenTarget = { id: 'finder', kind: 'file_manager', label: 'Finder', icon: 'finder', platform: 'darwin' }
 
 describe('buildOpenWithItems – url context', () => {
-  it('returns exactly [in-app, system] for a url context', () => {
+  it('offers the system browser first for remote URLs', () => {
     const deps = makeDeps()
+    deps.preferredBrowser = 'system'
     const ctx: OpenWithContext = { kind: 'url', url: 'https://example.com' }
     const items = buildOpenWithItems(ctx, [], deps)
-    expect(items.map((i) => i.id)).toEqual(['in-app', 'system'])
+    expect(items.map((i) => i.id)).toEqual(['system', 'in-app'])
   })
 
   it('in-app calls openInAppBrowser with url', () => {
     const deps = makeDeps()
     const ctx: OpenWithContext = { kind: 'url', url: 'https://example.com' }
     const items = buildOpenWithItems(ctx, [], deps)
-    items[0]!.onSelect()
+    items.find((item) => item.id === 'in-app')!.onSelect()
     expect(deps.openInAppBrowser).toHaveBeenCalledWith('https://example.com')
     expect(deps.openSystem).not.toHaveBeenCalled()
   })
@@ -123,7 +124,7 @@ describe('buildOpenWithItems – url context', () => {
     const deps = makeDeps()
     const ctx: OpenWithContext = { kind: 'url', url: 'https://example.com' }
     const items = buildOpenWithItems(ctx, [], deps)
-    items[1]!.onSelect()
+    items.find((item) => item.id === 'system')!.onSelect()
     expect(deps.openSystem).toHaveBeenCalledWith('https://example.com')
     expect(deps.openInAppBrowser).not.toHaveBeenCalled()
   })

@@ -19,6 +19,7 @@ import { isDesktopRuntime } from '../../lib/desktopRuntime'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { getDesktopNotificationPermission, notifyDesktop, getDesktopNotificationPlatform, openDesktopNotificationSettings, requestDesktopNotificationPermission, type DesktopNotificationPermission } from '../../lib/desktopNotifications'
 import { SETTINGS_CHECKBOX_INPUT_CLASS, SettingsCheckboxMark, isValidHttpProxyUrl } from '../settings/shared'
+import { BrowserLinkSettings } from './BrowserLinkSettings'
 
 /**
  * The General settings panel — the largest of the seven, and the one most often
@@ -686,6 +687,8 @@ export function GeneralSettings() {
       </SettingsSection>
 
       {/* Language selector */}
+      <BrowserLinkSettings />
+
       <SettingsSection
         title={t('settings.general.languageTitle')}
         description={t('settings.general.languageDescription')}

@@ -196,6 +196,11 @@ export const en = {
 
   // ─── Open With ─────────────────────────────────────
   'openWith.title': 'Open with',
+  "settings.browserLinks.title": "Open website links",
+  "settings.browserLinks.description": "Saved on this device only. Local files and development previews stay in the app.",
+  "settings.browserLinks.auto": "Automatic by device",
+  "settings.browserLinks.autoDescription": "Automatic: desktop websites use the system browser; remote web clients keep in-app previews; OAuth opens in the current device browser, not the work PC browser.",
+  "openWith.currentDeviceBrowser": "This device’s browser",
   'openWith.inAppBrowser': 'In-app browser',
   'openWith.systemBrowser': 'System browser',
   'openWith.workspacePreview': 'Workspace preview',

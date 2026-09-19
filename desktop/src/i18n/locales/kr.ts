@@ -197,6 +197,11 @@ export const kr: Record<TranslationKey, string> = {
 
   // ─── Open With ─────────────────────────────────────
   'openWith.title': '열기 방식',
+  "settings.browserLinks.title": "웹 링크 열기",
+  "settings.browserLinks.description": "이 기기에만 저장됩니다. 로컬 파일과 개발 미리 보기는 앱에서 열립니다.",
+  "settings.browserLinks.auto": "기기에 따라 자동",
+  "settings.browserLinks.autoDescription": "데스크톱은 시스템 브라우저, 원격 접속은 앱 내 미리 보기, OAuth는 현재 기기의 브라우저에서 열립니다. 작업 PC의 브라우저와 다릅니다.",
+  "openWith.currentDeviceBrowser": "현재 기기의 브라우저",
   'openWith.inAppBrowser': '앱 내 브라우저',
   'openWith.systemBrowser': '시스템 브라우저',
   'openWith.workspacePreview': '작업 공간 미리 보기',

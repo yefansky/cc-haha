@@ -104,7 +104,7 @@ describe('AssistantOutputTargetCard', () => {
     render(<AssistantOutputTargetCard target={localhostTarget} sessionId="s1" />)
     fireEvent.click(screen.getByLabelText('openWith.title'))
     expect(await screen.findByText('openWith.inAppBrowser')).toBeInTheDocument()
-    expect(screen.getByText('openWith.systemBrowser')).toBeInTheDocument()
+    expect(screen.getByText('openWith.currentDeviceBrowser')).toBeInTheDocument()
   })
 
   it('re-clicking the same open-with trigger TOGGLES the menu closed', async () => {

@@ -139,11 +139,14 @@ export class SystemProxyBridge implements SystemProxyBridgeLike {
   ): Promise<void> {
     try {
       const target = resolveHttpTarget(request)
-      if (target.protocol !== 'http:') {
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') {
         response.writeHead(400, { Connection: 'close' })
-        response.end('HTTPS proxy requests must use CONNECT')
+        response.end('Unsupported proxy target protocol')
         return
       }
+      // Some clients (including Axios) forward an absolute HTTPS URL instead
+      // of opening a CONNECT tunnel themselves. This loopback-only bridge can
+      // establish that tunnel and verify origin TLS on their behalf.
       const rules = await this.resolveRules(target)
       const method = request.method ?? 'GET'
       const headers = sanitizeProxyRequestHeaders(request.headers)
@@ -340,6 +343,23 @@ async function createRuleRequest(
   onSocket: (socket: Duplex) => void,
 ): Promise<{ transport: typeof http | typeof https, options: OutgoingRequestOptions }> {
   const outgoingHeaders = { ...headers, connection: 'close' }
+  if (target.protocol === 'https:') {
+    const route = await connectTunnelUsingRules([rule], target.hostname, targetPort(target))
+    onSocket(route.socket)
+    const socket = await secureOriginSocket(route.socket, target.hostname)
+    onSocket(socket)
+    return {
+      transport: https,
+      options: {
+        method,
+        host: target.hostname,
+        port: targetPort(target),
+        path: `${target.pathname}${target.search}`,
+        headers: outgoingHeaders,
+        agent: new SingleTlsSocketAgent(socket),
+      },
+    }
+  }
   if (rule.type === 'direct') {
     return {
       transport: http,
@@ -452,6 +472,35 @@ class SingleSocketAgent extends http.Agent {
     this.claimed = true
     return this.socket
   }
+}
+
+class SingleTlsSocketAgent extends https.Agent {
+  private claimed = false
+
+  constructor(private readonly socket: tls.TLSSocket) {
+    super({ keepAlive: false })
+  }
+
+  override createConnection(): tls.TLSSocket {
+    if (this.claimed) throw new Error('System proxy TLS socket was already claimed')
+    this.claimed = true
+    return this.socket
+  }
+}
+
+function secureOriginSocket(route: Duplex, hostname: string): Promise<tls.TLSSocket> {
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect({
+      socket: route as net.Socket,
+      servername: net.isIP(hostname) ? undefined : hostname,
+      // Verify the target even for an IP address (where SNI is omitted).
+      checkServerIdentity: (_host, certificate) => tls.checkServerIdentity(hostname, certificate),
+    })
+    const timer = setTimeout(() => socket.destroy(new Error('origin TLS handshake timed out')), CONNECT_TIMEOUT_MS)
+    socket.once('secureConnect', () => { clearTimeout(timer); resolve(socket) })
+    socket.once('error', error => { clearTimeout(timer); route.destroy(); reject(error) })
+    socket.once('close', () => { clearTimeout(timer); reject(new Error('origin TLS connection closed')) })
+  })
 }
 
 function closeServer(server: http.Server): Promise<void> {

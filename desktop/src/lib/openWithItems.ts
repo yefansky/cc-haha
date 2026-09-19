@@ -64,6 +64,7 @@ export type OpenWithDeps = {
   copyPath?: (absolutePath: string) => void
   copyFileContent?: (path: string) => void
   t: (key: string, vars?: Record<string, string>) => string
+  preferredBrowser?: 'in-app' | 'system'
 }
 
 export type OpenWithContext =
@@ -75,6 +76,7 @@ export function buildOpenWithItems(ctx: OpenWithContext, targets: OpenTarget[], 
   if (ctx.kind === 'url') {
     items.push({ id: 'in-app', label: deps.t('openWith.inAppBrowser'), icon: 'in-app-browser', onSelect: () => deps.openInAppBrowser(ctx.url) })
     items.push({ id: 'system', label: deps.t('openWith.systemBrowser'), icon: 'system', onSelect: () => deps.openSystem(ctx.url) })
+    if (deps.preferredBrowser === 'system') items.reverse()
     return items
   }
   if (ctx.previewable && ctx.relPath != null) {

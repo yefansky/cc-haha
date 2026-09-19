@@ -10,6 +10,7 @@ export type PreviewLinkDeps = {
   /** `reveal` carries the `:42` suffix through to the code view's scroll target. */
   openFilePreview: (sessionId: string, path: string, reveal?: PreviewLinkReveal) => void
   openExternal: (url: string) => void
+  remoteBrowser?: 'in-app' | 'system'
 }
 
 /**
@@ -82,11 +83,8 @@ export function handlePreviewLink(href: string, deps: PreviewLinkDeps): boolean 
       deps.openFilePreview(deps.sessionId, cls.path!, reveal)
       return true
     case 'remote':
-      // The workbench browser is able to render ordinary remote HTTP(S) pages.
-      // Keep remote links in the same surface as localhost and local HTML so a
-      // click never appears to do nothing when the system-browser handoff is
-      // blocked or obscured.
-      deps.openBrowser(deps.sessionId, cls.url!)
+      if (deps.remoteBrowser === 'system') deps.openExternal(cls.url!)
+      else deps.openBrowser(deps.sessionId, cls.url!)
       return true
     default:
       return false
