@@ -158,6 +158,8 @@ export const zh: Record<TranslationKey, string> = {
   'sidebar.collapseProject': '折叠 {project}',
   'sidebar.worktree': 'worktree',
   'sidebar.sessionRunning': '会话运行中',
+  'sidebar.backgroundTaskCount': '后台 {count}',
+  'sidebar.backgroundTasksRunning': '仍有 {count} 个后台任务在运行；打开会话可查看或停止',
   'sidebar.missingDir': '目录缺失',
   'sidebar.confirmDelete': '确定要删除这个会话吗？此操作不可撤销。',
   'sidebar.batchManage': '批量管理',

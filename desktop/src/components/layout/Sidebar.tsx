@@ -20,7 +20,6 @@ import { useChatStore } from '../../stores/chatStore'
 import { useOpenTargetStore } from '../../stores/openTargetStore'
 import { desktopUiPreferencesApi, type SidebarProjectPreferences } from '../../api/desktopUiPreferences'
 import { getDesktopHost } from '../../lib/desktopHost'
-import { hasRunningBackgroundTasks } from '../../lib/backgroundTasks'
 import { getSessionWorkspaceState } from '../../lib/sessionWorkspace'
 
 const desktopHost = getDesktopHost()
@@ -221,15 +220,24 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   const runningSessionIds = useMemo(() => {
     const ids = new Set<string>()
     for (const tab of tabs) {
-      if (tab.type === 'session' && tab.status === 'running') ids.add(tab.sessionId)
+      // Tab status also includes detached work. Prefer the actual foreground
+      // state whenever this renderer has loaded the conversation.
+      if (tab.type === 'session' && tab.status === 'running' && !chatSessions[tab.sessionId]) ids.add(tab.sessionId)
     }
     for (const [sessionId, sessionState] of Object.entries(chatSessions)) {
-      if (sessionState.chatState !== 'idle' || hasRunningBackgroundTasks(sessionState.backgroundAgentTasks)) {
+      if (sessionState.chatState !== 'idle') {
         ids.add(sessionId)
       }
     }
     return ids
   }, [chatSessions, tabs])
+  const backgroundTaskCounts = useMemo(() => Object.fromEntries(
+    Object.entries(chatSessions).map(([sessionId, session]) => [sessionId,
+      Object.values(session.backgroundAgentTasks ?? {}).filter(
+        (task) => task.status === 'running' && task.taskType !== 'dream',
+      ).length,
+    ]),
+  ), [chatSessions])
   const pendingBatchDeleteSessions = useMemo(
     () => (pendingBatchDeleteSessionIds ?? [])
       .map((sessionId) => sessionsById.get(sessionId))
@@ -1011,6 +1019,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                           isSelected={selectedSessionIds.has(session.id)}
                           isActive={session.id === activeTabId}
                           isRunning={runningSessionIds.has(session.id)}
+                          backgroundTaskCount={backgroundTaskCounts[session.id] ?? 0}
                           t={t}
                           onClick={(event) => {
                             if (isBatchMode) {
@@ -1237,6 +1246,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                                     )}
                                     <SessionRowMeta
                                       isRunning={runningSessionIds.has(session.id)}
+                                      backgroundTaskCount={backgroundTaskCounts[session.id] ?? 0}
                                       isWorktree={isWorktreeSession(session)}
                                       modifiedAt={session.lastUserMessageAt ?? session.createdAt}
                                       t={t}
@@ -2152,6 +2162,7 @@ function PinnedSessionRow({
   isSelected,
   isActive,
   isRunning,
+  backgroundTaskCount,
   t,
   onClick,
   onContextMenu,
@@ -2162,6 +2173,7 @@ function PinnedSessionRow({
   isSelected: boolean
   isActive: boolean
   isRunning: boolean
+  backgroundTaskCount: number
   t: ReturnType<typeof useTranslation>
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void
   onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => void
@@ -2205,6 +2217,7 @@ function PinnedSessionRow({
           </span>
           <SessionRowMeta
             isRunning={isRunning}
+            backgroundTaskCount={backgroundTaskCount}
             isWorktree={isWorktreeSession(session)}
             modifiedAt={session.lastUserMessageAt ?? session.createdAt}
             t={t}
@@ -2222,11 +2235,13 @@ function compareSessionsByLastUserInput(a: SessionListItem, b: SessionListItem):
 
 function SessionRowMeta({
   isRunning,
+  backgroundTaskCount,
   isWorktree,
   modifiedAt,
   t,
 }: {
   isRunning: boolean
+  backgroundTaskCount: number
   isWorktree: boolean
   modifiedAt: string
   t: (key: TranslationKey, params?: Record<string, string | number>) => string
@@ -2247,6 +2262,16 @@ function SessionRowMeta({
         >
           {/* The wrapper already carries the name, so the spinner stays silent. */}
           <Spinner size={14} />
+        </span>
+      )}
+      {backgroundTaskCount > 0 && (
+        <span
+          className="inline-flex flex-shrink-0 items-center gap-0.5 text-[var(--color-text-secondary)]"
+          aria-label={t('sidebar.backgroundTasksRunning', { count: backgroundTaskCount })}
+          title={t('sidebar.backgroundTasksRunning', { count: backgroundTaskCount })}
+        >
+          <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+          <span>{t('sidebar.backgroundTaskCount', { count: backgroundTaskCount })}</span>
         </span>
       )}
       {isWorktree && (

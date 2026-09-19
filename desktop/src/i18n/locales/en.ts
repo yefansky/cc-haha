@@ -157,6 +157,8 @@ export const en = {
   'sidebar.collapseProject': 'Collapse {project}',
   'sidebar.worktree': 'worktree',
   'sidebar.sessionRunning': 'Session running',
+  'sidebar.backgroundTaskCount': 'Background {count}',
+  'sidebar.backgroundTasksRunning': '{count} background task(s) still running; open the conversation to inspect or stop them',
   'sidebar.missingDir': 'missing dir',
   'sidebar.confirmDelete': 'Delete this session? This cannot be undone.',
   'sidebar.batchManage': 'Batch manage',

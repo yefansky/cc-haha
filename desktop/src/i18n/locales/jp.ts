@@ -158,6 +158,8 @@ export const jp: Record<TranslationKey, string> = {
   'sidebar.collapseProject': '{project} を折りたたむ',
   'sidebar.worktree': 'worktree',
   'sidebar.sessionRunning': 'セッション実行中',
+  'sidebar.backgroundTaskCount': 'バックグラウンド {count}',
+  'sidebar.backgroundTasksRunning': '{count} 件のバックグラウンドタスクが実行中です。会話を開いて確認または停止できます',
   'sidebar.missingDir': 'ディレクトリがありません',
   'sidebar.confirmDelete': 'このセッションを削除しますか？この操作は取り消せません。',
   'sidebar.batchManage': '一括管理',

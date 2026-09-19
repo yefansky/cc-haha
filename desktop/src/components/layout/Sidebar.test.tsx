@@ -76,6 +76,8 @@ vi.mock('../../i18n', () => ({
       'sidebar.collapseProject': 'Collapse {project}',
       'sidebar.worktree': 'worktree',
       'sidebar.sessionRunning': 'Session running',
+      'sidebar.backgroundTaskCount': 'Background {count}',
+      'sidebar.backgroundTasksRunning': '{count} background tasks running',
       'common.retry': 'Retry',
       'common.loading': 'Loading...',
       'common.cancel': 'Cancel',
@@ -248,6 +250,7 @@ describe('Sidebar', () => {
     window.localStorage.removeItem(PROJECT_SORT_STORAGE_KEY)
 
     useTabStore.setState({ tabs: [], activeTabId: null })
+    window.localStorage.removeItem('cc-haha-sidebar-pinned-sessions')
     useSessionStore.setState({
       sessions: [],
       activeSessionId: null,
@@ -1004,7 +1007,7 @@ describe('Sidebar', () => {
     useTabStore.setState({
       tabs: [
         { sessionId: 'running-worktree', title: 'Running Worktree', type: 'session', status: 'running' },
-        { sessionId: 'background-running', title: 'Background Running', type: 'session', status: 'idle' },
+        { sessionId: 'background-running', title: 'Background Running', type: 'session', status: 'running' },
         { sessionId: 'idle-source', title: 'Idle Source', type: 'session', status: 'idle' },
       ],
       activeTabId: 'running-worktree',
@@ -1035,7 +1038,9 @@ describe('Sidebar', () => {
     expect(within(runningRow).getByText('5h ago')).toBeInTheDocument()
 
     const backgroundRunningRow = screen.getByRole('button', { name: /Background Running/ })
-    expect(within(backgroundRunningRow).getByLabelText('Session running')).toBeInTheDocument()
+    expect(within(backgroundRunningRow).queryByLabelText('Session running')).not.toBeInTheDocument()
+    expect(within(backgroundRunningRow).getByLabelText('1 background tasks running')).toBeInTheDocument()
+    expect(within(backgroundRunningRow).getByText('Background 1')).toBeInTheDocument()
 
     const idleRow = screen.getByRole('button', { name: /Idle Source/ })
     expect(within(idleRow).queryByLabelText('Session running')).not.toBeInTheDocument()
@@ -1043,6 +1048,40 @@ describe('Sidebar', () => {
     const idleMeta = within(idleRow).getByTitle('last updated 20m ago')
     expect(idleMeta).toHaveClass('flex-shrink-0', 'whitespace-nowrap')
     expect(idleMeta).not.toHaveClass('min-w-[78px]')
+  })
+
+  it.each([false, true])('separates foreground generation from detached shell work through completion (pinned=%s)', (pinned) => {
+    if (pinned) window.localStorage.setItem('cc-haha-sidebar-pinned-sessions', JSON.stringify(['shell-session']))
+    useSessionStore.setState({ sessions: [makeSession('shell-session', 'Shell Session', '/workspace/repo', '2026-09-18T07:35:23Z')] })
+    useTabStore.setState({
+      tabs: [{ sessionId: 'shell-session', title: 'Shell Session', type: 'session', status: 'running' }],
+      activeTabId: 'shell-session',
+    })
+    const task = { taskId: 'shell-1', taskType: 'local_bash', status: 'running' as const,
+      description: 'Slow command', startedAt: 1, updatedAt: 2 }
+    const setActivity = (chatState: 'thinking' | 'idle', status: 'running' | 'completed') => {
+      useChatStore.setState({ sessions: { 'shell-session': makeChatSessionState({
+        chatState,
+        backgroundAgentTasks: {
+          'shell-1': { ...task, status },
+          'dream-1': { ...task, taskId: 'dream-1', taskType: 'dream' },
+        },
+      }) } })
+    }
+    setActivity('thinking', 'running')
+    render(<Sidebar />)
+    const row = screen.getByRole('button', { name: /Shell Session/ })
+    expect(within(row).getByLabelText('Session running')).toBeInTheDocument()
+    expect(within(row).getByText('Background 1')).toBeInTheDocument()
+
+    act(() => setActivity('idle', 'running'))
+    expect(within(row).queryByLabelText('Session running')).not.toBeInTheDocument()
+    expect(within(row).getByText('Background 1')).toBeInTheDocument()
+
+    act(() => setActivity('idle', 'completed'))
+    expect(within(row).queryByText('Background 1')).not.toBeInTheDocument()
+    // A stale aggregate tab status cannot revive the foreground spinner.
+    expect(within(row).queryByLabelText('Session running')).not.toBeInTheDocument()
   })
 
   it('shows a toast when session creation fails', async () => {
