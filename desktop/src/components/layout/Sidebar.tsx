@@ -21,6 +21,8 @@ import { useOpenTargetStore } from '../../stores/openTargetStore'
 import { desktopUiPreferencesApi, type SidebarProjectPreferences } from '../../api/desktopUiPreferences'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { getSessionWorkspaceState } from '../../lib/sessionWorkspace'
+import { ProjectRenameDialog } from './ProjectRenameDialog'
+import { cacheProjectNames, normalizeProjectNames, readProjectNames } from '../../lib/sidebarProjectNames'
 
 const desktopHost = getDesktopHost()
 const isDesktopRuntime = desktopHost.isDesktop
@@ -92,6 +94,8 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [projectContextMenu, setProjectContextMenu] = useState<{ key: string; x: number; y: number } | null>(null)
   const [managedProjectPath, setManagedProjectPath] = useState<string | null>(null)
+  const [renamingProject, setRenamingProject] = useState<ProjectGroup | null>(null)
+  const [projectNames, setProjectNames] = useState<Record<string, string>>(() => readProjectNames())
   const [projectHeaderMenu, setProjectHeaderMenu] = useState<{ type: SidebarHeaderMenuType; x: number; y: number } | null>(null)
   const [projectHeaderSubmenu, setProjectHeaderSubmenu] = useState<{ type: 'organize' | 'sort'; x: number; y: number } | null>(null)
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null)
@@ -192,7 +196,10 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
     () => filteredSessions.filter((session) => !pinnedSessionIds.has(session.id)),
     [filteredSessions, pinnedSessionIds],
   )
-  const projectGroups = useMemo(() => groupByProject(unpinnedSessions, projectSortBy), [unpinnedSessions, projectSortBy])
+  const projectGroups = useMemo(() => groupByProject(unpinnedSessions, projectSortBy).map((project) => ({
+    ...project,
+    title: Object.prototype.hasOwnProperty.call(projectNames, project.key) ? projectNames[project.key]! : project.title,
+  })), [unpinnedSessions, projectSortBy, projectNames])
   const orderedProjectGroups = useMemo(
     () => applyProjectOrder(projectGroups, projectOrder, pinnedProjectKeys, projectOrganization, projectSortBy),
     [projectGroups, projectOrder, pinnedProjectKeys, projectOrganization, projectSortBy],
@@ -250,6 +257,9 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   }, [isMobile, onRequestClose])
 
   const applySidebarProjectPreferences = useCallback((preferences: SidebarProjectPreferences) => {
+    const names = normalizeProjectNames(preferences.projectNames)
+    setProjectNames(names)
+    cacheProjectNames(names)
     setProjectOrder(preferences.projectOrder)
     setPinnedProjectKeys(new Set(preferences.pinnedProjects))
     setPinnedSessionIds(new Set(preferences.pinnedSessions))
@@ -1363,6 +1373,15 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
               {t(pinned ? 'sidebar.unpinProject' : 'sidebar.pinProject')}
             </ProjectMenuItem>
             <ProjectMenuItem
+              icon={<SquarePen size={18} aria-hidden="true" />}
+              onClick={() => {
+                setRenamingProject(project)
+                setProjectContextMenu(null)
+              }}
+            >
+              {t('sidebar.renameProject')}
+            </ProjectMenuItem>
+            <ProjectMenuItem
               icon={<FolderOpen size={18} aria-hidden="true" />}
               onClick={() => void openProjectInFinder(project)}
             >
@@ -1389,6 +1408,18 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
       })()}
 
       {managedProjectPath && <ProjectFoldersDialog projectPath={managedProjectPath} onClose={() => setManagedProjectPath(null)} />}
+
+      {renamingProject && <ProjectRenameDialog
+        title={renamingProject.title}
+        onClose={() => setRenamingProject(null)}
+        onSave={async (name) => {
+          sidebarPreferenceRevisionRef.current += 1
+          const names = { ...projectNames, [renamingProject.key]: name }
+          await desktopUiPreferencesApi.updateSidebarPreferences({ projectNames: names })
+          setProjectNames(names)
+          cacheProjectNames(names)
+        }}
+      />}
 
       {projectHeaderMenu && (
         <ProjectHeaderMenu
@@ -1956,7 +1987,9 @@ function buildSidebarProjectPreferences(
 }
 
 function readCachedSidebarProjectPreferences(): SidebarProjectPreferences {
+  const names = readProjectNames()
   return {
+    ...(Object.keys(names).length > 0 ? { projectNames: names } : {}),
     projectOrder: readStoredProjectOrder(),
     pinnedProjects: [...readStoredProjectPins()],
     pinnedSessions: [...readStoredSessionPins()],
@@ -1968,6 +2001,7 @@ function readCachedSidebarProjectPreferences(): SidebarProjectPreferences {
 
 function writeCachedSidebarProjectPreferences(preferences: SidebarProjectPreferences): void {
   const normalized = normalizeSidebarProjectPreferences(preferences)
+  if (normalized.projectNames) cacheProjectNames(normalized.projectNames)
   writeStoredProjectOrder(normalized.projectOrder)
   writeStoredProjectPins(new Set(normalized.pinnedProjects))
   writeStoredSessionPins(new Set(normalized.pinnedSessions))
@@ -1978,6 +2012,7 @@ function writeCachedSidebarProjectPreferences(preferences: SidebarProjectPrefere
 
 function normalizeSidebarProjectPreferences(preferences: Partial<SidebarProjectPreferences> | undefined): SidebarProjectPreferences {
   return {
+    ...(preferences?.projectNames !== undefined ? { projectNames: normalizeProjectNames(preferences.projectNames) } : {}),
     projectOrder: normalizeProjectKeyList(preferences?.projectOrder),
     pinnedProjects: normalizeProjectKeyList(preferences?.pinnedProjects),
     pinnedSessions: normalizeProjectKeyList(preferences?.pinnedSessions),
@@ -2020,7 +2055,8 @@ function projectPathMatches(projectKey: string, workDir: string): boolean {
 }
 
 function hasSidebarProjectPreferences(preferences: SidebarProjectPreferences): boolean {
-  return preferences.projectOrder.length > 0
+  return Object.keys(preferences.projectNames ?? {}).length > 0
+    || preferences.projectOrder.length > 0
     || preferences.pinnedProjects.length > 0
     || preferences.pinnedSessions.length > 0
     || preferences.hiddenProjects.length > 0

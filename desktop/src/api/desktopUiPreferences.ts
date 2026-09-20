@@ -1,6 +1,7 @@
 import { ApiError, api, getApiUrl, getAuthToken } from './client'
 
 export type SidebarProjectPreferences = {
+  projectNames?: Record<string, string>
   projectOrder: string[]
   pinnedProjects: string[]
   pinnedSessions: string[]
@@ -56,7 +57,7 @@ export const desktopUiPreferencesApi = {
     return api.get<DesktopPetPreferencesResponse>('/api/desktop-ui/preferences/pet')
   },
 
-  updateSidebarPreferences(sidebar: SidebarProjectPreferences) {
+  updateSidebarPreferences(sidebar: Partial<SidebarProjectPreferences>) {
     return api.put<{ ok: true; preferences: DesktopUiPreferences }>(
       '/api/desktop-ui/preferences/sidebar',
       sidebar,

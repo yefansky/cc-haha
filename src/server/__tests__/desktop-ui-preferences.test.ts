@@ -59,6 +59,17 @@ describe('DesktopUiPreferencesService', () => {
   beforeEach(setup)
   afterEach(teardown)
 
+  test('persists project display names across service instances and unrelated preference updates', async () => {
+    const service = new DesktopUiPreferencesService()
+    const projectNames = { '/workspace/alpha': '剑网3缘起', '/other/alpha': '另一个项目' }
+    await service.updateSidebarPreferences({ projectNames })
+    await service.updateSidebarPreferences({ pinnedProjects: ['/workspace/alpha'], projectSortBy: 'createdAt' })
+    await service.updateProfilePreferences({ displayName: 'Tester' })
+    const reloaded = await new DesktopUiPreferencesService().readPreferences()
+    expect(reloaded.preferences.sidebar).toMatchObject({ projectNames, pinnedProjects: ['/workspace/alpha'], projectSortBy: 'createdAt' })
+    expect((await readDesktopUiFile()).sidebar).toMatchObject({ projectNames })
+  })
+
   test('returns defaults when desktop-ui.json does not exist', async () => {
     const service = new DesktopUiPreferencesService()
 

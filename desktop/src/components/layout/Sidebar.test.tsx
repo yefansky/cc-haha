@@ -243,6 +243,7 @@ describe('Sidebar', () => {
     openTargetStoreMock.ensureTargets.mockReset()
     openTargetStoreMock.openTarget.mockReset()
     openTargetStoreMock.targets = [{ id: 'finder', kind: 'file_manager', label: 'Finder', platform: 'darwin' }]
+    window.localStorage.removeItem('cc-haha-sidebar-project-names')
     window.localStorage.removeItem(PROJECT_ORDER_STORAGE_KEY)
     window.localStorage.removeItem(PROJECT_PINNED_STORAGE_KEY)
     window.localStorage.removeItem(PROJECT_HIDDEN_STORAGE_KEY)
@@ -279,6 +280,7 @@ describe('Sidebar', () => {
     vi.useRealTimers()
     cleanup()
     useTabStore.setState({ tabs: [], activeTabId: null })
+    window.localStorage.removeItem('cc-haha-sidebar-project-names')
     window.localStorage.removeItem(PROJECT_ORDER_STORAGE_KEY)
     window.localStorage.removeItem(PROJECT_PINNED_STORAGE_KEY)
     window.localStorage.removeItem(PROJECT_HIDDEN_STORAGE_KEY)
@@ -720,6 +722,80 @@ describe('Sidebar', () => {
       type: 'info',
       message: 'beta was hidden from the sidebar. Existing sessions were not deleted.',
     })
+  })
+
+  it('renames a project while retaining its path, sessions and name after remount and pinning', async () => {
+    const session = makeSession('alpha-1', 'Alpha Session', '/workspace/alpha', new Date().toISOString())
+    useSessionStore.setState({ sessions: [session] })
+    const view = render(<Sidebar />)
+    fireEvent.contextMenu(screen.getByText('alpha'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'sidebar.renameProject' }))
+    const input = screen.getByRole('textbox', { name: 'sidebar.projectName' })
+    expect(input).toHaveValue('alpha')
+    expect(input).toHaveFocus()
+    fireEvent.change(input, { target: { value: '  剑网3缘起  ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByText('剑网3缘起')).toBeInTheDocument()
+    expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenCalledWith({ projectNames: { '/workspace/alpha': '剑网3缘起' } })
+    expect(useSessionStore.getState().sessions).toEqual([session])
+    fireEvent.contextMenu(screen.getByText('剑网3缘起'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Pin Project' }))
+    expect(JSON.parse(localStorage.getItem('cc-haha-sidebar-project-names')!)).toEqual({ '/workspace/alpha': '剑网3缘起' })
+    view.unmount()
+    render(<Sidebar />)
+    expect(screen.getByText('剑网3缘起')).toBeInTheDocument()
+    expect(screen.getByText('Alpha Session')).toBeInTheDocument()
+  })
+
+  it('rejects blank names, cancels without saving, and ignores IME confirmation', async () => {
+    useSessionStore.setState({ sessions: [makeSession('alpha-1', 'Alpha Session', '/workspace/alpha', new Date().toISOString())] })
+    render(<Sidebar />)
+    fireEvent.contextMenu(screen.getByText('alpha'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'sidebar.renameProject' }))
+    const input = screen.getByRole('textbox', { name: 'sidebar.projectName' })
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(desktopUiPreferencesApiMock.updateSidebarPreferences).not.toHaveBeenCalled()
+    fireEvent.change(input, { target: { value: '新名字' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    expect(desktopUiPreferencesApiMock.updateSidebarPreferences).not.toHaveBeenCalled()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByText('alpha')).toBeInTheDocument()
+  })
+
+  it('keeps the previous name and user input on save failure and permits retry', async () => {
+    desktopUiPreferencesApiMock.updateSidebarPreferences.mockRejectedValueOnce(new Error('offline'))
+    useSessionStore.setState({ sessions: [makeSession('alpha-1', 'Alpha Session', '/workspace/alpha', new Date().toISOString())] })
+    render(<Sidebar />)
+    fireEvent.contextMenu(screen.getByText('alpha'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'sidebar.renameProject' }))
+    const input = screen.getByRole('textbox', { name: 'sidebar.projectName' })
+    fireEvent.change(input, { target: { value: '新名字' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('sidebar.renameProjectFailed'))
+    expect(input).toHaveValue('新名字')
+    expect(screen.getByText('alpha')).toBeInTheDocument()
+    expect(localStorage.getItem('cc-haha-sidebar-project-names')).toBeNull()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(screen.getByText('新名字')).toBeInTheDocument())
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('loads project names from the server in a fresh browser and keeps same-name folders distinct', async () => {
+    desktopUiPreferencesApiMock.getPreferences.mockResolvedValue({ exists: true, preferences: { sidebar: {
+      projectNames: { '/one/alpha': '服务端名称' },
+      projectOrder: [], pinnedProjects: [], pinnedSessions: [], hiddenProjects: [],
+      projectOrganization: 'recentProject', projectSortBy: 'updatedAt',
+    } } })
+    useSessionStore.setState({ sessions: [
+      makeSession('one', 'One', '/one/alpha', new Date().toISOString()),
+      makeSession('two', 'Two', '/two/alpha', new Date().toISOString()),
+    ] })
+    render(<Sidebar />)
+    await waitFor(() => expect(screen.getByText('服务端名称')).toBeInTheDocument())
+    expect(screen.getByText('alpha')).toBeInTheDocument()
   })
 
   it('keeps hidden projects out of the sidebar without the removed project filter', () => {
