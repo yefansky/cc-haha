@@ -1,7 +1,9 @@
+import { contextBreakdownEn } from '../contextBreakdownTranslations'
 import type { TranslationKey } from './en'
 import { contextAuditJp } from '../contextAuditTranslations'
 
 export const jp: Record<TranslationKey, string> = {
+  ...contextBreakdownEn,
   "chat.subagentProgress.waiting": "サブエージェントを待機中",
   "chat.subagentProgress.running": "サブエージェント",
   "chat.subagentProgress.phase.waiting": "モデルの応答待ち",

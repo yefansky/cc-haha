@@ -753,6 +753,27 @@ describe('ContextUsageIndicator presentation', () => {
     vi.restoreAllMocks()
   })
 
+  it('shows all source categories, expands file details and omits compact reserves', async () => {
+    useSettingsStore.setState({ locale: 'zh' })
+    sessionsApiMock.getInspection.mockResolvedValue({ ...baseInspection, context: {
+      ...baseInspection.context,
+      categories: ['System prompt', 'System tools', 'Memory files', 'Skills', 'MCP tools', 'Custom agents', 'Messages', 'Compact buffer'].map(name => ({ name, tokens: 100, color: 'promptBorder' })),
+      totalTokens: 700,
+      memoryFiles: [{ path: '/rules/CLAUDE.md', type: 'project', tokens: 100 }],
+    } })
+    render(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />)
+    await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%'))
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+    const popover = await screen.findByTestId('context-usage-popover')
+    for (const label of ['系统提示', '工具定义', '规则 / 记忆文件', '技能', 'MCP 工具', '子代理定义', '对话与工具结果']) expect(popover).toHaveTextContent(label)
+    expect(popover).not.toHaveTextContent('Compact buffer')
+    const summary = screen.getByText('规则 / 记忆文件').closest('summary')!
+    fireEvent.click(summary)
+    expect(summary.parentElement).toHaveAttribute('open')
+    expect(screen.getByText('/rules/CLAUDE.md')).toBeVisible()
+    expect(screen.getByTestId('context-stacked-bar').children).toHaveLength(7)
+  })
+
   it('opens a body-portalled popover on desktop click and closes on outside press', async () => {
     render(
       <ContextUsageIndicator

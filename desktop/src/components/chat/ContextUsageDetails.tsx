@@ -1,7 +1,4 @@
-type ContextCategory = {
-  name: string
-  tokens: number
-}
+import type { ContextBreakdownRow } from '../../lib/contextBreakdown'
 
 export type ContextUsageDetailsStatus = 'ready' | 'pending' | 'loading' | 'unavailable'
 
@@ -12,7 +9,9 @@ export type ContextUsageDetailsProps = {
   usedTokens: number
   freeTokens: number
   maxTokens: number
-  categories: ContextCategory[]
+  categories: ContextBreakdownRow[]
+  breakdownNote?: string
+  mismatchNote?: string
   updatedAtLabel?: string
   estimate?: boolean
   status: ContextUsageDetailsStatus
@@ -32,39 +31,57 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat().format(value)
 }
 
-function CategoryBars({
-  categories,
-  maxTokens,
-  density,
-}: {
-  categories: ContextCategory[]
+function formatTokens(value: number, window = false) {
+  if (value < 1000) return formatNumber(Math.round(value))
+  const thousands = (value / 1000).toFixed(1)
+  return `${window ? thousands.replace(/\.0$/, '') : thousands}K`
+}
+
+function exactTokens(value: number) {
+  return `${formatNumber(value)} Tokens`
+}
+
+function CategoryBars({ categories, maxTokens }: {
+  categories: ContextBreakdownRow[]
   maxTokens: number
-  density: 'compact' | 'comfortable'
 }) {
   if (categories.length === 0) return null
-
   return (
-    <div className={density === 'compact' ? 'mt-[18px] flex flex-col gap-3' : 'mt-5 space-y-3'}>
-      {categories.map((category) => {
-        const percent = maxTokens > 0
-          ? Math.max(0.5, Math.min(100, (category.tokens / maxTokens) * 100))
-          : 0
-        return (
-          <div key={category.name}>
-            <div className={`flex items-baseline justify-between gap-3 ${density === 'compact' ? '' : 'text-xs'}`}>
-              <span className={`min-w-0 truncate ${density === 'compact' ? 'text-[13.5px] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)]'}`}>
-                {category.name}
-              </span>
-              <span className={`shrink-0 font-mono ${density === 'compact' ? 'text-[13px] text-[var(--color-text-secondary)]' : 'text-[var(--color-text-tertiary)]'}`}>
-                {formatNumber(category.tokens)}
-              </span>
-            </div>
-            <div className={`overflow-hidden rounded-full bg-[var(--color-surface-hover)] ${density === 'compact' ? 'mt-[7px] h-[3px]' : 'mt-1.5 h-1.5'}`}>
-              <div className="h-full rounded-full bg-[var(--color-brand)]" style={{ width: `${percent}%` }} />
-            </div>
-          </div>
-        )
-      })}
+    <div className="mt-4">
+      <div data-testid="context-stacked-bar" className="mb-3 flex h-1.5 overflow-hidden rounded-full bg-[var(--color-surface-hover)]" aria-hidden="true">
+        {categories.map(category => (
+          <span key={category.name} title={`${category.label}: ${exactTokens(category.tokens)}`}
+            className="h-full shrink-0" style={{ backgroundColor: category.color, width: `${maxTokens > 0 ? category.tokens / maxTokens * 100 : 0}%` }} />
+        ))}
+      </div>
+      <div className="mb-2 text-right text-[10px] text-[var(--color-text-tertiary)]">Tokens · 1K = 1,000 Tokens</div>
+      <div className="space-y-1">
+        {categories.map(category => {
+          const row = (
+            <span className="flex min-w-0 flex-1 items-center gap-2 py-1 text-xs">
+              <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: category.color }} />
+              <span className="min-w-0 flex-1 break-words text-[var(--color-text-primary)]">{category.label}</span>
+              <span title={exactTokens(category.tokens)} className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)]">{formatTokens(category.tokens)}</span>
+            </span>
+          )
+          return category.items.length || category.hint ? (
+            <details key={category.name} className="group">
+              <summary className="flex cursor-pointer list-none items-center gap-1 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-brand)]">
+                {row}<span aria-hidden="true" className="text-[10px] text-[var(--color-text-tertiary)] group-open:rotate-90">›</span>
+              </summary>
+              <div className="mb-2 ml-4 border-l border-[var(--color-border)] pl-3 text-[11px] text-[var(--color-text-secondary)]">
+                {category.hint && <p className="mb-2 leading-5">{category.hint}</p>}
+                {category.items.map((item, index) => (
+                  <div key={`${item.name}-${index}`} className="flex items-start justify-between gap-3 py-1">
+                    <span className="min-w-0 break-all">{item.name}</span>
+                    <span title={exactTokens(item.tokens)} className="shrink-0 font-mono tabular-nums">{formatTokens(item.tokens)}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          ) : <div key={category.name} className="pr-2">{row}</div>
+        })}
+      </div>
     </div>
   )
 }
@@ -81,6 +98,8 @@ export function ContextUsageDetails({
   freeTokens,
   maxTokens,
   categories,
+  breakdownNote,
+  mismatchNote,
   updatedAtLabel,
   estimate = false,
   status,
@@ -105,21 +124,26 @@ export function ContextUsageDetails({
 
         {status === 'ready' ? (
           <div className="mt-5">
+            <div className="mb-3 text-right font-mono text-xs text-[var(--color-text-secondary)]" title={`${exactTokens(usedTokens)} / ${exactTokens(maxTokens)}`}>
+              ~{formatTokens(usedTokens)} / {maxTokens > 0 ? formatTokens(maxTokens, true) : '--'} Tokens
+            </div>
             <div className="grid grid-cols-3 gap-2 font-mono text-xs">
               <div className="rounded-[var(--radius-lg)] bg-[var(--color-surface-container)] p-3">
                 <div className="text-[var(--color-text-tertiary)]">{labels.used}</div>
-                <div className="mt-1 text-[var(--color-text-primary)]">{formatNumber(usedTokens)}</div>
+                <div title={exactTokens(usedTokens)} className="mt-1 text-[var(--color-text-primary)]">~{formatTokens(usedTokens)}</div>
               </div>
               <div className="rounded-[var(--radius-lg)] bg-[var(--color-surface-container)] p-3">
                 <div className="text-[var(--color-text-tertiary)]">{labels.free}</div>
-                <div className="mt-1 text-[var(--color-text-primary)]">{formatNumber(freeTokens)}</div>
+                <div title={exactTokens(freeTokens)} className="mt-1 text-[var(--color-text-primary)]">~{formatTokens(freeTokens)}</div>
               </div>
               <div className="rounded-[var(--radius-lg)] bg-[var(--color-surface-container)] p-3">
                 <div className="text-[var(--color-text-tertiary)]">{labels.window}</div>
-                <div className="mt-1 text-[var(--color-text-primary)]">{maxTokens > 0 ? formatNumber(maxTokens) : '--'}</div>
+                <div title={exactTokens(maxTokens)} className="mt-1 text-[var(--color-text-primary)]">{maxTokens > 0 ? formatTokens(maxTokens, true) : '--'}</div>
               </div>
             </div>
-            <CategoryBars categories={categories} maxTokens={maxTokens} density="comfortable" />
+            <CategoryBars categories={categories} maxTokens={maxTokens} />
+            {breakdownNote && <p className="mt-3 text-[11px] leading-5 text-[var(--color-text-tertiary)]">{breakdownNote}</p>}
+            {mismatchNote && <p className="mt-2 text-[11px] leading-5 text-[var(--color-warning)]">{mismatchNote}</p>}
             {updatedAtLabel && (
               <div className="mt-4 text-[11px] text-[var(--color-text-tertiary)]">
                 {updatedAtLabel}
@@ -162,21 +186,13 @@ export function ContextUsageDetails({
 
       {status === 'ready' ? (
         <>
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <div>
-              <div className="text-[12.5px] text-[var(--color-text-tertiary)]">{labels.used}</div>
-              <div className="mt-[3px] font-mono text-sm font-medium text-[var(--color-text-primary)]">{formatNumber(usedTokens)}</div>
-            </div>
-            <div>
-              <div className="text-[12.5px] text-[var(--color-text-tertiary)]">{labels.free}</div>
-              <div className="mt-[3px] font-mono text-sm font-medium text-[var(--color-text-primary)]">{formatNumber(freeTokens)}</div>
-            </div>
-            <div className="col-span-2 mt-1">
-              <div className="text-[12.5px] text-[var(--color-text-tertiary)]">{labels.window}</div>
-              <div className="mt-[3px] font-mono text-sm font-medium text-[var(--color-text-primary)]">{maxTokens > 0 ? formatNumber(maxTokens) : '--'}</div>
-            </div>
+          <div className="mt-3 flex items-baseline justify-between gap-2 text-xs text-[var(--color-text-secondary)]">
+            <span>{labels.used} / {labels.window}</span>
+            <span className="font-mono tabular-nums" title={`${exactTokens(usedTokens)} / ${exactTokens(maxTokens)}`}>~{formatTokens(usedTokens)} / {maxTokens > 0 ? formatTokens(maxTokens, true) : '--'} Tokens</span>
           </div>
-          <CategoryBars categories={categories} maxTokens={maxTokens} density="compact" />
+          <CategoryBars categories={categories} maxTokens={maxTokens} />
+            {breakdownNote && <p className="mt-3 text-[11px] leading-5 text-[var(--color-text-tertiary)]">{breakdownNote}</p>}
+            {mismatchNote && <p className="mt-2 text-[11px] leading-5 text-[var(--color-warning)]">{mismatchNote}</p>}
           {updatedAtLabel && (
             <div className="mt-4 text-xs text-[var(--color-text-tertiary)]">
               {updatedAtLabel}

@@ -1,6 +1,8 @@
+import { contextBreakdownEn } from '../contextBreakdownTranslations'
 import { contextAuditEn } from '../contextAuditTranslations'
 
 export const en = {
+  ...contextBreakdownEn,
   "chat.subagentProgress.waiting": "Waiting for subagent",
   "chat.subagentProgress.running": "Subagent",
   "chat.subagentProgress.phase.waiting": "Waiting for model",

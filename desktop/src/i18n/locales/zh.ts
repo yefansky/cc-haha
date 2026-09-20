@@ -1,7 +1,9 @@
+import { contextBreakdownZh } from '../contextBreakdownTranslations'
 import type { TranslationKey } from './en'
 import { contextAuditZh } from '../contextAuditTranslations'
 
 export const zh: Record<TranslationKey, string> = {
+  ...contextBreakdownZh,
   "chat.subagentProgress.waiting": "正在等待子代理",
   "chat.subagentProgress.running": "子代理",
   "chat.subagentProgress.phase.waiting": "等待模型响应",

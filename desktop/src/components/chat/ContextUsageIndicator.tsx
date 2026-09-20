@@ -1,3 +1,4 @@
+import { buildContextBreakdown } from '../../lib/contextBreakdown'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { sessionsApi, type SessionContextSnapshot, type SessionContextStatus } from '../../api/sessions'
@@ -35,7 +36,7 @@ const AUTO_REFRESH_MIN_INTERVAL_MS = 10_000
 // still be settling, so retry the event-driven refresh once.
 const FORCED_REFRESH_RETRY_MS = 5_000
 
-const POPOVER_WIDTH = 340
+const POPOVER_WIDTH = 400
 const POPOVER_GAP = 8
 const VIEWPORT_MARGIN = 16
 const POPOVER_MAX_HEIGHT = 420
@@ -59,14 +60,6 @@ function formatUpdatedAt(timestamp: number | null, t: ReturnType<typeof useTrans
   if (elapsedMs < 60_000) return t('contextIndicator.updatedNow')
   const minutes = Math.max(1, Math.floor(elapsedMs / 60_000))
   return t('contextIndicator.updatedMinutes', { count: minutes })
-}
-
-function pickUsedContextCategory(context: SessionContextSnapshot) {
-  const ignored = new Set(['free space', 'autocompact buffer'])
-  return context.categories
-    .filter((category) => category.tokens > 0 && !category.isDeferred && !ignored.has(category.name.toLowerCase()))
-    .sort((a, b) => b.tokens - a.tokens)
-    .slice(0, 4)
 }
 
 function firstNonEmpty(...values: Array<string | undefined | null>) {
@@ -320,9 +313,9 @@ export function ContextUsageIndicator({
   }, [preferSheet])
 
   const details = useMemo(() => {
-    if (!context) return []
-    return pickUsedContextCategory(context)
-  }, [context])
+    if (!context) return { rows: [], note: '', mismatch: undefined }
+    return buildContextBreakdown(context, t)
+  }, [context, t])
 
   const displayContext = contextEnabled && contextDataSessionIdRef.current === sessionId ? context : null
   const serverPending = contextStatus?.freshness === 'pending'
@@ -392,7 +385,9 @@ export function ContextUsageIndicator({
       usedTokens={usedTokens}
       freeTokens={freeTokens}
       maxTokens={maxTokens}
-      categories={details}
+      categories={details.rows}
+      breakdownNote={details.note}
+      mismatchNote={details.mismatch}
       updatedAtLabel={displayContext ? formatUpdatedAt(updatedAt, t) : undefined}
       estimate={contextSource === 'estimate'}
       status={detailsStatus}
@@ -438,7 +433,7 @@ export function ContextUsageIndicator({
       return
     }
     updatePopoverPosition()
-  }, [detailsOpen, preferSheet, updatePopoverPosition, detailsStatus, details.length, displayPercent, modelLabel])
+  }, [detailsOpen, preferSheet, updatePopoverPosition, detailsStatus, details.rows.length, displayPercent, modelLabel])
 
   useEffect(() => {
     if (!detailsOpen || preferSheet) return
