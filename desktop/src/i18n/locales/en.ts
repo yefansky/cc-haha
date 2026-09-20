@@ -235,6 +235,16 @@ export const en = {
 
   // ─── Workspace Panel ───────────────────────────────
   'workspace.changedFiles': 'Changed files',
+  'workspace.svnCommitMessage': 'Commit message',
+  'workspace.svnCommitPlaceholder': 'Message (Ctrl+Enter to commit)',
+  'workspace.svnCommit': 'Commit SVN',
+  'workspace.svnCommitScope': 'Commits all versioned changes under the working directory, regardless of filters. Untracked files are not added.',
+  'workspace.svnCommitSuccess': 'SVN commit succeeded.',
+  'workspace.svnCommitNoChanges': 'No versioned changes to commit.',
+  'workspace.svnCommitFailed': 'Commit was not confirmed. Check SVN history before retrying.',
+  'workspace.treeView': 'Tree view',
+  'workspace.compactDirectoryHint': 'Directory changes are available in tree view.',
+  'workspace.versionManagement': 'Source control',
   'workspace.allFiles': 'All files',
   'workspace.viewTabs': 'Workspace views',
   'workspace.fileTree': 'File tree',

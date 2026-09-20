@@ -236,6 +236,16 @@ export const zh: Record<TranslationKey, string> = {
 
   // ─── Workspace Panel ───────────────────────────────
   'workspace.changedFiles': '已更改文件',
+  'workspace.svnCommitMessage': '提交说明',
+  'workspace.svnCommitPlaceholder': '输入提交说明（Ctrl+Enter 提交）',
+  'workspace.svnCommit': '提交 SVN',
+  'workspace.svnCommitScope': '提交当前工作目录下全部版本内改动，不受列表筛选影响；不自动添加未跟踪文件。',
+  'workspace.svnCommitSuccess': 'SVN 提交成功。',
+  'workspace.svnCommitNoChanges': '没有可提交的版本内改动。',
+  'workspace.svnCommitFailed': '提交未确认成功，请检查 SVN 日志后再重试。',
+  'workspace.treeView': '目录树视图',
+  'workspace.compactDirectoryHint': '另有目录变更，切回目录树可查看。',
+  'workspace.versionManagement': '版本管理',
   'workspace.allFiles': '所有文件',
   'workspace.viewTabs': '工作区视图',
   'workspace.fileTree': '文件树',

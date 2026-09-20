@@ -236,6 +236,16 @@ export const jp: Record<TranslationKey, string> = {
 
   // ─── Workspace Panel ───────────────────────────────
   'workspace.changedFiles': '変更されたファイル',
+  'workspace.svnCommitMessage': 'コミットメッセージ',
+  'workspace.svnCommitPlaceholder': 'メッセージ（Ctrl+Enter でコミット）',
+  'workspace.svnCommit': 'SVN コミット',
+  'workspace.svnCommitScope': 'フィルターに関係なく作業ディレクトリ内の管理対象の変更をすべてコミットします。未追跡ファイルは追加しません。',
+  'workspace.svnCommitSuccess': 'SVN コミットが完了しました。',
+  'workspace.svnCommitNoChanges': 'コミットする変更はありません。',
+  'workspace.svnCommitFailed': 'コミットを確認できません。再試行前に SVN 履歴を確認してください。',
+  'workspace.treeView': 'ツリー表示',
+  'workspace.compactDirectoryHint': 'ディレクトリの変更はツリー表示で確認できます。',
+  'workspace.versionManagement': 'ソース管理',
   'workspace.allFiles': 'すべてのファイル',
   'workspace.viewTabs': 'ワークスペースビュー',
   'workspace.fileTree': 'ファイルツリー',

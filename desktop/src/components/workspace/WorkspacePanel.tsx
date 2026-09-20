@@ -56,6 +56,7 @@ import {
   type WorkspaceComparisonSourceSide,
 } from './workspaceComparisonSession'
 import { WorkspaceTableSurface } from './WorkspaceTableSurface'
+import { WorkspaceSvnCommit } from './WorkspaceSvnCommit'
 import { getWorkspaceStatusLabel } from './fileIdentity'
 import type { WorkspaceDiffHighlightToken } from './workspaceDiffHighlighter'
 import { isWorkspaceTablePath } from './workspaceTablePreview'
@@ -100,7 +101,7 @@ type TreeNodeProps = {
   onFileContextMenu: (event: ReactMouseEvent, path: string, isDirectory: boolean) => void
   activePath: string | null
   showHiddenFolders: boolean
-  variant?: 'tree' | 'changed'
+  variant?: 'tree' | 'changed' | 'compact'
 }
 
 type FileContextMenuState = {
@@ -113,35 +114,35 @@ type FileContextMenuState = {
 const FILE_STATUS_META: Record<WorkspaceFileStatus, { label: string; className: string }> = {
   modified: {
     label: 'M',
-    className: 'text-[var(--color-warning)]',
+    className: 'bg-[var(--color-info-container)] text-[var(--color-on-info-container)]',
   },
   added: {
     label: 'A',
-    className: 'text-[var(--color-success)]',
+    className: 'bg-[var(--color-success-container)] text-[var(--color-on-success-container)]',
   },
   deleted: {
     label: 'D',
-    className: 'text-[var(--color-error)]',
+    className: 'bg-[var(--color-error-container)] text-[var(--color-on-error-container)]',
   },
   renamed: {
     label: 'R',
-    className: 'text-[var(--color-info)]',
+    className: 'bg-[var(--color-info-container)] text-[var(--color-on-info-container)]',
   },
   untracked: {
     label: 'U',
-    className: 'text-[var(--color-info)]',
+    className: 'bg-[var(--color-info-container)] text-[var(--color-on-info-container)]',
   },
   copied: {
     label: 'C',
-    className: 'text-[var(--color-info)]',
+    className: 'bg-[var(--color-info-container)] text-[var(--color-on-info-container)]',
   },
   type_changed: {
     label: 'T',
-    className: 'text-[var(--color-text-secondary)]',
+    className: 'bg-[var(--color-surface-container-high)] text-[var(--color-text-secondary)]',
   },
   unknown: {
     label: '?',
-    className: 'text-[var(--color-text-secondary)]',
+    className: 'bg-[var(--color-surface-container-high)] text-[var(--color-text-secondary)]',
   },
 }
 
@@ -613,6 +614,7 @@ function WorkspaceFilterInput({
 }
 
 function ChangedFilesFilterBar({
+  compact,
   plainTextOnly,
   versionFilter,
   onPlainTextOnlyChange,
@@ -620,6 +622,7 @@ function ChangedFilesFilterBar({
   onExpandAll,
   onCollapseAll,
 }: {
+  compact: boolean
   plainTextOnly: boolean
   versionFilter: ChangedVersionFilter
   onPlainTextOnlyChange: (value: boolean) => void
@@ -649,12 +652,12 @@ function ChangedFilesFilterBar({
         <FileText size={12} aria-hidden="true" />
         {t('workspace.filterPlaintext')}
       </button>
-      <Button size="xs" variant="ghost" onClick={onExpandAll}>
+      {!compact && <Button size="xs" variant="ghost" onClick={onExpandAll}>
         {t('workspace.expandAll')}
-      </Button>
-      <Button size="xs" variant="ghost" onClick={onCollapseAll}>
+      </Button>}
+      {!compact && <Button size="xs" variant="ghost" onClick={onCollapseAll}>
         {t('workspace.collapseAll')}
-      </Button>
+      </Button>}
       <div
         role="group"
         aria-label={t('workspace.filterVersionStatus')}
@@ -685,8 +688,9 @@ function FileStatusBadge({ status }: { status: WorkspaceFileStatus }) {
   const meta = FILE_STATUS_META[status]
   return (
     <span
-      className={`inline-flex h-5 w-4 shrink-0 items-center justify-center font-mono text-[10px] font-semibold ${meta.className}`}
+      className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] font-mono text-[10px] font-semibold leading-none ${meta.className}`}
       aria-label={getWorkspaceStatusLabel(status, t)}
+      title={getWorkspaceStatusLabel(status, t)}
     >
       {meta.label}
     </span>
@@ -1300,7 +1304,7 @@ function TreeNode({
           changedFile?.oldPath ? 'min-h-11 py-1' : 'h-8'
         } ${
           isActive
-            ? variant === 'changed'
+            ? variant !== 'tree'
               ? 'bg-[var(--color-info-container)] shadow-[inset_3px_0_0_var(--color-info)]'
               : 'bg-[var(--color-surface-selected)] shadow-[inset_0_0_0_1.5px_var(--color-border-focus)]'
             : 'hover:bg-[var(--color-surface-hover)]'
@@ -1309,7 +1313,10 @@ function TreeNode({
       >
         <FileTypeBadge name={entry.name} subtle={!isActive} />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[14px] font-medium text-[var(--color-text-primary)]">{entry.name}</span>
+          <span className={variant === 'compact' ? 'flex min-w-0 items-baseline gap-2' : 'block'}>
+            <span className="block truncate text-[14px] font-medium text-[var(--color-text-primary)]">{entry.name}</span>
+            {variant === 'compact' && <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--color-text-tertiary)]">{entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : ''}</span>}
+          </span>
           {changedFile?.oldPath && (
             <span className="mt-0.5 block truncate text-[10px] text-[var(--color-text-tertiary)]">
               {changedFile.oldPath}
@@ -1420,6 +1427,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const [filterQuery, setFilterQuery] = useState('')
   const [plainTextOnly, setPlainTextOnly] = useState(true)
   const [changedVersionFilter, setChangedVersionFilter] = useState<ChangedVersionFilter>('all')
+  const [versionManagement, setVersionManagement] = useState(false)
   const [changedDirectoryOverrides, setChangedDirectoryOverrides] = useState<Set<string>>(() => new Set())
   const [workspaceSearch, setWorkspaceSearch] = useState<WorkspaceSearchResult | null>(null)
   const [workspaceSearchLoading, setWorkspaceSearchLoading] = useState(false)
@@ -1518,7 +1526,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const activePreviewIsWorkspaceComparison = activePreviewTab?.kind === 'diff'
     && activePreviewTab.diffSource?.kind !== 'turn'
   const isWorkspaceComparisonVisible = !isNavigatorVisible && activePreviewIsWorkspaceComparison
-  const navigatorView = activeView
+  const navigatorView = versionManagement ? 'changed' : activeView
   const hasWorkspaceSearch = navigatorView === 'all' && normalizedFilterQuery.length > 0
   const activeWorkspaceSearch = workspaceSearch
     && normalizeFilterQuery(workspaceSearch.query) === normalizedFilterQuery
@@ -2267,6 +2275,27 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       return <PanelMessage icon="search_off" message={t('workspace.noMatchingFiles')} />
     }
 
+    if (versionManagement) {
+      const files = filteredChangedFiles.filter((file) => !file.isDirectory)
+      return <div>
+        {files.map((file) => <TreeNode
+          key={file.path} sessionId={sessionId}
+          entry={{ name: file.path.split('/').pop() || file.path, path: file.path, isDirectory: false, isSymlink: file.isSymlink }}
+          depth={0} expandedPaths={changedExpandedPathSet} treeByPath={changedTreeByPath}
+          treeLoadingByPath={{}} treeErrorsByPath={{}} changedFilesByPath={visibleChangedFilesByPath}
+          filterQuery="" onToggle={() => {}} onOpenFile={handleOpenFile}
+          onFileContextMenu={handleFileContextMenu} activePath={activeTreePath}
+          showHiddenFolders={showHiddenFolders} variant="compact"
+        />)}
+        {filteredChangedFiles.some((file) => file.isDirectory && visibleChangedFilesByPath.has(normalizeWorkspacePathKey(file.path))) && (
+          <div className="px-3 py-2 text-[11px] text-[var(--color-text-tertiary)]">
+            {t('workspace.compactDirectoryHint')}
+            <Button size="xs" variant="link" onClick={() => { setVersionManagement(false); handleSetActiveView('changed') }}>{t('workspace.treeView')}</Button>
+          </div>
+        )}
+      </div>
+    }
+
     const rootEntries = changedTreeByPath['']?.state === 'ok'
       ? changedTreeByPath[''].entries
       : []
@@ -2886,14 +2915,19 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
         data-layout={layout}
         className={`relative flex min-h-0 flex-1 overflow-hidden ${isVscodeLayout ? 'flex-row' : 'flex-col'}`}
       >
-        {!isVscodeLayout && <div role="tablist" aria-label={t('workspace.viewTabs')} className="flex h-10 shrink-0 items-end gap-4 border-b border-[var(--color-border)] px-3">
+        {!isVscodeLayout && <div role="tablist" aria-label={t('workspace.viewTabs')} className="flex h-10 shrink-0 items-end gap-4 overflow-x-auto whitespace-nowrap border-b border-[var(--color-border)] px-3">
           <button
             type="button"
             role="tab"
-            aria-selected={isNavigatorVisible}
-            onClick={() => setIsNavigatorOpen(true)}
-            className={`relative h-10 px-1 text-[12px] font-medium ${isNavigatorVisible ? 'text-[var(--color-text-primary)] after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--color-info)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
+            aria-selected={isNavigatorVisible && !versionManagement}
+            onClick={() => { setVersionManagement(false); setIsNavigatorOpen(true) }}
+            className={`relative h-10 px-1 text-[12px] font-medium ${isNavigatorVisible && !versionManagement ? 'text-[var(--color-text-primary)] after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--color-info)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
           >{t('workspace.fileTree')}</button>
+          <button type="button" role="tab"
+            aria-selected={isNavigatorVisible && versionManagement}
+            onClick={() => { setVersionManagement(true); setIsNavigatorOpen(true) }}
+            className={`relative h-10 shrink-0 px-1 text-[12px] font-medium ${isNavigatorVisible && versionManagement ? 'text-[var(--color-text-primary)] after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--color-info)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}
+          >{t('workspace.versionManagement')}</button>
           <button
             type="button"
             role="tab"
@@ -2928,7 +2962,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               data-testid="workspace-file-navigator-header"
               className="flex h-10 shrink-0 items-center gap-1.5 border-b border-[var(--color-border)] px-3"
             >
-              <div className="relative min-w-0">
+              {versionManagement ? <span className="min-w-0 truncate text-[14px] font-semibold text-[var(--color-text-primary)]">{t('workspace.versionManagement')}</span> : <div className="relative min-w-0">
               <button
                 type="button"
                 aria-label={activeView === 'changed' ? t('workspace.changedFiles') : t('workspace.allFiles')}
@@ -2970,13 +3004,14 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
                   })}
                 </div>
               )}
-              </div>
+              </div>}
+              {isVscodeLayout && <Button size="xs" variant="ghost" onClick={() => setVersionManagement((value) => !value)}>{t(versionManagement ? 'workspace.fileTree' : 'workspace.versionManagement')}</Button>}
               <IconButton icon={showHiddenFolders ? <Eye size={16} /> : <EyeOff size={16} />}
                 label={t(showHiddenFolders ? 'workspace.hideHiddenFolders' : 'workspace.showHiddenFolders')}
                 aria-pressed={showHiddenFolders}
                 onClick={() => useProjectFoldersStore.getState().setShowHiddenFolders(projectPath, !showHiddenFolders)}
                 size="md" tone="muted" />
-              {activeView === 'all' && (
+              {navigatorView === 'all' && (
                 <IconButton
                   icon={<FolderPlus size={16} strokeWidth={1.9} aria-hidden="true" />}
                   label={t('workspace.manageAttachedFolders')}
@@ -3011,6 +3046,10 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
               )}
             </header>
 
+            {versionManagement && status?.state === 'ok' && status.vcs === 'svn' && (
+              <WorkspaceSvnCommit key={sessionId} sessionId={sessionId} workDir={status.workDir}
+                onCommitted={() => loadStatus(sessionId, { force: true })} />
+            )}
             <WorkspaceFilterInput
               value={filterQuery}
               onChange={setFilterQuery}
@@ -3022,6 +3061,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             />
             {navigatorView === 'changed' && (
               <ChangedFilesFilterBar
+                compact={versionManagement}
                 plainTextOnly={plainTextOnly}
                 versionFilter={changedVersionFilter}
                 onPlainTextOnlyChange={setPlainTextOnly}

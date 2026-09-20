@@ -1082,6 +1082,39 @@ describe('WorkspacePanel', () => {
     expect(view.queryByText('App.tsx')).toBeNull()
   })
 
+  it('offers a separate source-control tab with flat files, paths, filters and SVN commit input', async () => {
+    const sessionId = 'session-source-control'
+    await setWorkspaceState((state) => ({
+      ...state,
+      panelBySession: { ...state.panelBySession, [sessionId]: { isOpen: true, activeView: 'changed', hasUserSelectedView: true } },
+      statusBySession: { ...state.statusBySession, [sessionId]: {
+        state: 'ok', workDir: '/repo', repoName: 'repo', branch: null, isGitRepo: false, vcs: 'svn',
+        changedFiles: [
+          { path: 'deep/nested/app.ts', status: 'modified', additions: 3, deletions: 1 },
+          { path: 'other/app.ts', status: 'added', additions: 2, deletions: 0 },
+        ],
+      } },
+    }))
+    const view = await renderPanel(sessionId)
+    expect(view.queryByRole('textbox', { name: 'Commit message' })).toBeNull()
+    await clickElement(view.getByRole('tab', { name: 'Source control' }))
+    const navigator = within(view.getByTestId('workspace-file-navigator'))
+    expect(view.getByRole('tab', { name: 'Source control' }).getAttribute('aria-selected')).toBe('true')
+    expect(view.getByRole('tab', { name: 'File tree' }).getAttribute('aria-selected')).toBe('false')
+    expect(navigator.getAllByText('app.ts')).toHaveLength(2)
+    expect(navigator.getByText('deep/nested')).toBeTruthy()
+    expect(navigator.queryByRole('button', { name: 'Expand all' })).toBeNull()
+    expect(navigator.getByRole('textbox', { name: 'Commit message' })).toBeTruthy()
+    fireEvent.change(navigator.getByPlaceholderText('Filter changed files...'), { target: { value: 'deep' } })
+    expect(navigator.getAllByText('app.ts')).toHaveLength(1)
+    await clickElement(navigator.getByText('app.ts'))
+    await waitFor(() => expect(getMocks().getWorkspaceFileMock).toHaveBeenCalledWith(sessionId, 'deep/nested/app.ts'))
+    await clickElement(view.getByRole('tab', { name: 'Source control' }))
+    await clickElement(view.getByRole('tab', { name: 'File tree' }))
+    expect(navigator.queryByRole('textbox', { name: 'Commit message' })).toBeNull()
+    expect(navigator.getByRole('button', { name: 'Expand all' })).toBeTruthy()
+  })
+
   it('expands a linked SVN directory in the changed-files view and opens its logical file path', async () => {
     const sessionId = 'session-linked-svn-changes'
     getMocks().getWorkspaceDiffMock.mockResolvedValue({

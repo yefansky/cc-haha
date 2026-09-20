@@ -253,6 +253,15 @@ export async function handleSessionsApi(
     }
 
     if (subResource === 'workspace') {
+      if (segments[4] === 'svn-commit' && req.method === 'POST') {
+        await requireSessionWorkspace(sessionId)
+        const body: unknown = await req.json().catch(() => null)
+        if (!body || typeof body !== 'object' || !('message' in body) || typeof body.message !== 'string'
+          || !body.message.trim() || body.message.length > 10_000 || body.message.includes('\0')) {
+          throw ApiError.badRequest('message must contain 1–10000 characters')
+        }
+        return Response.json(await workspaceService.commitSvn(sessionId, body.message))
+      }
       if (segments[4] === 'resolve-file-reference') {
         return await handleWorkspaceFileReferenceRoute(req, sessionId, workspaceService)
       }

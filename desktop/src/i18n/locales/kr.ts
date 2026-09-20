@@ -236,6 +236,16 @@ export const kr: Record<TranslationKey, string> = {
 
   // ─── Workspace Panel ───────────────────────────────
   'workspace.changedFiles': '변경된 파일',
+  'workspace.svnCommitMessage': '커밋 메시지',
+  'workspace.svnCommitPlaceholder': '메시지 (Ctrl+Enter로 커밋)',
+  'workspace.svnCommit': 'SVN 커밋',
+  'workspace.svnCommitScope': '필터와 관계없이 작업 디렉터리의 모든 버전 관리 변경을 커밋합니다. 추적되지 않은 파일은 추가하지 않습니다.',
+  'workspace.svnCommitSuccess': 'SVN 커밋이 완료되었습니다.',
+  'workspace.svnCommitNoChanges': '커밋할 변경이 없습니다.',
+  'workspace.svnCommitFailed': '커밋이 확인되지 않았습니다. 다시 시도하기 전에 SVN 기록을 확인하세요.',
+  'workspace.treeView': '트리 보기',
+  'workspace.compactDirectoryHint': '디렉터리 변경은 트리 보기에서 확인할 수 있습니다.',
+  'workspace.versionManagement': '소스 제어',
   'workspace.allFiles': '모든 파일',
   'workspace.viewTabs': '작업 공간 보기',
   'workspace.fileTree': '파일 트리',

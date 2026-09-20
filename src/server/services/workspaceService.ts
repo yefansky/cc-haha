@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises'
+import { commitWorkspaceSvn } from './workspaceSvnCommit.js'
 import { constants as fsConstants } from 'node:fs'
 import { execFile as execFileCallback } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -205,6 +206,7 @@ export type WorkspaceChangedFile = {
 }
 
 export type WorkspaceStatusResult = {
+  vcs?: 'svn'
   state: 'ok' | 'not_git_repo' | 'missing_workdir' | 'error'
   workDir: string
   repoName: string | null
@@ -687,6 +689,10 @@ export class WorkspaceService {
     }
   }
 
+  async commitSvn(sessionId: string, message: string) {
+    return commitWorkspaceSvn(await this.requireWorkDir(sessionId), message, this.resolveSvnExecutables())
+  }
+
   private async computeStatus(sessionId: string): Promise<WorkspaceStatusResult> {
     const workDir = await this.requireWorkDir(sessionId)
     const workspaceInfo = await this.getWorkspaceRoot(workDir)
@@ -738,6 +744,7 @@ export class WorkspaceService {
           sessionChanges,
         )
         if (svnStatus.state === 'ok') {
+          svnStatus.vcs = 'svn'
           svnStatus.changedFiles = this.mergeLinkedDirectoryChanges(
             svnStatus.changedFiles,
             linkedDirectoryChanges,
@@ -3453,9 +3460,9 @@ export class WorkspaceService {
   private async getSvnWorkspaceInfo(workDir: string): Promise<SvnWorkspaceInfo> {
     let probePath = path.resolve(workDir)
     while (true) {
-      const result = await this.runSvn(probePath, ['info', '--show-item', 'wc-root'])
+      const result = await this.runSvn(probePath, ['info', '--non-interactive', '--xml', '--', '.'])
       if (result.code === 0) {
-        const reportedRoot = result.stdout.trim()
+        const reportedRoot = this.decodeXmlAttribute(/<wcroot-abspath>([\s\S]*?)<\/wcroot-abspath>/.exec(result.stdout)?.[1] ?? '')
         if (!reportedRoot) return { kind: 'not_svn_workspace' }
         try {
           return { kind: 'ok', workspaceRoot: await fs.realpath(path.resolve(reportedRoot)) }
@@ -3476,7 +3483,7 @@ export class WorkspaceService {
       if (!canProbeParent) {
         return {
           kind: 'error',
-          message: this.formatSvnError('Failed to inspect SVN workspace', ['info', '--show-item', 'wc-root'], probePath, result),
+          message: this.formatSvnError('Failed to inspect SVN workspace', ['info', '--non-interactive', '--xml', '--', '.'], probePath, result),
         }
       }
 

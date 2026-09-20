@@ -1702,7 +1702,7 @@ describe('WorkspaceService', () => {
       },
     })
     expect(result.comparison?.left.content).not.toBe('TRUNK-BASE\n')
-    const infoCall = svnCalls.find((call) => call.args[0] === 'info' && call.args.includes('--xml'))
+    const infoCall = svnCalls.find((call) => call.args[0] === 'info' && call.args.includes('--depth'))
     expect(infoCall?.workDir).toBe(path.join(workspaceDir, 'sub'))
     expect(infoCall?.args).toEqual(['info', '--xml', '--depth', 'files', '.'])
     const catCall = svnBufferCalls.find((call) => call.args[0] === 'cat')
@@ -1711,6 +1711,17 @@ describe('WorkspaceService', () => {
     expect(catCall?.args[4]).toContain('/branch/sub/%E4%B8%AD%E6%96%87.txt')
     expect(catCall?.args[4]).not.toContain('/trunk/sub/')
     expect(catCall?.args.every((argument) => /^[\x00-\x7f]*$/.test(argument))).toBe(true)
+  })
+
+  it('identifies a Chinese SVN working-copy directory and advertises quick commit support', async () => {
+    const original = await createSvnWorkspace()
+    const workspaceDir = trackDir(`${original}-中文`)
+    await fs.rename(original, workspaceDir)
+    const service = new WorkspaceService(async () => workspaceDir)
+    const status = await service.getStatus('session-1')
+    expect(status.state).toBe('ok')
+    expect(status.vcs).toBe('svn')
+    expect(status.changedFiles.some((file) => file.path === 'tracked.txt')).toBe(true)
   })
 
   it('reuses immutable SVN bytes across comparison refreshes while reading current working content', async () => {

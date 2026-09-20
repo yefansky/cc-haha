@@ -312,6 +312,7 @@ export type WorkspaceChangedFile = {
 export type CopySessionResponse = Pick<BranchSessionResponse, 'sessionId' | 'title' | 'workDir' | 'sourceSessionId'>
 
 export type WorkspaceStatusResult = {
+  vcs?: 'svn'
   state: 'ok' | 'not_git_repo' | 'missing_workdir' | 'error'
   workDir: string
   repoName: string | null
@@ -451,7 +452,7 @@ export type TurnCheckpointDiffResult = WorkspaceDiffResult & {
 
 function buildWorkspacePath(
   sessionId: string,
-  resource: 'status' | 'tree' | 'file' | 'diff',
+  resource: 'status' | 'tree' | 'file' | 'diff' | 'svn-commit',
   workspacePath?: string,
   encoding?: WorkspaceTextEncoding,
   comparisonEncodings?: WorkspaceComparisonEncodings,
@@ -606,6 +607,12 @@ export const sessionsApi = {
 
   resolveFileReference(sessionId: string, request: FileResolutionRequest, options?: ApiRequestOptions) {
     return api.post<FileResolutionResult>(`/api/sessions/${sessionId}/workspace/resolve-file-reference`, request, options)
+  },
+
+  commitWorkspaceSvn(sessionId: string, message: string) {
+    return api.post<{ state: 'ok' | 'no_changes' | 'error'; output?: string; error?: string }>(
+      buildWorkspacePath(sessionId, 'svn-commit'), { message },
+    )
   },
 
   grantWorkspaceFileWriteAccess(sessionId: string, path: string) {
