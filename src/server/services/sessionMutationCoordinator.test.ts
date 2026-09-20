@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { SessionMutationCoordinator } from './sessionMutationCoordinator.js'
+import { runtimeObservation } from '../../utils/runtimeObservation.js'
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -16,6 +17,22 @@ async function flushMicrotasks(count = 8): Promise<void> {
 }
 
 describe('SessionMutationCoordinator', () => {
+  it('observes the running owner and queued follower without draining or cancelling either', async () => {
+    const coordinator = new SessionMutationCoordinator()
+    const release = deferred()
+    const first = coordinator.enqueue('observation-fifo', () => release.promise)
+    let followerRan = false
+    const second = coordinator.enqueue('observation-fifo', () => { followerRan = true })
+    await flushMicrotasks()
+    const active = runtimeObservation.snapshot().active.filter(op => op.sessionId === 'observation-fifo')
+    expect(active.map(op => op.name).sort()).toEqual(['session.mutation.execute', 'session.mutation.queue'])
+    expect(active.find(op => op.kind === 'queue')?.waitingFor).toBe('previous-session-mutation')
+    expect(followerRan).toBe(false)
+    release.resolve()
+    await Promise.all([first, second])
+    expect(followerRan).toBe(true)
+    expect(runtimeObservation.snapshot().active.filter(op => op.sessionId === 'observation-fifo')).toHaveLength(0)
+  })
   it('runs mutations for the same session in FIFO order', async () => {
     const coordinator = new SessionMutationCoordinator()
     const releaseFirst = deferred()

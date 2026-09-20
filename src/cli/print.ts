@@ -507,6 +507,9 @@ export async function runHeadless(
     process.exit(0)
   }
 
+  // Preinstalled observation stays outside the SDK transport and never writes to stdout.
+  if (options.sdkUrl) startRuntimeObservationChannel({ role: 'cli' })
+
   // Fire user settings download now so it overlaps with the MCP/tool setup
   // below. Managed settings already started in main.tsx preAction; this gives
   // user settings a similar head start. The cached promise is joined in
@@ -5575,3 +5578,4 @@ export async function reconcileMcpServers(
     newState,
   }
 }
+import { startRuntimeObservationChannel } from '../utils/runtimeObservationChannel.js'

@@ -7,6 +7,7 @@ import { initializeTouchH5 } from './lib/touchH5'
 import { runDesktopPersistenceMigrations } from './lib/persistenceMigrations'
 import { getDesktopHost } from './lib/desktopHost'
 import { initializeLocale } from './i18n/locale'
+import { initializeIconFont } from './lib/iconFont'
 
 declare global {
   interface Window {
@@ -77,6 +78,7 @@ export async function bootstrapDesktopApp(
 }
 
 runDesktopPersistenceMigrations()
+initializeIconFont()
 initializeTouchH5()
 void initializeAppZoom()
 

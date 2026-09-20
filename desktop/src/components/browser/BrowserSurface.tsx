@@ -64,7 +64,7 @@ async function waitForLocalPreview(url: string): Promise<void> {
   if (response && !response.ok) throw new Error(`HTTP ${response.status}: ${url}`)
 }
 
-function resolveBrowserNavigationUrl(input: string, sessionId: string): string {
+export function resolveBrowserNavigationUrl(input: string, sessionId: string): string {
   const value = input.trim()
   if (!value) return ''
 

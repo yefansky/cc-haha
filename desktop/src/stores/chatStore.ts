@@ -1,4 +1,5 @@
 import { createMessageUuid } from '../lib/messageUuid'
+import { buildRendererDebugSnapshot, installRendererDebugObservation } from '../lib/liveDebugObservation'
 import { create, type StoreApi } from 'zustand'
 import { isModelReasoningEffort } from '../../../src/shared/modelReasoning'
 import { wsManager } from '../api/websocket'
@@ -6215,6 +6216,7 @@ function extractLastTodoWriteFromHistory(messages: MessageEntry[]): Array<{ cont
 }
 
 const TASK_RELATED_TOOL_NAMES = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList'])
+installRendererDebugObservation(() => buildRendererDebugSnapshot(useChatStore.getState().sessions))
 
 function hasUserMessagesAfterTaskCompletion(messages: MessageEntry[]): boolean {
   let lastTaskIndex = -1

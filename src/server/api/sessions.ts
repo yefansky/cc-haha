@@ -1,3 +1,4 @@
+import { privateJsonResponse } from '../httpCompression'
 /**
  * Session REST API Routes
  *
@@ -143,7 +144,7 @@ export async function handleSessionsApi(
           { status: 405 }
         )
       }
-      return await getSessionMessages(sessionId)
+      return await getSessionMessages(req, sessionId)
     }
 
     if (subResource === 'trace') {
@@ -410,12 +411,12 @@ async function getSession(sessionId: string): Promise<Response> {
   return Response.json(detail)
 }
 
-async function getSessionMessages(sessionId: string): Promise<Response> {
+async function getSessionMessages(req: Request, sessionId: string): Promise<Response> {
   const [messages, taskNotifications] = await Promise.all([
     sessionService.getSessionMessages(sessionId),
     sessionService.getSessionTaskNotifications(sessionId),
   ])
-  return Response.json({ messages, taskNotifications })
+  return privateJsonResponse(req, { messages, taskNotifications })
 }
 
 async function getSessionTrace(sessionId: string): Promise<Response> {

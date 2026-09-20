@@ -1,3 +1,4 @@
+import { recordRendererProtocolBoundary } from '../lib/rendererBoundaryTrace'
 import type { ClientMessage, ServerMessage } from '../types/chat'
 import { getAuthToken, getBaseUrl } from './client'
 
@@ -72,6 +73,7 @@ class WebSocketManager {
       while (conn.pendingMessages.length > 0) {
         const msg = conn.pendingMessages.shift()!
         ws.send(JSON.stringify(msg))
+        recordRendererProtocolBoundary(msg, 'out')
       }
       // Ask for authoritative turn state only on an automatic reconnect. This
       // is deliberately queued after pending user messages so the server sees
@@ -84,6 +86,7 @@ class WebSocketManager {
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data as string) as ServerMessage
+        recordRendererProtocolBoundary(msg, 'in')
         if (msg.type === 'pong') {
           this.clearPongTimeout(conn)
         }
@@ -160,6 +163,7 @@ class WebSocketManager {
 
     if (conn.ws.readyState === WebSocket.OPEN) {
       conn.ws.send(JSON.stringify(message))
+      recordRendererProtocolBoundary(message, 'out')
       return
     }
 
@@ -185,6 +189,7 @@ class WebSocketManager {
     if (!conn || conn.ws.readyState !== WebSocket.OPEN) return false
     try {
       conn.ws.send(JSON.stringify(message))
+      recordRendererProtocolBoundary(message, 'out')
       return true
     } catch {
       return false

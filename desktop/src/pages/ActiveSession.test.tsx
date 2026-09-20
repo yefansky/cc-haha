@@ -358,6 +358,32 @@ describe('ActiveSession task polling', () => {
     expect(screen.getByTestId('chat-input')).toHaveAttribute('data-variant', 'default')
   })
 
+  it('does not show a new conversation while a restored tab is waiting for session metadata', () => {
+    const sessionId = 'remote-restored-tab'
+    useTabStore.setState({ tabs: [{ sessionId, title: 'Existing history', type: 'session', status: 'idle' }], activeTabId: sessionId })
+    useSessionStore.setState({ sessions: [], isLoading: true })
+    useChatStore.setState({ sessions: { [sessionId]: {
+      ...useChatStore.getState().getSession(sessionId), historyStatus: 'loading',
+    } } })
+    render(<ActiveSession />)
+    expect(screen.queryByTestId('empty-session-hero')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/Loading|加载中/)
+  })
+
+  it('lets a failed history request retry without reactivating the session', () => {
+    const sessionId = 'remote-failed-history'
+    useTabStore.setState({ tabs: [{ sessionId, title: 'Existing history', type: 'session', status: 'idle' }], activeTabId: sessionId })
+    useChatStore.setState({ sessions: { [sessionId]: {
+      ...useChatStore.getState().getSession(sessionId), connectionState: 'connected', historyStatus: 'error', historyError: 'Failed to fetch',
+    } } })
+    const retry = vi.spyOn(useChatStore.getState(), 'loadHistory').mockResolvedValue()
+    render(<ActiveSession />)
+    expect(screen.queryByTestId('empty-session-hero')).not.toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: /Retry|重试/ }))
+    expect(retry).toHaveBeenCalledWith(sessionId)
+    retry.mockRestore()
+  })
+
   it('renders the current goal as a lightweight header strip without a page-level panel', () => {
     const sessionId = 'goal-visible-session'
 
@@ -1807,7 +1833,7 @@ describe('ActiveSession task polling', () => {
     expect(screen.getByTestId('message-list')).toBeInTheDocument()
   })
 
-  it('keeps chat as the primary surface on mobile by hiding workspace and terminal panels', () => {
+  it('opens workspace in a mobile dialog without squeezing or unmounting the conversation', () => {
     const sessionId = 'mobile-session'
     viewportMocks.isMobile = true
 
@@ -1862,10 +1888,15 @@ describe('ActiveSession task polling', () => {
     expect(screen.getByTestId('message-list')).toHaveAttribute('data-compact', 'false')
     expect(screen.getByTestId('chat-input')).toHaveAttribute('data-compact', 'false')
     expect(screen.queryByRole('heading', { name: 'Mobile Session' })).not.toBeInTheDocument()
-    expect(screen.queryByTestId('workspace-panel')).not.toBeInTheDocument()
+    expect(within(screen.getByRole('dialog', { name: 'Workbench' })).getByTestId('workspace-panel')).toBeInTheDocument()
     expect(screen.queryByTestId('workspace-resize-handle')).not.toBeInTheDocument()
     expect(screen.queryByTestId('session-terminal-panel')).not.toBeInTheDocument()
     expect(screen.queryByTestId('terminal-resize-handle')).not.toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Workbench' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('message-list')).toBeInTheDocument()
+    act(() => useWorkspacePanelStore.getState().openPanel(sessionId))
+    expect(screen.getByRole('dialog', { name: 'Workbench' })).toBeInTheDocument()
   })
 
   it('renders a bottom terminal panel in the current session cwd and can promote it to a tab', async () => {

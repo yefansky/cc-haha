@@ -2,20 +2,10 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { gzip } from 'node:zlib'
 import { promisify } from 'node:util'
+import { acceptsGzip } from './httpCompression'
 
 const gzipAsync = promisify(gzip)
 const COMPRESSIBLE_ASSET_RE = /\.(?:js|css|html|json|svg|txt|map)$/i
-
-function acceptsGzip(value: string | null): boolean {
-  const encodings = (value ?? '').split(',').map((entry) => {
-    const [name, ...parameters] = entry.trim().toLowerCase().split(';')
-    const quality = parameters.find((parameter) => parameter.trim().startsWith('q='))
-    return { name, quality: quality ? Number(quality.trim().slice(2)) : 1 }
-  })
-  const selected = encodings.find((entry) => entry.name === 'gzip')
-    ?? encodings.find((entry) => entry.name === '*')
-  return !!selected && selected.quality > 0 && selected.quality <= 1
-}
 
 const CACHEABLE_ASSET_RE = /^\/assets\//
 

@@ -11,7 +11,12 @@ export class SessionMutationCoordinator {
   enqueue<T>(sessionId: string, mutation: SessionMutation<T>): Promise<T> {
     const previous = this.tails.get(sessionId)
     const ready = previous ?? Promise.resolve()
-    const operation = ready.then(mutation)
+    const queued = runtimeObservation.begin('session.mutation.queue', { sessionId, kind: 'queue' })
+    queued.phase('waiting', 'previous-session-mutation')
+    const operation = ready.then(() => {
+      queued.end('completed')
+      return observeOperation('session.mutation.execute', mutation, { sessionId, kind: 'mutation' })
+    })
     const tail = operation.then(
       () => undefined,
       () => undefined,
@@ -48,3 +53,5 @@ export class SessionMutationCoordinator {
 }
 
 export const sessionMutationCoordinator = new SessionMutationCoordinator()
+import { runtimeObservation } from '../../utils/runtimeObservation.js'
+import { observeOperation } from '../../utils/runtimeObservationScopes.js'

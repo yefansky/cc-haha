@@ -1204,7 +1204,7 @@ async function checkPermissionsAndCallTool(
     callInput = processedInput
   }
   try {
-    const result = await tool.call(
+    const result = await observeOperation('tool.execute', () => tool.call(
       callInput,
       {
         ...toolUseContext,
@@ -1219,7 +1219,7 @@ async function checkPermissionsAndCallTool(
           data: progress.data,
         })
       },
-    )
+    ), { kind: tool.name })
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
 
@@ -1743,3 +1743,4 @@ async function checkPermissionsAndCallTool(
     }
   }
 }
+import { observeOperation } from '../../utils/runtimeObservationScopes.js'

@@ -30,6 +30,7 @@
 import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
 import { formatMs, formatTimelineLine, getPerformance } from './profilerBase.js'
+import { observationCheckpoint } from './runtimeObservationScopes.js'
 
 // Module-level state - initialized once when the module loads
 // eslint-disable-next-line custom-rules/no-process-env-top-level
@@ -67,6 +68,7 @@ export function startQueryProfile(): void {
  * Record a checkpoint with the given name
  */
 export function queryCheckpoint(name: string): void {
+  observationCheckpoint(name)
   if (!ENABLED) return
 
   const perf = getPerformance()

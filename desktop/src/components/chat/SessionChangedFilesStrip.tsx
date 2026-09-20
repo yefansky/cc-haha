@@ -251,11 +251,13 @@ export function SessionChangedFilesStrip({
                 className="flex w-full min-w-0 items-center gap-2.5 px-3 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]"
               >
                 <FileCode2 size={15} strokeWidth={1.8} aria-hidden="true" className="shrink-0 text-[var(--color-text-tertiary)]" />
-                <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--color-text-primary)]">{fileName}</span>
+                <span className="min-w-0 flex-1 md:contents">
+                  <span className="block whitespace-normal break-all text-xs font-medium text-[var(--color-text-primary)] md:min-w-0 md:flex-1 md:truncate">{fileName}</span>
+                  {directory && (
+                    <span className="mt-1 block whitespace-normal break-all font-mono text-[10px] text-[var(--color-text-tertiary)] md:mt-0 md:max-w-[55%] md:truncate">{directory}</span>
+                  )}
+                </span>
                 {file.reportedOnly && <span title={t('chat.scriptOutputHint')} className="shrink-0 text-[10px] text-[var(--color-text-tertiary)]">{t('chat.scriptOutput')}</span>}
-                {directory && (
-                  <span className="max-w-[55%] truncate font-mono text-[10px] text-[var(--color-text-tertiary)]">{directory}</span>
-                )}
               </button>
             )
           })}

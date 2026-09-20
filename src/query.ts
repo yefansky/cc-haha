@@ -228,6 +228,10 @@ export async function* query(
   | ToolUseSummaryMessage,
   Terminal
 > {
+  return yield* observeGenerator('query', () => queryObservedBody(params), { kind: 'query' })
+}
+
+async function* queryObservedBody(params: QueryParams): ReturnType<typeof query> {
   const consumedCommandUuids: string[] = []
   const terminal = yield* queryLoop(params, consumedCommandUuids)
   // Only reached if queryLoop returned normally. Skipped on throw (error
@@ -1736,3 +1740,4 @@ async function* queryLoop(
     state = next
   } // while (true)
 }
+import { observeGenerator } from './utils/runtimeObservationScopes.js'

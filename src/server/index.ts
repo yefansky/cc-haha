@@ -58,6 +58,11 @@ import {
 } from './petAccessPolicy.js'
 import { settleResponseOnRequestAbort } from './requestLifecycle.js'
 import { LocalGatewaySetup } from './localGatewaySetup.js'
+import { observeHttpRequest } from './runtimeObservationHttp.js'
+import { startRuntimeObservationChannel } from '../utils/runtimeObservationChannel.js'
+import { getLiveRuntimeState } from './services/liveRuntimeState.js'
+
+let liveObservationChannel: ReturnType<typeof startRuntimeObservationChannel> | undefined
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -581,7 +586,7 @@ export function startServer(port = PORT, host = HOST) {
           try {
             const response = await settleResponseOnRequestAbort(
               req,
-              handleApiRequest(req, url),
+              observeHttpRequest(req, url, () => handleApiRequest(req, url)),
             )
             return withCors(response, cors)
           } catch (error) {
@@ -659,6 +664,7 @@ export function startServer(port = PORT, host = HOST) {
   // background work; session-list metadata gets priority on a cold start so
   // full-text backfill cannot make the sidebar slower on low-memory machines.
   beginBackgroundIndexStartup()
+  liveObservationChannel ??= startRuntimeObservationChannel({ role: 'server', getState: getLiveRuntimeState })
 
   // Start watching ~/.claude/teams/ for real-time WebSocket push
   teamWatcher.start()
@@ -684,6 +690,8 @@ let shutdownInProgress: Promise<void> | null = null
 export async function stopServerRuntimeForShutdown(
   options: { waitForCli?: boolean } = {},
 ): Promise<void> {
+  await liveObservationChannel?.stop()
+  liveObservationChannel = undefined
   for (const setup of localGatewaySetups) setup.disposeSync()
   localGatewaySetups.clear()
   teamWatcher.stop()

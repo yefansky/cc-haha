@@ -526,7 +526,9 @@ export class StructuredIO {
       })
     }
     try {
-      return await new Promise<Response>((resolve, reject) => {
+      return await observeOperation('sdk.control.wait', () => {
+        observationCheckpoint('waiting-for-control-response')
+        return new Promise<Response>((resolve, reject) => {
         this.pendingRequests.set(requestId, {
           request: {
             type: 'control_request',
@@ -539,7 +541,8 @@ export class StructuredIO {
           reject,
           schema,
         })
-      })
+        })
+      }, { kind: request.subtype })
     } finally {
       if (signal) {
         signal.removeEventListener('abort', aborted)
@@ -875,3 +878,4 @@ async function executePermissionRequestHooksForSDK(
 
   return undefined
 }
+import { observeOperation, observationCheckpoint } from '../utils/runtimeObservationScopes.js'

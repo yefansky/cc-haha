@@ -100,7 +100,7 @@
   font-style: normal;
   font-weight: 100 700;
   font-display: block;
-  src: url('../../public/fonts/material-symbols-outlined.woff2') format('woff2');
+  src: url('/fonts/material-symbols-outlined.woff2') format('woff2');
 }
 
 /* Tree connectors fill the line box, independent of font glyph metrics.
@@ -1438,6 +1438,14 @@
 }
 
 /* ─── Base styles ──────────────────────────────────────────────── */
+html[data-icon-font='loading'] .material-symbols-outlined {
+  visibility: hidden;
+  width: 1em;
+  height: 1em;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
 * {
   box-sizing: border-box;
 }

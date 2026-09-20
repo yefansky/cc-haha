@@ -17,7 +17,7 @@ type ModalProps = {
   children: ReactNode
   width?: number
   footer?: ReactNode
-  variant?: 'dialog' | 'media'
+  variant?: 'dialog' | 'media' | 'fullscreen'
 }
 
 export function Modal({
@@ -94,10 +94,14 @@ export function Modal({
         // 24px — the top of the handoff's corner scale, reserved for modals.
         // `dialog-panel`, not `glass-panel`: the fill has to be opaque on its
         // own rather than leaning on a blur that may never run.
-        className={variant === 'media'
+        className={variant === 'fullscreen'
+          ? 'relative flex h-[100dvh] w-full min-w-0 flex-col overflow-hidden bg-[var(--color-surface)] text-[var(--color-text-primary)]'
+          : variant === 'media'
           ? 'relative flex h-[calc(100dvh-24px)] w-[calc(100vw-24px)] flex-col overflow-hidden rounded-[var(--radius-2xl)] bg-[var(--color-terminal-bg)] text-[var(--color-terminal-fg)]'
           : 'dialog-panel relative flex max-h-[85vh] flex-col rounded-[var(--radius-3xl)]'}
-        style={variant === 'media'
+        style={variant === 'fullscreen'
+          ? { paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }
+          : variant === 'media'
           ? { maxHeight: 'calc(100dvh - 24px)', maxWidth: 'calc(100vw - 24px)' }
           : { width, maxWidth: 'calc(100vw - 48px)' }}
         role="dialog"
@@ -126,7 +130,7 @@ export function Modal({
           </div>
         )}
 
-        <div className={variant === 'media'
+        <div className={variant !== 'dialog'
           ? 'min-h-0 flex-1 overflow-hidden'
           : 'flex-1 overflow-y-auto px-6 py-4'}>
           {children}

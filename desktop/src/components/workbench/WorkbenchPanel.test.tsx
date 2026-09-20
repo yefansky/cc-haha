@@ -23,6 +23,12 @@ vi.mock('../browser/BrowserSurface', () => ({
   ),
 }))
 
+vi.mock('../browser/WebBrowserSurface', () => ({
+  WebBrowserSurface: ({ sessionId }: { sessionId: string }) => (
+    <div data-testid="browser-surface">browser:{sessionId}</div>
+  ),
+}))
+
 vi.mock('../change-review/ChangeReviewPanel', () => ({
   ChangeReviewPanel: ({ sessionId }: { sessionId: string }) => (
     <div data-testid="change-review-panel">review:{sessionId}</div>
@@ -53,6 +59,19 @@ afterEach(() => {
 })
 
 describe('WorkbenchPanel', () => {
+  it('returns from the mobile reader without navigating away from the session', () => {
+    render(<WorkbenchPanel sessionId={SESSION_ID} mobile />)
+    expect(screen.getByTestId('workspace-panel')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Expand panel' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Browser' }))
+    expect(screen.getByTestId('browser-surface')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    expect(screen.getByTestId('workspace-panel')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to conversation' }))
+    expect(useWorkspacePanelStore.getState().isPanelOpen(SESSION_ID)).toBe(false)
+    expect(useTabStore.getState().tabs).toEqual([])
+  })
+
   it('renders the file workspace (embedded) in the default workspace mode', () => {
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
 

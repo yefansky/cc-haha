@@ -2455,6 +2455,25 @@ async function handleSetRuntimeConfig(
   })
 }
 
+/** Read the authoritative maps, without synchronization/replay or business commands. */
+export function getSessionRuntimeObservation(sessionId: string) {
+  const turn = activeUserTurns.get(sessionId)
+  return {
+    activityState: getSessionChatActivityState(sessionId),
+    connectedClients: activeSessions.get(sessionId)?.size ?? 0,
+    activeCliRun: activeCliRuns.has(sessionId),
+    userTurn: turn ? {
+      sendStarted: turn.sendStarted === true,
+      messageSent: turn.messageSent,
+      cancelled: turn.cancelled === true,
+      interruptBoundaryPending: turn.interruptBoundaryPending === true,
+    } : null,
+    runtimeRestartDeferred: deferredRuntimeRestarts.has(sessionId),
+    permissionModeDeferred: deferredPermissionModes.has(sessionId),
+    clearing: sessionClearInProgress.has(sessionId),
+  }
+}
+
 function sendRuntimeConfigFailure(ws: ServerWebSocket<WebSocketData>, requested: RuntimeOverride,
   code: 'RUNTIME_CONFIG_INVALID' | 'CLI_RESTART_FAILED', restored?: RuntimeOverride): void {
   sendMessage(ws, { type: 'runtime_config_failed', providerId: requested.providerId,

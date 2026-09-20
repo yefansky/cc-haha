@@ -11,6 +11,8 @@ import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import { WORKBENCH_TAB_PREFIX, useTabStore } from '../../stores/tabStore'
 import { WorkspacePanel } from '../workspace/WorkspacePanel'
 import { BrowserSurface } from '../browser/BrowserSurface'
+import { WebBrowserSurface } from '../browser/WebBrowserSurface'
+import { getDesktopHost } from '../../lib/desktopHost'
 import { ContextAuditPanel } from '../context-audit/ContextAuditPanel'
 import { ChangeReviewPanel } from '../change-review/ChangeReviewPanel'
 
@@ -19,6 +21,7 @@ type WorkbenchPanelProps = {
   variant?: 'panel' | 'tab'
   layout?: 'standard' | 'vscode'
   onClose?: () => void
+  mobile?: boolean
 }
 
 const MODE_ITEMS: ReadonlyArray<{
@@ -38,7 +41,7 @@ const MODE_ITEMS: ReadonlyArray<{
  * browser surface behind a single per-session mode switch (file ↔ browser),
  * sharing the panel's open state and width via {@link useWorkspacePanelStore}.
  */
-export function WorkbenchPanel({ sessionId, variant = 'panel', layout = 'standard', onClose }: WorkbenchPanelProps) {
+export function WorkbenchPanel({ sessionId, variant = 'panel', layout = 'standard', onClose, mobile = false }: WorkbenchPanelProps) {
   const t = useTranslation()
   const mode = useWorkspacePanelStore((state) => state.getMode(sessionId))
   const setMode = useWorkspacePanelStore((state) => state.setMode)
@@ -89,8 +92,14 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', layout = 'standar
       <header
         data-testid="workbench-navigation"
         aria-label={t('workbench.navigation')}
-        className="flex h-12 shrink-0 items-center gap-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4"
+        className={`flex min-h-12 shrink-0 items-center gap-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface)] ${mobile ? 'px-2' : 'px-4'}`}
       >
+        {mobile && (
+          <Button variant="ghost" size="base" onClick={handleClose}
+            icon={<ArrowLeft size={18} aria-hidden="true" />} className="min-h-11 shrink-0">
+            {t('workbench.backToConversation')}
+          </Button>
+        )}
         {isTabVariant && (
           <Button
             variant="ghost"
@@ -105,7 +114,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', layout = 'standar
         <div
           role="tablist"
           aria-label={t('workbench.modeSwitch')}
-          className="inline-flex items-center gap-0.5 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] p-0.5"
+          className="inline-flex min-w-0 items-center gap-0.5 overflow-x-auto rounded-[var(--radius-md)] bg-[var(--color-surface-container)] p-0.5"
         >
           {MODE_ITEMS.map(({ mode: itemMode, labelKey, label, Icon }) => {
             const isActive = mode === itemMode
@@ -115,6 +124,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', layout = 'standar
                 type="button"
                 role="tab"
                 aria-selected={isActive}
+                aria-label={labelKey ? t(labelKey) : label}
                 onClick={() => handleModeSelect(itemMode)}
                 className={`inline-flex h-7 items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[12px] font-medium transition-[color,background-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] motion-reduce:transition-none motion-reduce:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] ${
                   isActive
@@ -123,14 +133,14 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', layout = 'standar
                 }`}
               >
                 <Icon size={15} strokeWidth={2} aria-hidden="true" className="shrink-0" />
-                <span>{labelKey ? t(labelKey) : label}</span>
+                <span className={mobile ? 'sr-only' : undefined}>{labelKey ? t(labelKey) : label}</span>
               </button>
             )
           })}
         </div>
 
         <div className="ml-auto flex shrink-0 items-center gap-1">
-          {!isTabVariant && !isVscodeLayout && (
+          {!mobile && !isTabVariant && !isVscodeLayout && (
             <IconButton
               icon={<Maximize2 size={15} strokeWidth={2} aria-hidden="true" />}
               label={t('workbench.expand')}
@@ -139,7 +149,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', layout = 'standar
               tone="muted"
             />
           )}
-          {!isVscodeLayout && (
+          {!mobile && !isVscodeLayout && (
             <IconButton
               icon={<X size={16} strokeWidth={2} aria-hidden="true" />}
               label={t('workbench.close')}
@@ -154,7 +164,9 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', layout = 'standar
 
       <div className="flex min-h-0 flex-1 flex-col">
         {mode === 'browser' ? (
-          <BrowserSurface sessionId={sessionId} />
+          getDesktopHost().capabilities.previewWebview
+            ? <BrowserSurface sessionId={sessionId} />
+            : <WebBrowserSurface sessionId={sessionId} />
         ) : mode === 'context-audit' ? (
           <ContextAuditPanel sessionId={sessionId} />
         ) : mode === 'review' ? (

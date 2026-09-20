@@ -196,6 +196,9 @@ function networkRoutingFingerprint(
 }
 
 type SessionProcess = {
+  lastObservedSdkAt?: number
+  lastObservedSdkType?: string
+  forwardedUserMessages?: number
   providerSnapshotId?: string
   proc: ReturnType<typeof Bun.spawn>
   outputCallbacks: SessionOutputCallback[]
@@ -665,7 +668,11 @@ export class ConversationService {
       parent_tool_use_id: null,
       session_id: '',
     })
-    if (sent) options?.onCommitted?.()
+    if (sent) {
+      const live = this.sessions.get(sessionId)
+      if (live) live.forwardedUserMessages = (live.forwardedUserMessages ?? 0) + 1
+      options?.onCommitted?.()
+    }
     return sent
   }
 
@@ -1115,6 +1122,36 @@ export class ConversationService {
     return session?.permissionMode || 'default'
   }
 
+  /** A bounded metadata projection, deliberately excluding prompts, args and credentials. */
+  getRuntimeObservation() {
+    const sessions = []
+    for (const [sessionId, session] of this.sessions) {
+      if (sessions.length >= 64) break
+      sessions.push({
+        sessionId,
+        pid: session.proc.pid,
+        sdkConnected: session.sdkSocket !== null,
+        startupPending: session.startupPending,
+        startupExitCode: session.startupExitCode,
+        outboundTransportCount: session.pendingOutbound.length,
+        // Forwarded is not a claim that the CLI consumed or completed the message.
+        forwardedUserMessages: session.forwardedUserMessages ?? 0,
+        pendingControlCount: session.pendingControlRequests.size,
+        pendingPermissionCount: session.pendingPermissionRequests.size,
+        pendingPermissions: Array.from(session.pendingPermissionRequests.entries()).slice(0, 32).map(
+          ([requestId, request]) => ({
+            requestId,
+            toolUseId: request.toolUseId,
+            toolName: /^[\w.:-]{1,96}$/.test(request.toolName) ? request.toolName : 'redacted',
+          }),
+        ),
+        lastSdkAt: session.lastObservedSdkAt ?? null,
+        lastSdkType: session.lastObservedSdkType ?? null,
+      })
+    }
+    return { sessions, totalSessions: this.sessions.size, truncated: this.sessions.size > sessions.length }
+  }
+
   getPendingPermissionRequests(sessionId: string): PendingPermissionRequest[] {
     const session = this.sessions.get(sessionId)
     if (!session) return []
@@ -1211,6 +1248,9 @@ export class ConversationService {
       try {
         const msg = JSON.parse(line)
         if (this.isReplayedSdkMessage(session, msg)) continue
+        session.lastObservedSdkAt = Date.now()
+        session.lastObservedSdkType = typeof msg.type === 'string' && /^[a-z_]{1,48}$/.test(msg.type)
+          ? msg.type : 'unknown'
         if (
           msg?.type === 'control_request' &&
           msg.request?.subtype === 'can_use_tool' &&

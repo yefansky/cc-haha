@@ -31,7 +31,7 @@ function createHarness(options: { quitting?: boolean } = {}) {
   const onRendererProcessGone = vi.fn()
   const onRecoveryExhausted = vi.fn()
 
-  installRendererLifecycle({
+  const controller = installRendererLifecycle({
     window: window as never,
     isQuitting: () => quitting,
     recordDiagnostic,
@@ -41,6 +41,7 @@ function createHarness(options: { quitting?: boolean } = {}) {
   })
 
   return {
+    controller,
     window,
     recordDiagnostic,
     writeSnapshot,
@@ -57,6 +58,29 @@ afterEach(() => {
 })
 
 describe('Electron renderer lifecycle recovery', () => {
+  it('holds an already scheduled recovery and explicitly resumes it without reloading early', () => {
+    vi.useFakeTimers()
+    const harness = createHarness()
+    harness.window.webContents.emit('unresponsive')
+    harness.controller.setHeld(true)
+    vi.advanceTimersByTime(30000)
+    expect(harness.window.webContents.reload).not.toHaveBeenCalled()
+    harness.controller.setHeld(false)
+    vi.runAllTimers()
+    expect(harness.window.webContents.reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reload a renderer that became responsive while observation held recovery', () => {
+    vi.useFakeTimers()
+    const harness = createHarness()
+    harness.controller.setHeld(true)
+    harness.window.webContents.emit('unresponsive')
+    vi.advanceTimersByTime(30000)
+    harness.window.webContents.emit('responsive')
+    harness.controller.setHeld(false)
+    vi.runAllTimers()
+    expect(harness.window.webContents.reload).not.toHaveBeenCalled()
+  })
   it('reloads after the first renderer exit and reports repeated failure only once', () => {
     vi.useFakeTimers()
     const harness = createHarness()

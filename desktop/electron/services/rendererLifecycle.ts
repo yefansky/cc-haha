@@ -12,6 +12,11 @@ export type RendererLifecycleOptions = {
   unresponsiveRecoveryDelayMs?: number
 }
 
+export type RendererRecoveryController = {
+  setHeld(held: boolean): void
+  isHeld(): boolean
+}
+
 export function installRendererLifecycle({
   window,
   isQuitting,
@@ -20,7 +25,9 @@ export function installRendererLifecycle({
   onRendererProcessGone,
   onRecoveryExhausted,
   unresponsiveRecoveryDelayMs = DEFAULT_RENDERER_UNRESPONSIVE_RECOVERY_DELAY_MS,
-}: RendererLifecycleOptions): void {
+}: RendererLifecycleOptions): RendererRecoveryController {
+  let held = false
+  let pendingTrigger: string | null = null
   let recoveryAttempted = false
   let failureReported = false
   let unresponsiveRecoveryTimer: ReturnType<typeof setTimeout> | null = null
@@ -43,6 +50,11 @@ export function installRendererLifecycle({
   }
   const recoverRenderer = (trigger: string) => {
     clearUnresponsiveRecovery()
+    if (held) {
+      pendingTrigger = trigger
+      recordDiagnostic(`[recovery-held] trigger=${trigger}`)
+      return
+    }
     if (isQuitting() || window.isDestroyed() || window.webContents.isDestroyed()) {
       recordDiagnostic(`[recovery-skipped] trigger=${trigger} quitting=${isQuitting()}`)
       return
@@ -110,6 +122,7 @@ export function installRendererLifecycle({
     }, unresponsiveRecoveryDelayMs)
   })
   window.webContents.on('responsive', () => {
+    pendingTrigger = null
     clearUnresponsiveRecovery()
     recordDiagnostic('[responsive]')
     writeSnapshot('responsive')
@@ -118,4 +131,24 @@ export function installRendererLifecycle({
     clearUnresponsiveRecovery()
     clearRendererReload()
   })
+  return {
+    isHeld: () => held,
+    setHeld(value) {
+      if (held === value) return
+      held = value
+      if (held) {
+        if (unresponsiveRecoveryTimer) pendingTrigger = 'unresponsive-timeout'
+        if (rendererReloadTimer) {
+          pendingTrigger = 'scheduled-recovery'
+          recoveryAttempted = false
+        }
+        clearUnresponsiveRecovery()
+        clearRendererReload()
+      } else if (pendingTrigger) {
+        const trigger = pendingTrigger
+        pendingTrigger = null
+        recoverRenderer(trigger)
+      }
+    },
+  }
 }

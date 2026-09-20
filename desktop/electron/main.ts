@@ -58,6 +58,7 @@ import {
 } from './services/nativeAppearance'
 import { resolveRendererEntry } from './services/rendererEntry'
 import { installRendererLifecycle } from './services/rendererLifecycle'
+import { startLiveDebugHost } from './services/liveDebugHost'
 import { writeWindowSmokeSnapshot } from './services/windowSmoke'
 import { loadAndRevealMainWindow } from './services/windowStartup'
 import {
@@ -341,7 +342,7 @@ function getPreviewService() {
         if (!await localAccess.allows(request.url)) {
           return new Response('Local preview file is outside the opened document directory or does not exist.', { status: 403 })
         }
-        return net.fetch(request, { bypassCustomProtocol: true })
+        return net.fetch(request, { bypassCustomProtocolHandlers: true })
       })
       return Object.assign(view, { authorizeLocalFile: (url: string) => localAccess.authorize(url) })
     },
@@ -830,7 +831,7 @@ async function createMainWindow() {
     if (window.isDestroyed()) return
     window.webContents.send(ELECTRON_EVENT_CHANNELS.windowResized)
   })
-  installRendererLifecycle({
+  const rendererRecovery = installRendererLifecycle({
     window,
     isQuitting: () => isQuitting,
     recordDiagnostic: recordRendererDiagnostic,
@@ -846,6 +847,8 @@ async function createMainWindow() {
       )
     },
   })
+  await startLiveDebugHost({ window, lifecycle: rendererRecovery, userData: app.getPath('userData'), ipc: ipcMain })
+    .catch(() => recordRendererDiagnostic('[live-debug-host-unavailable]'))
   writeWindowSmokeSnapshot(mainWindow, 'after-create')
 
   await loadAndRevealMainWindow({

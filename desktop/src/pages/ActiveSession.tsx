@@ -15,6 +15,7 @@ import { useChatStore } from '../stores/chatStore'
 import { useCLITaskStore } from '../stores/cliTaskStore'
 import { useTeamStore } from '../stores/teamStore'
 import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
+import { Modal } from '../components/ui/Modal'
 import {
   TERMINAL_PANEL_DEFAULT_HEIGHT,
   TERMINAL_PANEL_MAX_HEIGHT,
@@ -355,6 +356,10 @@ export function ActiveSession() {
       : false,
   )
   const showRightPanel = showWorkbench
+  const showMobileWorkbench = useWorkspacePanelStore((state) => Boolean(
+    isMobileLayout && activeTabId && isSessionTabState(activeTabId, activeTabType)
+      && !isMemberSession && state.isPanelOpen(activeTabId),
+  ))
   const rightPanelWidth = useWorkspacePanelStore((state) => state.width)
   const showTerminalPanel = useTerminalPanelStore((state) =>
     activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
@@ -413,16 +418,15 @@ export function ActiveSession() {
   )
   const agentTaskNotifications = sessionState?.agentTaskNotifications ?? EMPTY_AGENT_TASK_NOTIFICATIONS
   const activeGoal = sessionState?.activeGoal ?? null
-  const isEmpty = messages.length === 0 && !streamingText && (session?.messageCount ?? 0) === 0
+  const isEmpty = messages.length === 0 && !streamingText && session?.messageCount === 0 &&
+    sessionState?.historyStatus !== 'loading' && sessionState?.historyStatus !== 'error'
   const compactEmptyHero = isEmpty && showTerminalPanel
   const isHistoryLoading =
     !isMemberSession &&
-    (session?.messageCount ?? 0) > 0 &&
     messages.length === 0 &&
-    sessionState?.historyStatus === 'loading'
+    (sessionState?.historyStatus === 'loading' || (!session && sessionState?.historyStatus !== 'error'))
   const historyError =
     !isMemberSession &&
-    (session?.messageCount ?? 0) > 0 &&
     messages.length === 0 &&
     sessionState?.historyStatus === 'error'
       ? sessionState.historyError || t('session.historyLoadFailed')
@@ -751,8 +755,12 @@ export function ActiveSession() {
                   <LoadingState label={t('common.loading')} variant="inline" size="md" />
                 </div>
               ) : historyError ? (
-                <div role="alert" className="flex flex-1 items-center justify-center p-8 text-sm text-[var(--color-error)]">
-                  {historyError}
+                <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-sm text-[var(--color-error)]">
+                  <span>{t('session.historyLoadFailed')}</span>
+                  <span className="text-xs text-[var(--color-text-tertiary)]">{historyError}</span>
+                  <Button variant="secondary" onClick={() => { if (activeTabId) void useChatStore.getState().loadHistory(activeTabId) }}>
+                    {t('common.retry')}
+                  </Button>
                 </div>
               ) : (
                 <MessageList compact={showRightPanel} mobileLayout={isMobileLayout} />
@@ -842,6 +850,13 @@ export function ActiveSession() {
           </>
         ) : null}
       </div>
+
+      {showMobileWorkbench && (
+        <Modal open onClose={() => useWorkspacePanelStore.getState().closePanel(activeTabId)}
+          variant="fullscreen" title={t('workbench.tabTitle')}>
+          <WorkbenchPanel sessionId={activeTabId} mobile />
+        </Modal>
+      )}
 
       {!isMemberSession && activeTabId ? (
         <ComputerUsePermissionModal
