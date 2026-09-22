@@ -2599,6 +2599,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
 
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': 'Activity',
+  'session.activity.empty': 'No activity in this session yet',
   'session.activity.close': 'Close activity',
   'session.activity.clearFinished': 'Clear finished',
   'session.activity.openTeamMember': 'Open team member {name}',

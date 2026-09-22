@@ -2325,6 +2325,24 @@ describe('ActiveSession activity panel auto-close grace', () => {
     expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
   })
 
+  it('lets mobile users open, close and reopen an empty activity panel without auto-dismissal', () => {
+    vi.useFakeTimers()
+    viewportMocks.isMobile = true
+    useSettingsStore.setState({ locale: 'en' })
+    seedActivitySession({ backgroundAgentTasks: {} })
+    render(<><SessionActivityButton sessionId={sessionId} showLabel /><ActiveSession /></>)
+    const trigger = screen.getByRole('button', { name: 'Activity' })
+    fireEvent.click(trigger)
+    expect(screen.getByRole('dialog', { name: 'Activity' })).toBeInTheDocument()
+    expect(screen.getByText('No activity in this session yet')).toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(5000))
+    expect(screen.getByRole('dialog', { name: 'Activity' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close activity' }))
+    expect(screen.queryByRole('dialog', { name: 'Activity' })).not.toBeInTheDocument()
+    fireEvent.click(trigger)
+    expect(screen.getByRole('dialog', { name: 'Activity' })).toBeInTheDocument()
+  })
+
   it('cancels the pending close when activity reappears inside the grace period', () => {
     vi.useFakeTimers()
     seedActivitySession()

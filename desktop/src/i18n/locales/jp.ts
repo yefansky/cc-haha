@@ -2600,6 +2600,7 @@ export const jp: Record<TranslationKey, string> = {
 
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': 'アクティビティ',
+  'session.activity.empty': 'このセッションにはまだアクティビティがありません',
   'session.activity.close': 'アクティビティを閉じる',
   'session.activity.clearFinished': '完了済みをクリア',
   'session.activity.openTeamMember': 'チームメンバー {name} を開く',

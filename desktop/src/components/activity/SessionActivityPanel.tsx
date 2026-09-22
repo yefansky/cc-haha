@@ -626,6 +626,11 @@ export function SessionActivityPanel({
         data-testid="session-activity-scroll"
         className={`min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 pb-4 pt-0.5 ${ACTIVITY_SCROLLBAR_CLASS}`}
       >
+        {visibleSections.length === 0 ? (
+          <p className="py-4 text-sm text-[var(--color-text-tertiary)]">
+            {t('session.activity.empty')}
+          </p>
+        ) : null}
         {visibleSections.map((section, index) => {
           const sectionTitle = getSectionTitle(section.id, t)
           const taskProgress = section.id === 'tasks' ? getTaskProgress(section.rows) : null

@@ -2599,6 +2599,7 @@ export const zh: Record<TranslationKey, string> = {
 
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': '活动',
+  'session.activity.empty': '当前会话暂无活动',
   'session.activity.close': '关闭活动',
   'session.activity.clearFinished': '清除已完成',
   'session.activity.openTeamMember': '打开团队成员 {name}',

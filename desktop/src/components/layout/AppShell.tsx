@@ -33,6 +33,7 @@ import { getTraceLaunchRequest } from '../../lib/traceLaunch'
 import { openTraceDetail } from '../../lib/traceNavigation'
 import { TraceList } from '../../pages/TraceList'
 import { TraceSession } from '../../pages/TraceSession'
+import { SessionActivityButton } from '../activity/SessionActivityButton'
 
 function isChatTab(tab: Tab | undefined) {
   return tab?.type === 'session'
@@ -231,7 +232,9 @@ export function AppShell() {
 
   useEffect(() => {
     if (!ready || !isMobileShell) return
-    if (isChatTab(activeTab) || (!activeTab && !activeTabId)) return
+    // Subagent details are part of the mobile conversation flow. Redirecting
+    // them to the first chat tab loses the source session the user clicked.
+    if (isChatTab(activeTab) || activeTab?.type === 'subagent' || (!activeTab && !activeTabId)) return
     const nextChatTab = tabs.find(isChatTab)
     if (nextChatTab) {
       setActiveTab(nextChatTab.sessionId)
@@ -378,6 +381,9 @@ export function AppShell() {
                   ) : null}
                 </div>
               </div>
+            ) : null}
+            {isActiveChatTab && activeTabId ? (
+              <SessionActivityButton sessionId={activeTabId} showLabel />
             ) : null}
           </div>
         ) : null}

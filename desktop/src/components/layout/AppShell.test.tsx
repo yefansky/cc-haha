@@ -3,6 +3,8 @@ import '@testing-library/jest-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useUIStore } from '../../stores/uiStore'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useActivityPanelStore } from '../../stores/activityPanelStore'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 
 const mocks = vi.hoisted(() => ({
   initializeDesktopServerUrl: vi.fn(),
@@ -183,6 +185,8 @@ describe('AppShell boot flow', () => {
     mocks.tabState.activeTabId = null
     mocks.tabState.tabs = []
     useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
+    useActivityPanelStore.setState(useActivityPanelStore.getInitialState(), true)
+    useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
     useUIStore.setState({ sidebarOpen: true, layoutStyle: 'classic', sessionSidebarPlacement: 'left' })
     Reflect.deleteProperty(window, 'desktopHost')
     window.history.pushState({}, '', '/')
@@ -635,5 +639,50 @@ describe('AppShell boot flow', () => {
     await waitFor(() => {
       expect(mocks.setActiveTab).toHaveBeenCalledWith('session-1')
     })
+  })
+
+  it.each([true, false])('keeps mobile SubAgent details active with an unrelated first session (parent open: %s)', async (parentOpen) => {
+    mocks.isMobile = true
+    mocks.tabState.activeTabId = 'child-detail'
+    mocks.tabState.tabs = [
+      { sessionId: 'unrelated', title: 'Old conversation', type: 'session', status: 'idle' },
+      ...(parentOpen ? [{ sessionId: 'parent', title: 'Parent', type: 'session', status: 'idle' }] : []),
+      { sessionId: 'child-detail', title: 'Child review', type: 'subagent', status: 'idle' },
+    ]
+
+    render(<AppShell />)
+    await screen.findByText('content loaded')
+
+    expect(mocks.tabState.activeTabId).toBe('child-detail')
+    expect(mocks.setActiveTab).not.toHaveBeenCalled()
+    expect(mocks.connectToSession).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'session.activity.title' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a visible mobile activity entry after closing and targets the current session', async () => {
+    mocks.isMobile = true
+    mocks.tabState.activeTabId = 'parent'
+    mocks.tabState.tabs = [
+      { sessionId: 'unrelated', title: 'Old conversation', type: 'session', status: 'idle' },
+      { sessionId: 'parent', title: 'Current conversation', type: 'session', status: 'idle' },
+    ]
+    const view = render(<AppShell />)
+    await screen.findByText('content loaded')
+    const trigger = screen.getByRole('button', { name: 'session.activity.title' })
+    expect(trigger).toHaveTextContent('session.activity.title')
+    expect(trigger).toHaveClass('min-h-11')
+    fireEvent.click(trigger)
+    expect(useActivityPanelStore.getState().openSessionId).toBe('parent')
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+
+    act(() => useActivityPanelStore.getState().close('parent'))
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(trigger)
+    expect(useActivityPanelStore.getState().openSessionId).toBe('parent')
+
+    mocks.tabState.activeTabId = 'unrelated'
+    view.rerender(<AppShell />)
+    fireEvent.click(screen.getByRole('button', { name: 'session.activity.title' }))
+    expect(useActivityPanelStore.getState().openSessionId).toBe('unrelated')
   })
 })

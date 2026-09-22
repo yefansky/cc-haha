@@ -2600,6 +2600,7 @@ export const kr: Record<TranslationKey, string> = {
 
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': '활동',
+  'session.activity.empty': '이 세션에는 아직 활동이 없습니다',
   'session.activity.close': '활동 닫기',
   'session.activity.clearFinished': '완료 항목 지우기',
   'session.activity.openTeamMember': '팀 멤버 {name} 열기',

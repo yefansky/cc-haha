@@ -508,7 +508,7 @@ export function ActiveSession() {
   ])
 
   useEffect(() => {
-    if (!activeTabId || !isActivityPanelOpen || hasVisibleActivity) return
+    if (!activeTabId || !isActivityPanelOpen || hasVisibleActivity || isMobileLayout) return
     // Activity rows derive from volatile caches that are briefly empty during
     // history loads, cli-task refetches and reconnect reloads. Closing the
     // panel on the first empty beat made that flicker permanent (auto-open
@@ -521,7 +521,7 @@ export function ActiveSession() {
       closeActivityPanel(activeTabId)
     }, ACTIVITY_AUTOCLOSE_GRACE_MS)
     return () => clearTimeout(timer)
-  }, [activeTabId, closeActivityPanel, hasVisibleActivity, isActivityPanelOpen, sessionState?.historyStatus])
+  }, [activeTabId, closeActivityPanel, hasVisibleActivity, isActivityPanelOpen, isMobileLayout, sessionState?.historyStatus])
 
   useEffect(() => {
     if (!activeTabId || !showWorkbench || !isActivityPanelOpen) return
@@ -768,7 +768,7 @@ export function ActiveSession() {
             </>
           )}
 
-          {activityModel && hasVisibleActivity && isMobileLayout && !isMemberSession && isSessionTabState(activeTabId, activeTabType) ? (
+          {activityModel && isMobileLayout && !isMemberSession && isSessionTabState(activeTabId, activeTabType) ? (
             <SessionActivityPanel
               model={activityModel}
               open={isActivityPanelOpen}

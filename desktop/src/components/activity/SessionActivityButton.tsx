@@ -1,5 +1,6 @@
 import { ListChecks } from 'lucide-react'
 import { IconButton } from '@/components/ui/IconButton'
+import { Button } from '@/components/ui/Button'
 import { useTranslation } from '../../i18n'
 import { useActivityPanelStore } from '../../stores/activityPanelStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
@@ -7,16 +8,44 @@ import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 type SessionActivityButtonProps = {
   sessionId: string
   label?: string
+  showLabel?: boolean
 }
 
 export function SessionActivityButton({
   sessionId,
   label,
+  showLabel = false,
 }: SessionActivityButtonProps) {
   const t = useTranslation()
   const resolvedLabel = label ?? t('session.activity.title')
   const isOpen = useActivityPanelStore((state) => state.isOpen(sessionId))
   const toggle = useActivityPanelStore((state) => state.toggle)
+  const handleClick = () => {
+    const workspace = useWorkspacePanelStore.getState()
+    if (workspace.isPanelOpen(sessionId)) {
+      workspace.closePanel(sessionId)
+      useActivityPanelStore.getState().open(sessionId)
+    } else {
+      toggle(sessionId)
+    }
+  }
+  if (showLabel) {
+    return (
+      <Button
+        icon={<ListChecks size={18} aria-hidden="true" />}
+        variant={isOpen ? 'tonal' : 'secondary'}
+        size="base"
+        className="min-h-11 shrink-0"
+        aria-expanded={isOpen}
+        aria-pressed={isOpen}
+        onClick={handleClick}
+        data-active={isOpen ? 'true' : 'false'}
+        data-session-activity-trigger="true"
+      >
+        {resolvedLabel}
+      </Button>
+    )
+  }
   return (
     <IconButton
       icon={<ListChecks size={17} strokeWidth={1.9} />}
@@ -30,15 +59,7 @@ export function SessionActivityButton({
       filled={isOpen}
       aria-expanded={isOpen}
       aria-pressed={isOpen}
-      onClick={() => {
-        const workspace = useWorkspacePanelStore.getState()
-        if (workspace.isPanelOpen(sessionId)) {
-          workspace.closePanel(sessionId)
-          useActivityPanelStore.getState().open(sessionId)
-        } else {
-          toggle(sessionId)
-        }
-      }}
+      onClick={handleClick}
       data-active={isOpen ? 'true' : 'false'}
       data-session-activity-trigger="true"
     />
