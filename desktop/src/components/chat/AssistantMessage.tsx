@@ -151,6 +151,7 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
           <OpenWithMenu
             items={actions.menu.items}
             anchor={actions.menu.anchor}
+            notice={actions.menu.notice}
             onClose={actions.closeMenu}
           />
         )}

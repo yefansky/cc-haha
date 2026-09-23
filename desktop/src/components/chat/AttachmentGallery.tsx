@@ -125,6 +125,7 @@ export function AttachmentGallery({ attachments, variant = 'message', onRemove }
         { kind: 'file', absolutePath: attachment.path! },
         useOpenTargetStore.getState().targets,
         {
+          canOpenSystemFile: desktopHost.isDesktop,
           openInAppBrowser: () => {},
           openSystem: (path) => {
             void desktopHost.shell.openPath(path).catch(() => showOpenFailure(attachment.name))

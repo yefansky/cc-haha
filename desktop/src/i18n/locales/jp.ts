@@ -209,6 +209,7 @@ export const jp: Record<TranslationKey, string> = {
   "settings.browserLinks.autoDescription": "デスクトップはシステムブラウザー、リモートはアプリ内プレビュー、OAuthは現在の端末のブラウザーで開きます。作業PCのブラウザーとは異なります。",
   "openWith.currentDeviceBrowser": "この端末のブラウザー",
   'openWith.inAppBrowser': 'アプリ内ブラウザ',
+  'openWith.systemApp': '既定のアプリで開く',
   'openWith.systemBrowser': 'システムブラウザ',
   'openWith.workspacePreview': 'ワークスペースプレビュー',
   'openWith.openInTarget': '{target} で開く',

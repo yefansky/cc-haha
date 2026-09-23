@@ -47,6 +47,7 @@ export function openWithMenuDeps(
 ): OpenWithDeps {
   const host = getDesktopHost()
   return {
+    canOpenSystemFile: host.isDesktop,
     preferredBrowser: ctx.kind === 'url' && classifyPreviewLink(ctx.url).kind === 'remote'
       ? remoteBrowserDestination(ctx.url, host.isDesktop, useBrowserLinkPreference.getState().preference)
       : 'in-app',

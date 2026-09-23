@@ -209,6 +209,7 @@ export const zh: Record<TranslationKey, string> = {
   "settings.browserLinks.autoDescription": "自动：桌面网页用系统浏览器；远程网页保留应用内预览；授权页用当前设备浏览器。手机浏览器不等于工作机浏览器。",
   "openWith.currentDeviceBrowser": "当前设备浏览器",
   'openWith.inAppBrowser': '应用内浏览器',
+  'openWith.systemApp': '用系统默认应用打开',
   'openWith.systemBrowser': '系统浏览器',
   'openWith.workspacePreview': '工作台预览',
   'openWith.openInTarget': '用 {target} 打开',

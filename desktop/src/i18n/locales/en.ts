@@ -208,6 +208,7 @@ export const en = {
   "settings.browserLinks.autoDescription": "Automatic: desktop websites use the system browser; remote web clients keep in-app previews; OAuth opens in the current device browser, not the work PC browser.",
   "openWith.currentDeviceBrowser": "This device’s browser",
   'openWith.inAppBrowser': 'In-app browser',
+  'openWith.systemApp': 'Open with default app',
   'openWith.systemBrowser': 'System browser',
   'openWith.workspacePreview': 'Workspace preview',
   'openWith.openInTarget': 'Open in {target}',

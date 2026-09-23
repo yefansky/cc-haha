@@ -58,6 +58,8 @@ export type OpenWithItem = {
 export type OpenWithDeps = {
   openInAppBrowser: (url: string) => void
   openSystem: (urlOrPath: string) => void
+  /** Local file associations are available only in the desktop host. */
+  canOpenSystemFile?: boolean
   openWorkspacePreview: (relPath: string) => void
   openTarget: (targetId: string, absolutePath: string) => void
   /** Omit to leave the copy entries out (a URL context has nothing to copy). */
@@ -86,6 +88,9 @@ export function buildOpenWithItems(ctx: OpenWithContext, targets: OpenTarget[], 
   if (ctx.inAppBrowserUrl) {
     const url = ctx.inAppBrowserUrl
     items.push({ id: 'in-app', label: deps.t('openWith.inAppBrowser'), icon: 'in-app-browser', onSelect: () => deps.openInAppBrowser(url) })
+  }
+  if (deps.canOpenSystemFile) {
+    items.push({ id: 'system', label: deps.t('openWith.systemApp'), icon: 'system', onSelect: () => deps.openSystem(ctx.absolutePath) })
   }
   for (const target of targets.filter((x) => x.kind === 'ide')) {
     items.push({ id: `ide:${target.id}`, label: deps.t('openWith.openInTarget', { target: target.label }), icon: 'ide', target, onSelect: () => deps.openTarget(target.id, ctx.absolutePath) })

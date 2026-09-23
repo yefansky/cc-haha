@@ -76,7 +76,8 @@ describe('WorkspaceFileOpenWith', () => {
     )
 
     const labels = getAllByRole('menuitem').map((el) => el.textContent)
-    expect(labels).toHaveLength(3)
+    expect(labels).toHaveLength(4)
+    expect(labels).toContain('openWith.systemApp')
     expect(labels.some((l) => l?.includes('VS Code'))).toBe(true)
     expect(labels.some((l) => l?.includes('Finder'))).toBe(true)
     // Added with #1146. "Copy path" is deliberately absent: WorkspacePanel
@@ -84,6 +85,13 @@ describe('WorkspaceFileOpenWith', () => {
     expect(labels).toContain('openWith.copyFileContent')
     expect(labels).not.toContain('openWith.copyPath')
     expect(labels.some((l) => l?.includes('openWith.systemDefault'))).toBe(false)
+  })
+
+  it('uses the desktop file association for the default-app item', () => {
+    const { getByRole } = render(<WorkspaceFileOpenWith absolutePath="G:/docs/中文 文档.md" />)
+    fireEvent.click(getByRole('menuitem', { name: 'openWith.systemApp' }))
+    expect(hostOpenPath).toHaveBeenCalledWith('G:/docs/中文 文档.md')
+    expect(shellOpen).not.toHaveBeenCalled()
   })
 
   it('clicking the IDE item calls openTarget and onAfterSelect', () => {

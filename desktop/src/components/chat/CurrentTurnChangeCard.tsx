@@ -122,6 +122,7 @@ export function CurrentTurnChangeCard({
         siblingFiles: files.map((entry) => entry.displayPath),
       })
       const items = buildOpenWithItems(ctx, targets, {
+        canOpenSystemFile: getDesktopHost().isDesktop,
         openInAppBrowser: (url) => useBrowserPanelStore.getState().open(sessionId, url),
         openSystem: (p) => { void getDesktopHost().shell.openPath(p).catch(() => {}) },
         openWorkspacePreview: (rel) => { void useWorkspacePanelStore.getState().openPreview(sessionId, rel, 'file') },

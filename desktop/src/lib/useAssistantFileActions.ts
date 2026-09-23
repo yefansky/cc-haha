@@ -27,7 +27,7 @@ const messages: Record<string, string> = {
 export function useAssistantFileActions(context: Omit<FileNavigationContext, 'server' | 'generation'> & { rootsRevision: string }, t: (key: string, vars?: Record<string, string>) => string) {
   const [apiRevision, setApiRevision] = useState(getApiContextRevision)
   const [feedback, setFeedback] = useState<{ text: string; candidates: string[]; anchor?: DOMRect } | null>(null)
-  const [menu, setMenu] = useState<{ items: OpenWithItem[]; anchor: DOMRect } | null>(null)
+  const [menu, setMenu] = useState<{ items: OpenWithItem[]; anchor: DOMRect; notice?: { text: string; busy?: boolean; onRetry?: () => void; retryLabel?: string } } | null>(null)
   const pending = useRef<AbortController | null>(null)
   const stamp = JSON.stringify([context.sessionId, context.workDir, context.rootsRevision, apiRevision, context.evidence?.revision, context.changedFiles, context.referencedFiles])
   const currentStamp = useRef(stamp)
@@ -53,16 +53,35 @@ export function useAssistantFileActions(context: Omit<FileNavigationContext, 'se
     navigationIntentBySession.set(context.sessionId, intent)
     while (navigationIntentBySession.size > 128) navigationIntentBySession.delete(navigationIntentBySession.keys().next().value!)
     const live = () => !controller.signal.aborted && currentStamp.current === sourceStamp && navigationIntentBySession.get(context.sessionId) === intent
-    setFeedback(null); setMenu(null)
+    setFeedback(null)
+    // A context menu is immediate UI feedback, not the result of filesystem I/O.
+    // Keep errors beside the link, including on long/virtualized replies.
+    setMenu(anchor ? { items: [], anchor, notice: { text: t('common.loading'), busy: true } } : null)
+    const report = (text: string, candidates: string[] = []) => {
+      if (!live()) return
+      if (anchor) {
+        setMenu({ anchor, notice: { text, onRetry: () => activate(href, anchor), retryLabel: t('common.retry') },
+          items: candidates.map((path) => ({ id: path, label: path, icon: 'preview', onSelect: () => activate(path, anchor) })) })
+      } else setFeedback({ text, candidates })
+    }
+    const showMenu = async (target: string) => {
+      if (!anchor) return
+      try {
+        const items = await buildOpenWithMenuItemsForHref(target, { sessionId: context.sessionId, workDir: context.workDir, t })
+        if (!live()) return
+        if (items.length) setMenu({ items, anchor })
+        else report(messages.invalid!)
+      } catch (error) { report(error instanceof Error ? error.message : messages.error!) }
+    }
     let classified
     try {
       if (!/%(?:2f|5c)/i.test(href)) { try { href = decodeURI(href) } catch { /* Preserve malformed literal references. */ } }
       classified = classifyPreviewLink(href)
       if (!classified.path && parseFilePathRef(href)?.line) classified = classifyPreviewLink(`./${href}`)
-    } catch { return }
+    } catch { report(messages.invalid!); return }
     if (!classified.path) {
       if (!anchor) openPreviewLink(href, context.sessionId)
-      else void buildOpenWithMenuItemsForHref(href, { sessionId: context.sessionId, workDir: context.workDir, t }).then((items) => { if (live() && items.length) setMenu({ items, anchor }) })
+      else void showMenu(href)
       return
     }
     const position = classified.line ? `:${classified.line}${classified.column ? `:${classified.column}` : ''}` : ''
@@ -71,21 +90,19 @@ export function useAssistantFileActions(context: Omit<FileNavigationContext, 'se
       try {
         result = await navigator.resolve(`${classified.path}${position}`, { ...context, server: getBaseUrl(), generation: `${apiRevision}:${context.rootsRevision}` }, controller.signal)
       } catch (error) {
-        if (live()) setFeedback({ text: error instanceof Error ? error.message : '文件定位失败', candidates: [] })
+        report(error instanceof Error ? error.message : messages.error!)
         return
       }
       if (!live()) return
-      if (result.compatibility) setFeedback({ text: result.error ?? '自动定位需要服务升级', candidates: [] })
+      if (result.compatibility && !anchor) setFeedback({ text: result.error ?? '自动定位需要服务升级', candidates: [] })
       if (!result.href) {
-        setFeedback({ text: result.error === 'unsupported' ? '自动定位需要服务升级' : result.error ?? messages[result.state] ?? messages.error!, candidates: (result.candidates ?? []).slice(0, 5).map((candidate) => candidate.path), anchor })
+        report(result.error === 'unsupported' ? '自动定位需要服务升级' : result.error ?? messages[result.state] ?? messages.error!, (result.candidates ?? []).slice(0, 5).map((candidate) => candidate.path))
         return
       }
       if (!anchor) openPreviewLink(result.href, context.sessionId)
-      else {
-        const items = await buildOpenWithMenuItemsForHref(result.href, { sessionId: context.sessionId, workDir: context.workDir, t })
-        if (live() && items.length) setMenu({ items, anchor })
-      }
+      else await showMenu(result.href)
     })()
   }, [context, stamp, apiRevision, t])
-  return { activate, feedback, menu, closeMenu: () => setMenu(null) }
+  const closeMenu = useCallback(() => { pending.current?.abort(); setMenu(null) }, [])
+  return { activate, feedback, menu, closeMenu }
 }

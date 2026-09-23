@@ -194,3 +194,17 @@ describe('buildOpenWithItems – file context with inAppBrowserUrl (no previewab
     expect(deps.openInAppBrowser).toHaveBeenCalledWith(inAppBrowserUrl)
   })
 })
+
+it.each(['G:/docs/中文 文档.md', 'G:/docs/report.pdf', '/home/me/notes.txt'])('desktop default application receives the local path unchanged: %s', path => {
+  const deps = makeDeps({ canOpenSystemFile: true })
+  const items = buildOpenWithItems({ kind: 'file', absolutePath: path }, [], deps)
+  const item = items.find(item => item.id === 'system')!
+  expect(item.label).toBe('openWith.systemApp')
+  item.onSelect()
+  expect(deps.openSystem).toHaveBeenCalledWith(path)
+  expect(deps.openTarget).not.toHaveBeenCalled()
+})
+it('desktop default application remains available alongside detected editors', () => {
+  const items = buildOpenWithItems({ kind: 'file', absolutePath: 'G:/docs/a.md', relPath: 'a.md', previewable: true }, [ideTarget, fmTarget], makeDeps({ canOpenSystemFile: true }))
+  expect(items.map(item => item.id)).toEqual(['preview', 'system', 'ide:code', 'fm:finder'])
+})

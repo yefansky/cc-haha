@@ -123,7 +123,15 @@ export function useAnchoredPosition({
       return
     }
     measure()
-  }, [open, measure])
+    // Async menus can grow after their loading/error state is replaced.
+    // Recheck the viewport fit when the floating content changes size.
+    const floating = floatingRef.current
+    if (floating && typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(measure)
+      observer.observe(floating)
+      return () => observer.disconnect()
+    }
+  }, [open, measure, floatingRef])
 
   return {
     style: {
