@@ -34,6 +34,8 @@ import { openTraceDetail } from '../../lib/traceNavigation'
 import { TraceList } from '../../pages/TraceList'
 import { TraceSession } from '../../pages/TraceSession'
 import { SessionActivityButton } from '../activity/SessionActivityButton'
+import { startDesktopServerRecovery } from '../../lib/desktopServerRecovery'
+import { wsManager } from '../../api/websocket'
 
 function isChatTab(tab: Tab | undefined) {
   return tab?.type === 'session'
@@ -173,6 +175,15 @@ export function AppShell() {
       cancelled = true
     }
   }, [bootstrapNonce, fetchSettings, desktopRuntime, traceLaunch])
+
+  // Recover in place, preserving the mounted composer, tabs and session subscriptions.
+  useEffect(() => {
+    if (!ready || !desktopRuntime) return
+    return startDesktopServerRecovery({ onRecovered: () => {
+      wsManager.reconnectForServerChange()
+      void useSessionStore.getState().fetchSessions()
+    } })
+  }, [ready, desktopRuntime])
 
   // Listen for macOS native menu navigation events (About / Settings)
   useEffect(() => {

@@ -106,6 +106,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
     runtime: {
       getServerUrl: () => invoke(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl),
       getLocalAccessToken: () => invoke(ELECTRON_IPC_CHANNELS.runtimeGetLocalAccessToken),
+      onServerChanged: handler => subscribe(ELECTRON_EVENT_CHANNELS.runtimeServerChanged, () => handler()),
     },
     providerBusinesses: {
       seasun: {

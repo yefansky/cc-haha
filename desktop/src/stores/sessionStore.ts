@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { getApiContextRevision } from '../api/client'
 import {
   sessionsApi,
   type BatchDeleteSessionsResponse,
@@ -71,17 +72,19 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   fetchSessions: async (project?: string) => {
     const requestId = ++fetchSessionsRequestId
+    const apiRevision = getApiContextRevision()
+    const isCurrent = () => requestId === get().sessionListRequestId && apiRevision === getApiContextRevision()
     const runtimeRevision = useSessionRuntimeStore.getState().revision
     set({ isLoading: true, error: null, sessionListRequestId: requestId })
     try {
       const response = await sessionsApi.list(buildSessionListParams(project))
-      if (requestId !== get().sessionListRequestId) return
+      if (!isCurrent()) return
       const raw = response.sessions
       const indexStatus = response.index ?? null
       useSessionRuntimeStore.getState().syncFromSessions(raw, runtimeRevision)
       let syncedSessions: SessionListItem[] = []
       set((state) => {
-        if (requestId !== state.sessionListRequestId) return state
+        if (!isCurrent()) return state
         const sessions = mergeSessionList(
           shouldRetainRenderedSessions(indexStatus)
             ? [...raw, ...state.sessions]
@@ -97,7 +100,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       })
       syncOpenSessionTabTitles(syncedSessions)
     } catch (err) {
-      if (requestId !== get().sessionListRequestId) return
+      if (!isCurrent()) return
       set({ error: (err as Error).message, isLoading: false })
     }
   },

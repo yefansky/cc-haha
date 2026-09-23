@@ -69,6 +69,7 @@ function wasTraceErrorRecorded(error: unknown): boolean {
 function createTimeoutController(timeoutMs: number): {
   signal: AbortSignal
   clear: () => void
+  abort: (reason?: unknown) => void
 } {
   const controller = new AbortController()
   const timer = setTimeout(() => {
@@ -78,6 +79,7 @@ function createTimeoutController(timeoutMs: number): {
   return {
     signal: controller.signal,
     clear: () => clearTimeout(timer),
+    abort: reason => controller.abort(reason),
   }
 }
 
@@ -98,9 +100,49 @@ async function fetchUpstreamWithTimeout(
   // response headers. Keeping the signal alive aborts long generations mid-body.
   const timeout = createTimeoutController(timeoutMs)
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...init,
       signal: timeout.signal,
+    })
+    if (!response.body) return response
+    // reader.cancel() alone does not reliably tear down Bun's HTTP fetch body.
+    // Keep the request controller until the consumer finishes or cancels the body.
+    const reader = response.body.getReader()
+    let cancelled = false
+    let reading = false
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      reader.releaseLock()
+    }
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        reading = true
+        try {
+          const { done, value } = await reader.read()
+          if (cancelled) return
+          if (done) { release(); controller.close() }
+          else controller.enqueue(value)
+        } catch (error) {
+          if (!cancelled) { release(); controller.error(error) }
+        } finally {
+          reading = false
+          if (cancelled) release()
+        }
+      },
+      cancel(reason) {
+        cancelled = true
+        // Abort owns network teardown. A second reader.cancel races Bun's native
+        // HTTP teardown and can segfault; release only after an outstanding read settles.
+        timeout.abort(reason)
+        if (!reading) release()
+      },
+    })
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
     })
   } finally {
     timeout.clear()

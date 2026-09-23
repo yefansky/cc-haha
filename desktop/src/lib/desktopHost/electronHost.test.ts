@@ -3,6 +3,15 @@ import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS } from '../../../electro
 import { createElectronHost } from './electronHost'
 
 describe('electron desktop host', () => {
+  it('subscribes to runtime lifecycle hints without accepting a pushed server URL or credential', async () => {
+    const subscribe = vi.fn().mockResolvedValue(() => {})
+    const handler = vi.fn()
+    const host = createElectronHost({ invoke: vi.fn(), subscribe })
+    await host.runtime.onServerChanged!(handler)
+    expect(subscribe).toHaveBeenCalledWith(ELECTRON_EVENT_CHANNELS.runtimeServerChanged, expect.any(Function))
+    subscribe.mock.calls[0]![1]({ url: 'https://untrusted.example', token: 'untrusted' })
+    expect(handler).toHaveBeenCalledWith()
+  })
   it('exposes only safe Seasun status and offers no arbitrary auth payload', async () => {
     const invoke = vi.fn().mockResolvedValue({ phase: 'connected', identityConnected: true, loggedIn: true, active: false, pending: false, modelAccess: 'unknown', token: 'private', callbackUrl: 'private', completionSecret: 'private' })
     const host = createElectronHost({ invoke, subscribe: vi.fn() })

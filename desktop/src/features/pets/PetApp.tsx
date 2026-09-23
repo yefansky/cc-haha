@@ -17,6 +17,7 @@ import { useTranslation } from '../../i18n'
 import { getDesktopHost } from '../../lib/desktopHost'
 import type { DesktopPetPanelPlacement } from '../../lib/desktopHost/types'
 import { initializeDesktopServerUrl } from '../../lib/desktopRuntime'
+import { startDesktopServerRecovery } from '../../lib/desktopServerRecovery'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { BUILTIN_PETS, findBuiltinPet } from './builtinPets'
@@ -103,6 +104,7 @@ export function PetApp() {
 
   useEffect(() => {
     let cancelled = false
+    let stopRecovery: (() => void) | undefined
     void (async () => {
       try {
         await initializeDesktopServerUrl()
@@ -111,6 +113,9 @@ export function PetApp() {
           getDesktopHost().pets.list(),
         ])
         if (cancelled) return
+        stopRecovery = startDesktopServerRecovery({ onRecovered: () => {
+          void useSessionStore.getState().fetchSessions()
+        } })
         const petPreferences = preferenceResult.pet
         preferencesRef.current = petPreferences
         setPreferences(petPreferences)
@@ -124,6 +129,7 @@ export function PetApp() {
     })()
     return () => {
       cancelled = true
+      stopRecovery?.()
     }
   }, [])
 

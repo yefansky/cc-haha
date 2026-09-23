@@ -45,6 +45,53 @@ describe('proxy network settings', () => {
   beforeEach(setup)
   afterEach(teardown)
 
+  test.each(['openai_chat', 'openai_responses'] as const)(
+    '%s aborts the upstream request exactly once on downstream cancellation, without double-canceling its native body',
+    async apiFormat => {
+      const provider = await new ProviderService().addProvider({
+        presetId: 'custom', name: 'cancellation test', baseUrl: 'https://api.example.com',
+        apiKey: 'synthetic', apiFormat,
+        models: { main: 'model-main', haiku: 'model-main', sonnet: 'model-main', opus: 'model-main' },
+      })
+      const originalFetch = globalThis.fetch
+      const nativeCancel = mock(() => {})
+      let aborts = 0
+      let upstreamBody!: ReadableStream<Uint8Array>
+      globalThis.fetch = mock(async (_url: unknown, init?: RequestInit) => {
+        upstreamBody = new ReadableStream<Uint8Array>({
+          start(controller) {
+            init!.signal!.addEventListener('abort', () => {
+              aborts++
+              controller.error(new DOMException('Aborted', 'AbortError'))
+            }, { once: true })
+            const text = apiFormat === 'openai_chat'
+              ? 'data: {"id":"probe","choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n'
+              : 'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":0,"item":{"id":"item","type":"function_call","call_id":"call","name":"Edit","arguments":""}}\n\n'
+            controller.enqueue(new TextEncoder().encode(text))
+          },
+          cancel: nativeCancel,
+        })
+        return new Response(upstreamBody, { headers: { 'Content-Type': 'text/event-stream' } })
+      }) as typeof fetch
+      try {
+        const req = new Request(`http://localhost/proxy/providers/${provider.id}/v1/messages`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'model-main', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'synthetic' }] }),
+        })
+        const response = await handleProxyRequest(req, new URL(req.url))
+        const reader = response.body!.getReader()
+        expect((await reader.read()).done).toBe(false)
+        expect(aborts).toBe(0)
+        await reader.cancel('downstream stopped')
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect(aborts).toBe(1)
+        expect(nativeCancel).not.toHaveBeenCalled()
+        expect(upstreamBody.locked).toBe(false)
+        reader.releaseLock()
+      } finally { globalThis.fetch = originalFetch }
+    },
+  )
+
   test('uses configured AI request timeout for non-stream upstream requests', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'settings.json'),

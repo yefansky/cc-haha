@@ -103,19 +103,20 @@ export function openaiChatStreamToAnthropic(
   const choicesSeen = new Set<number>()
   const choicesFinished = new Set<number>()
   let doneSeen = false
+  let cancelled = false
+  const reader = upstream.getReader()
   const assertFinished = () => {
     if (options.strictStream && (!choicesSeen.size || [...choicesSeen].some(index => !choicesFinished.has(index)))) throw new Error('Upstream Chat stream ended without completed choices')
   }
 
   return new ReadableStream({
     async start(controller) {
-      const reader = upstream.getReader()
       let errored = false
 
       try {
-        while (true) {
+        while (!cancelled) {
           const { done, value } = await reader.read()
-          if (done) break
+          if (done || cancelled) break
 
           buffer += decoder.decode(value, { stream: true })
           const lines = buffer.split('\n')
@@ -159,8 +160,9 @@ export function openaiChatStreamToAnthropic(
             flushQueue(state, controller, encoder)
           }
         }
-        assertFinished()
+        if (!cancelled) assertFinished()
       } catch (err) {
+        if (cancelled) return
         errored = true
         if (options.strictStream) {
           controller.enqueue(encoder.encode(formatSse('error', {
@@ -169,13 +171,18 @@ export function openaiChatStreamToAnthropic(
           controller.close()
         } else controller.error(err)
       } finally {
-        await reader.cancel().catch(() => {})
-        if (!errored) {
+        if (!cancelled) await reader.cancel().catch(() => {})
+        reader.releaseLock()
+        if (!errored && !cancelled) {
           finalizeStream(state)
           flushQueue(state, controller, encoder)
           controller.close()
         }
       }
+    },
+    async cancel(reason) {
+      cancelled = true
+      await reader.cancel(reason).catch(() => {})
     },
   })
 }

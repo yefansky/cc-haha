@@ -471,6 +471,10 @@ describe('AppShell boot flow', () => {
     let navigate: ((sessionId: string) => void) | undefined
     window.desktopHost = {
       isDesktop: true,
+      runtime: {
+        getServerUrl: vi.fn().mockResolvedValue('http://127.0.0.1:3456'),
+        getLocalAccessToken: vi.fn().mockResolvedValue(null),
+      },
       pets: {
         show,
         onNavigateSession: vi.fn((handler: (sessionId: string) => void) => {

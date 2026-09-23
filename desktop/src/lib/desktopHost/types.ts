@@ -283,6 +283,8 @@ export type DesktopHost = {
   runtime: {
     getServerUrl(): Promise<string>
     getLocalAccessToken(): Promise<string | null>
+    /** Optional for renderers connected to a shell started before this protocol existed. */
+    onServerChanged?(handler: () => void): Promise<DesktopHostUnlisten>
   }
   app: {
     getVersion(): Promise<string>

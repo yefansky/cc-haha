@@ -110,6 +110,37 @@ describe('wsManager reconnect buffering', () => {
     expect(states).toEqual(['connecting', 'connected', 'reconnecting', 'reconnecting', 'connected'])
   })
 
+  it('switches server immediately, preserves listeners and unsent messages, and ignores obsolete sockets', async () => {
+    wsManager.connect('migrate')
+    const received = vi.fn()
+    const states: string[] = []
+    wsManager.onMessage('migrate', received)
+    wsManager.onConnectionState('migrate', state => states.push(state))
+    const old = FakeWebSocket.instances[0]!
+    old.open()
+    wsManager.send('migrate', { type: 'user_message', content: 'already sent' })
+    old.fail()
+    wsManager.send('migrate', { type: 'user_message', content: 'not yet sent' })
+    clientMocks.baseUrl = 'http://127.0.0.1:62706'
+    clientMocks.authToken = 'new-token'
+    wsManager.reconnectForServerChange()
+    const current = FakeWebSocket.instances[1]!
+    expect(current.url).toBe('ws://127.0.0.1:62706/ws/migrate?token=new-token')
+    old.receive({ type: 'status', state: 'thinking' })
+    old.open()
+    expect(received).not.toHaveBeenCalled()
+    current.open()
+    expect(current.sent).toEqual([
+      JSON.stringify({ type: 'user_message', content: 'not yet sent' }),
+      JSON.stringify({ type: 'sync_state' }),
+    ])
+    current.receive({ type: 'status', state: 'idle' })
+    expect(received).toHaveBeenCalledOnce()
+    expect(states.at(-1)).toBe('connected')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
   it.each([
     ['CONNECTING', FakeWebSocket.CONNECTING],
     ['CLOSING', FakeWebSocket.CLOSING],

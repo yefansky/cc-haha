@@ -25,6 +25,7 @@ vi.mock('../lib/recentProjectsCache', () => ({
 }))
 
 import { useSessionStore } from './sessionStore'
+import { getBaseUrl, setApiContext } from '../api/client'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
 import { useSettingsStore } from './settingsStore'
 import { useTabStore } from './tabStore'
@@ -76,6 +77,18 @@ function makeIndexStatus(
 }
 
 describe('sessionStore', () => {
+  it.each(['success', 'failure'])('discards a late %s from the old server context', async outcome => {
+    let resolve!: (value: unknown) => void
+    let reject!: (error: Error) => void
+    listMock.mockReturnValueOnce(new Promise((res, rej) => { resolve = res; reject = rej }))
+    const request = useSessionStore.getState().fetchSessions()
+    setApiContext(getBaseUrl(), null, true)
+    if (outcome === 'success') resolve({ sessions: [makeSession('obsolete', '2026-09-23')], total: 1 })
+    else reject(new Error('obsolete failure'))
+    await request
+    expect(useSessionStore.getState().sessions).toEqual([])
+    expect(useSessionStore.getState().error).toBeNull()
+  })
   beforeEach(() => {
     branchMock.mockReset()
     createMock.mockReset()

@@ -66,6 +66,7 @@ class WebSocketManager {
     this.emitConnectionState(conn, conn.state)
 
     ws.onopen = () => {
+      if (conn.intentionalClose || this.connections.get(sessionId) !== conn) return
       const isReconnect = conn.reconnectAttempt > 0
       conn.reconnectAttempt = 0
       this.emitConnectionState(conn, 'connected')
@@ -84,6 +85,7 @@ class WebSocketManager {
     }
 
     ws.onmessage = (event) => {
+      if (conn.intentionalClose || this.connections.get(sessionId) !== conn) return
       try {
         const msg = JSON.parse(event.data as string) as ServerMessage
         recordRendererProtocolBoundary(msg, 'in')
@@ -150,6 +152,20 @@ class WebSocketManager {
   disconnectAll() {
     for (const sessionId of [...this.connections.keys()]) {
       this.disconnect(sessionId)
+    }
+  }
+
+  /** Replace transports immediately; retain subscriptions and only the unsent outbox. */
+  reconnectForServerChange() {
+    for (const [sessionId, conn] of this.connections) {
+      if (conn.intentionalClose) continue
+      conn.intentionalClose = true
+      this.stopPingLoopForConnection(conn)
+      if (conn.reconnectTimer) clearTimeout(conn.reconnectTimer)
+      conn.reconnectTimer = null
+      conn.reconnectAttempt = Math.max(1, conn.reconnectAttempt)
+      conn.ws.close()
+      this.connect(sessionId)
     }
   }
 

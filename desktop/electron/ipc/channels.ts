@@ -77,6 +77,7 @@ export const ELECTRON_IPC_CHANNELS = {
 } as const
 
 export const ELECTRON_EVENT_CHANNELS = {
+  runtimeServerChanged: 'desktop:runtime:server-changed',
   gatewayStatus: 'desktop:gateway:status',
   event: 'desktop:event',
   appLocaleChanged: 'desktop:app:locale-changed',

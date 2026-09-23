@@ -97,6 +97,7 @@ import {
 
 let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
+let serverRecoverySubscribed = false
 let gatewayRuntime: GatewayTunnelRuntime | null = null
 let updaterService: ElectronUpdaterService | null = null
 let terminalService: ElectronTerminalService | null = null
@@ -244,6 +245,15 @@ function getServerRuntime() {
     diagnosticsFile: electronHostDiagnosticsFile(process.env),
     resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
   })
+  if (!serverRecoverySubscribed) {
+    serverRecoverySubscribed = true
+    serverRuntime.onServerChanged(() => {
+      if (isQuitting) return
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send(ELECTRON_EVENT_CHANNELS.runtimeServerChanged)
+      }
+    })
+  }
   return serverRuntime
 }
 

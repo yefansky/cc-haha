@@ -58,6 +58,16 @@ export function getAuthToken() {
   return authToken
 }
 
+/** Publish a recovered server and its credentials as one context generation. */
+export function setApiContext(url: string, token: string | null, force = false) {
+  const nextUrl = url.replace(/\/$/, '')
+  const nextToken = token?.trim() || null
+  if (!force && nextUrl === baseUrl && nextToken === authToken) return
+  baseUrl = nextUrl
+  authToken = nextToken
+  contextChanged()
+}
+
 export function getDefaultBaseUrl() {
   return DEFAULT_BASE_URL
 }
