@@ -1229,6 +1229,53 @@ describe('chatStore history mapping', () => {
     ])
   })
 
+  it.each(['idle', 'error'] as const)('loads persisted conversation despite a bootstrap model error (%s)', async (historyStatus) => {
+    const runtimeError: UIMessage = {
+      id: 'runtime-error', type: 'error', message: 'The selected model is not configured for this provider.', code: 'INVALID_MODEL', timestamp: 3,
+    }
+    vi.mocked(sessionsApi.getMessages).mockResolvedValueOnce({ messages: [
+      { id: 'persisted-user', type: 'user', timestamp: '2026-09-23T07:00:00.000Z', content: 'earlier question' },
+      { id: 'persisted-assistant', type: 'assistant', timestamp: '2026-09-23T07:01:00.000Z', content: [{ type: 'text', text: 'earlier answer' }] },
+    ], taskNotifications: [{
+      taskId: 'restored-agent', toolUseId: 'agent-tool', status: 'completed', summary: 'Agent completed',
+    }] })
+    useChatStore.setState({ sessions: {
+      [TEST_SESSION_ID]: makeSession({ connectionState: 'connected', historyStatus, messages: [runtimeError] }),
+    } })
+    useChatStore.getState().connectToSession(TEST_SESSION_ID, { prewarm: false })
+    await useChatStore.getState().loadHistory(TEST_SESSION_ID)
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]!
+    expect(session.historyStatus).toBe('ready')
+    expect(session.messages).toContainEqual(expect.objectContaining({ type: 'user_text', content: 'earlier question' }))
+    expect(session.messages).toContainEqual(expect.objectContaining({ type: 'assistant_text', content: 'earlier answer' }))
+    expect(session.messages).toContainEqual(runtimeError)
+    expect(sessionsApi.getMessages).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries history when a runtime error invalidates the initial request', async () => {
+    vi.useFakeTimers()
+    let resolveHistory!: (value: { messages: MessageEntry[] }) => void
+    const history: { messages: MessageEntry[] } = { messages: [
+      { id: 'old-user', type: 'user', timestamp: '2026-09-23T07:00:00.000Z', content: 'old question' },
+    ] }
+    vi.mocked(sessionsApi.getMessages)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveHistory = resolve }))
+      .mockResolvedValueOnce(history)
+    useChatStore.setState({ sessions: { [TEST_SESSION_ID]: makeSession({ messages: [] }) } })
+    const load = useChatStore.getState().loadHistory(TEST_SESSION_ID)
+    useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+      type: 'error', code: 'INVALID_MODEL', message: 'The selected model is not configured for this provider.',
+    })
+    resolveHistory(history)
+    await load
+    await vi.advanceTimersByTimeAsync(200)
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]!
+    expect(sessionsApi.getMessages).toHaveBeenCalledTimes(2)
+    expect(session.historyStatus).toBe('ready')
+    expect(session.messages).toContainEqual(expect.objectContaining({ type: 'user_text', content: 'old question' }))
+    expect(session.messages).toContainEqual(expect.objectContaining({ type: 'error', code: 'INVALID_MODEL' }))
+  })
+
   it('restores completed /goal state from transcript history after app restart', async () => {
     vi.mocked(sessionsApi.getMessages).mockResolvedValueOnce({
       messages: [

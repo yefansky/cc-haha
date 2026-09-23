@@ -1642,10 +1642,21 @@ function mergeRestoredParentToolMessages(
   return merged
 }
 
+function hasConversationHistory(messages: UIMessage[]): boolean {
+  return messages.some((message) => message.type !== 'error' && message.type !== 'background_task')
+}
+
 function mergeRestoredHistoryIntoLiveMessages(
   messages: UIMessage[],
   restoredMessages: UIMessage[],
 ): UIMessage[] {
+  // A runtime/configuration error can arrive during minimal bootstrap, before
+  // the transcript is requested. Neither it nor restored task cards are
+  // evidence of loaded conversation history.
+  if (!hasConversationHistory(messages)) {
+    const restoredIds = new Set(restoredMessages.map((message) => message.id))
+    return [...restoredMessages, ...messages.filter((message) => !restoredIds.has(message.id))]
+  }
   return mergeRestoredTerminalGoalEvents(
     mergeRestoredParentToolMessages(
       dropDuplicateTranscriptTextMessages(
@@ -1886,17 +1897,17 @@ const historyLoadAbortRetries = new Map<string, number>()
 
 // A history load aborted by a concurrent task mutation (epoch bump) used to be
 // silently dropped, leaving the session empty until the next mount/connect.
-// Retry while the session still has no messages, bounded so a stream of task
+// Retry while the session has no conversation content (errors are not history), bounded so a stream of task
 // events cannot spin the fetch loop forever.
 function scheduleAbortedHistoryLoadRetry(get: () => ChatStore, sessionId: string): void {
   const session = get().sessions[sessionId]
-  if (!session || session.messages.length > 0) return
+  if (!session || hasConversationHistory(session.messages)) return
   const attempts = (historyLoadAbortRetries.get(sessionId) ?? 0) + 1
   if (attempts > HISTORY_LOAD_ABORT_MAX_RETRIES) return
   historyLoadAbortRetries.set(sessionId, attempts)
   setTimeout(() => {
     const current = get().sessions[sessionId]
-    if (!current || current.messages.length > 0 || current.historyStatus === 'loading') return
+    if (!current || hasConversationHistory(current.messages) || current.historyStatus === 'loading') return
     void get().loadHistory(sessionId)
   }, HISTORY_LOAD_ABORT_RETRY_DELAY_MS)
 }
@@ -2022,7 +2033,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const existing = get().sessions[sessionId]
     if (existing && existing.connectionState !== 'disconnected') {
       if (
-        existing.messages.length === 0 &&
         (existing.historyStatus === 'idle' || existing.historyStatus === 'error') &&
         !options?.minimalBootstrap
       ) {
