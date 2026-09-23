@@ -594,3 +594,14 @@ describe('CurrentTurnChangeCard – collapse long file lists', () => {
     expect(screen.getByText('chat.turnChangesShowMore')).toBeInTheDocument()
   })
 })
+
+
+it('shows receipt-only files in the turn card without inventing a diff source, and deduplicates tracked paths', () => {
+  vi.clearAllMocks()
+  const checkpoint = { ...makeCheckpoint(['/w/proj/tracked.txt']), reportedFiles: ['/w/proj/tracked.txt', '/w/proj/reported.txt'] }
+  render(<CurrentTurnChangeCard sessionId="s1" checkpoint={checkpoint} workDir="/w/proj" error={null} isUndoing={false} isLatest onUndo={vi.fn()} />)
+  expect(screen.getAllByText('tracked.txt')).toHaveLength(1)
+  fireEvent.click(screen.getByText('reported.txt'))
+  expect(openPreviewSpy).toHaveBeenCalledWith('s1', 'reported.txt', 'file', expect.any(Object))
+  expect(screen.getByText('chat.turnChangesPartialCoverageSubtitle')).toBeInTheDocument()
+})

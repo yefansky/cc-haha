@@ -149,3 +149,23 @@ describe('TrackFileChanges', () => {
     expect(await Bun.file(join(project, 'new.txt')).exists()).toBe(false)
   })
 })
+
+
+test('post-write manifest reporting never creates a misleading undo baseline', async () => {
+  const file = join(getOriginalCwd(), 'changed.txt'), manifest = join(root, 'actual.json')
+  await writeFile(file, 'already changed')
+  await writeFile(manifest, JSON.stringify([file, join(getOriginalCwd(), 'deleted.txt')]))
+  const result = await TrackFileChangesTool.call({ mode: 'report', manifest_path: manifest }, context)
+  expect(result.data.reported).toEqual([])
+  expect(result.data.unverified).toHaveLength(2)
+  expect(result.data.registered).toEqual([])
+  expect(state.trackedFiles.size).toBe(0)
+  expect((await fileHistoryGetDiffStats(state, id))?.filesChanged).toEqual([])
+  const mapped = TrackFileChangesTool.mapToolResultToToolResultBlockParam(result.data, 'report')
+  expect(JSON.parse(mapped.content as string).reported).toEqual(result.data.reported)
+})
+
+
+test('report mode rejects ambiguous globs that would mark unchanged matches as edited', () => {
+  expect(TrackFileChangesTool.inputSchema.safeParse({ mode: 'report', patterns: [{ base_dir: getOriginalCwd(), include: ['**/*.txt'] }] }).success).toBe(false)
+})

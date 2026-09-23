@@ -31,6 +31,7 @@ type CurrentTurnChangeCardProps = {
 type ChangedFileEntry = {
   apiPath: string
   displayPath: string
+  reportedOnly: boolean
 }
 
 const COLLAPSED_COUNT = 5
@@ -49,13 +50,17 @@ export function CurrentTurnChangeCard({
   const [showAllFiles, setShowAllFiles] = useState(false)
 
   const files = useMemo<ChangedFileEntry[]>(
-    () => checkpoint.code.filesChanged
-      .map((filePath) => ({
-        apiPath: filePath,
-        displayPath: relativizeWorkspacePath(filePath, workDir),
-      }))
-      .sort((a, b) => Number(isPreviewableChangedFile(b.displayPath)) - Number(isPreviewableChangedFile(a.displayPath))),
-    [checkpoint.code.filesChanged, workDir],
+    () => {
+      const entries = new Map<string, ChangedFileEntry>()
+      const base = checkpoint.workDir ?? workDir
+      for (const filePath of [...checkpoint.code.filesChanged, ...(checkpoint.reportedFiles ?? [])]) {
+        const displayPath = relativizeWorkspacePath(filePath, base)
+        const key = /^[a-z]:[\\/]/i.test(base ?? '') ? displayPath.toLowerCase() : displayPath
+        if (!entries.has(key)) entries.set(key, { apiPath: filePath, displayPath, reportedOnly: !checkpoint.code.filesChanged.includes(filePath) })
+      }
+      return [...entries.values()].sort((a, b) => Number(isPreviewableChangedFile(b.displayPath)) - Number(isPreviewableChangedFile(a.displayPath)))
+    },
+    [checkpoint.code.filesChanged, checkpoint.reportedFiles, checkpoint.workDir, workDir],
   )
 
   const canCollapse = files.length > COLLAPSED_COUNT
@@ -66,7 +71,7 @@ export function CurrentTurnChangeCard({
   // Undo restores every file listed above, but a turn that also ran a writing
   // shell command may have touched files no checkpoint captured. Say so instead
   // of withholding the undo — the listed files are still exactly reversible.
-  const unverifiedChangeSources = checkpoint.unverifiedChangeSources ?? []
+  const unverifiedChangeSources = [...(checkpoint.unverifiedChangeSources ?? []), ...(files.some(file => file.reportedOnly) ? ['Shell'] : [])]
   const hasUnverifiedChanges = restoreAvailable && unverifiedChangeSources.length > 0
 
   const openChangedFile = useCallback((event: ReactMouseEvent<HTMLButtonElement>, fileEntry: ChangedFileEntry) => {
@@ -79,7 +84,7 @@ export function CurrentTurnChangeCard({
     // drive) has no checkpoint baseline, so a diff is meaningless. Render html in
     // the in-app browser and everything else as a file preview (served by its
     // absolute path). In-workdir files keep the diff view.
-    if (isAbsoluteLocalPath(fileEntry.displayPath)) {
+    if (fileEntry.reportedOnly || isAbsoluteLocalPath(fileEntry.displayPath)) {
       if (shouldOfferStaticHtmlPreview(fileEntry.displayPath, { siblingFiles: files.map((entry) => entry.displayPath) })) {
         useBrowserPanelStore.getState().open(sessionId, localFileUrl(getServerBaseUrl(), fileEntry.apiPath))
         return

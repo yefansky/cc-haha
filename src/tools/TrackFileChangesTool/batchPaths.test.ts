@@ -72,3 +72,28 @@ test('rejects escaping patterns and never executes a for expression', async () =
   const empty=await resolveTrackingPaths({patterns:[{base_dir:root,include:['for (const x of files) write(x)']}]},allowed)
   expect(empty.filePaths).toEqual([])
 })
+
+
+test('imports BOM JSON and line manifests; deduplicates deleted/new paths without requiring existence', async () => {
+  const root = await fixture()
+  const a = join(root, '中文 file.txt'), b = join(root, 'deleted.txt'), manifest = join(root, 'paths.json')
+  for (const text of ['\uFEFF' + JSON.stringify([a, b, a]), a + '\r\n' + b + '\r\n']) {
+    await writeFile(manifest, text)
+    const result = await resolveTrackingPaths({ manifest_path: manifest, file_paths: [a] }, allowed)
+    expect(result.filePaths).toEqual([a, b])
+    expect(result.failed).toEqual([])
+  }
+})
+test('manifest errors, relative paths, oversize and permission denial stay explicit', async () => {
+  const root = await fixture(), manifest = join(root, 'paths.json')
+  for (const text of ['["relative.txt"]', '{bad', JSON.stringify([12]), 'x'.repeat(1024 * 1024 + 1)]) {
+    await writeFile(manifest, text)
+    const result = await resolveTrackingPaths({ manifest_path: manifest }, allowed)
+    expect(result.filePaths).toEqual([])
+    expect(result.failed).toHaveLength(1)
+  }
+  const denied = await resolveTrackingPaths({ manifest_path: join(root, 'missing') }, { checkPath: async () => ({ allowed: false, reason: 'denied before IO' }) })
+  expect(denied.failed[0]?.reason).toBe('denied before IO')
+  await writeFile(manifest, JSON.stringify(Array.from({ length: 501 }, (_, i) => join(root, `${i}.txt`))))
+  expect((await resolveTrackingPaths({ manifest_path: manifest }, allowed)).truncated).toBe(true)
+})

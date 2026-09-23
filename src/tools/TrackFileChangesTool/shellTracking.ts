@@ -1,3 +1,4 @@
+import { beginShellChangeScan, takeRegistrationScan, type ShellChangeScan } from './shellScan.js'
 import { isAbsolute, resolve } from 'node:path'
 
 import type { ToolUseContext } from '../../Tool.js'
@@ -13,8 +14,7 @@ export async function prepareShellFileChanges(options: {
   knownReadOnly: boolean
   context: ToolUseContext
   parentMessage?: AssistantMessage
-}): Promise<void> {
-  if (!fileHistoryEnabled()) return
+}): Promise<ShellChangeScan | undefined> {
   const { context } = options
   const checkCancelled = () => {
     if (context.abortController?.signal.aborted) throw new Error('File-change registration cancelled; command was NOT executed.')
@@ -41,17 +41,30 @@ export async function prepareShellFileChanges(options: {
     trackedPaths = Object.entries(state.snapshots.at(-1)?.trackedFileBackups ?? {}).filter(([, backup]) => Boolean(backup)).map(([path]) => path)
     return state
   })
-  if (decision.behavior === 'ask' && !declaration.patterns?.length && declaration.file_paths?.length
+  if (decision.behavior === 'ask' && !declaration.manifest_path && !declaration.patterns?.length && declaration.file_paths?.length
     && declaration.file_paths.every(path => trackedPaths.some(tracked => key(tracked) === key(path)))) return
   if (decision.behavior !== 'allow') {
     throw new Error('FILE_CHANGES_PERMISSION: Command was NOT executed. First use TrackFileChanges to obtain read permission and register the targets, then retry with its registered paths in file_changes.file_paths. Denied targets cannot be registered.')
   }
+  if (!fileHistoryEnabled()) {
+    const { resolveTrackingPaths } = await import('./batchPaths.js')
+    const { checkReadPermissionForTool } = await import('../../utils/permissions/filesystem.js')
+    const { FileReadTool } = await import('../FileReadTool/FileReadTool.js')
+    const resolved = await resolveTrackingPaths(declaration, { checkPath: async path => {
+      const decision = checkReadPermissionForTool(FileReadTool, { file_path: path }, context.getAppState().toolPermissionContext)
+      return { allowed: decision.behavior === 'allow', reason: decision.behavior === 'allow' ? undefined : decision.message }
+    } })
+    if (resolved.failed.length || resolved.truncated) throw new Error('FILE_CHANGES_INCOMPLETE: Command was NOT executed. ' + JSON.stringify(resolved))
+    return beginShellChangeScan(declaration, resolved.filePaths, context, true)
+  }
   const result = await TrackFileChangesTool.call(declaration, context)
-  if (!result.data.registered.length && !result.data.failed.length && !result.data.truncated) {
+  if (!result.data.registered.length && !result.data.failed.length && !result.data.truncated && !declaration.patterns?.length) {
     throw new Error('FILE_CHANGES_EMPTY: Command was NOT executed. No targets matched. Correct the glob or provide explicit file_paths for files that will be created.')
   }
   if (result.data.failed.length || result.data.truncated) {
     throw new Error(`FILE_CHANGES_INCOMPLETE: Command was NOT executed. Correct registration targets and retry. ${JSON.stringify(result.data)}`)
   }
   checkCancelled()
+  try { return takeRegistrationScan(result.data) ?? await beginShellChangeScan(declaration, result.data.registered, context, true) }
+  catch (error) { throw new Error('FILE_CHANGES_SCAN_FAILED: Command was NOT executed. Could not read the batch baseline: ' + String(error)) }
 }

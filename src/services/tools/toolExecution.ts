@@ -1,3 +1,4 @@
+import { preserveFileChangeResultMetadata, preserveToolErrorMetadata } from './fileChangeResultMetadata.js'
 import { feature } from 'bun:bundle'
 import type {
   ContentBlockParam,
@@ -1459,7 +1460,7 @@ async function checkPermissionsAndCallTool(
           imagePasteIds: allowImageIds,
           toolUseResult:
             toolUseContext.agentId && !toolUseContext.preserveToolUseResults
-              ? undefined
+              ? preserveFileChangeResultMetadata(tool.name, toolUseResult)
               : toolUseResult,
           mcpMeta: toolUseContext.agentId ? undefined : mcpMeta,
           sourceToolAssistantUUID: assistantMessage.uuid,
@@ -1723,7 +1724,7 @@ async function checkPermissionsAndCallTool(
               tool_use_id: toolUseID,
             },
           ],
-          toolUseResult: `Error: ${content}`,
+          toolUseResult: preserveToolErrorMetadata(error, content),
           mcpMeta: toolUseContext.agentId
             ? undefined
             : error instanceof

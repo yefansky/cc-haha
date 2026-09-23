@@ -1,3 +1,5 @@
+import { processToolResultBlock } from '../../utils/toolResultStorage.js'
+import { formatError } from '../../utils/toolErrors.js'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { randomUUID, type UUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -151,8 +153,9 @@ test('keeps explicitly disabled history compatible without false registration', 
   expect(state.trackedFiles.size).toBe(0)
 })
 
-test('does not run a command when a glob selects zero targets', async () => {
-  await expect(BashTool.call({ command: 'exit 0', file_changes: { patterns: [{ base_dir: join(root, 'files'), include: ['*.missing'] }] } }, context, undefined, parent)).rejects.toThrow('FILE_CHANGES_EMPTY')
+test('an empty existing glob scope is a valid baseline for newly created files', async () => {
+  const result = await BashTool.call({ command: 'exit 0', file_changes: { patterns: [{ base_dir: join(root, 'files'), include: ['*.missing'] }] } }, context, undefined, parent)
+  expect(result.data.fileChangeReport).toContain('"reported":[]')
   expect(state.trackedFiles.size).toBe(0)
 })
 
@@ -173,4 +176,69 @@ test('does not reuse an old snapshot after permissions are checked in a new turn
     return { toolPermissionContext: permissions } as ReturnType<ToolUseContext['getAppState']>
   }
   await expect(prepareShellFileChanges({ fileChanges: { file_paths: [path] }, knownReadOnly: false, context, parentMessage: parent })).rejects.toThrow('FILE_CHANGES_PERMISSION')
+})
+
+
+test.each(executableTools)('$name imports a real Python completion manifest and preserves it outside a truncated output preview', async tool => {
+  const path = join(root, 'files', '动态.txt'), manifest = join(root, 'actual.json')
+  const python = Bun.which('python')!.replaceAll('\\', '/')
+  const script = join(root, 'writer.py')
+  await writeFile(script, 'from pathlib import Path\nimport json,sys\np=Path(sys.argv[1]); p.write_text("changed")\nPath(sys.argv[2]).write_text(json.dumps([str(p)]),encoding="utf-8")\nprint("x"*50000)\n')
+  const command = `${tool.name === 'PowerShell' ? '& ' : ''}'${python}' '${script.replaceAll('\\', '/')}' '${path.replaceAll('\\', '/')}' '${manifest.replaceAll('\\', '/')}'`
+  const result = await tool.call({ command, file_changes: { file_paths: [path] }, file_changes_manifest: manifest }, context, undefined, parent)
+  expect(result.data.fileChangeReport).toContain('file_changes_report: ')
+  const report = JSON.parse(result.data.fileChangeReport!.split('file_changes_report: ')[1]!.split('\n')[0]!)
+  expect(report.reported).toEqual([path])
+  expect(state.trackedFiles.size).toBe(1)
+  const mapped = tool.mapToolResultToToolResultBlockParam(result.data, 'call')
+  expect(mapped.content).toContain('file_changes_report: ')
+  // A stale manifest must not cause a future failed command to inherit edits.
+  await expect(tool.call({ command: 'exit 0', file_changes_manifest: manifest }, context, undefined, parent)).rejects.toThrow('already exists')
+})
+
+test.each(executableTools)('$name reports partial writes even when Python exits nonzero', async tool => {
+  const path = join(root, 'files', 'partial.txt'), manifest = join(root, 'partial.json')
+  const python = Bun.which('python')!.replaceAll('\\', '/')
+  const script = join(root, 'partial.py')
+  await writeFile(script, 'from pathlib import Path\nimport json,sys\np=Path(sys.argv[1]); p.write_text("partial")\nPath(sys.argv[2]).write_text(json.dumps([str(p)]),encoding="utf-8")\nsys.exit(3)\n')
+  const command = `${tool.name === 'PowerShell' ? '& ' : ''}'${python}' '${script.replaceAll('\\', '/')}' '${path.replaceAll('\\', '/')}' '${manifest.replaceAll('\\', '/')}'`
+  try { await tool.call({ command, file_changes: { file_paths: [path] }, file_changes_manifest: manifest }, context, undefined, parent); throw new Error('expected failure') }
+  catch (error) {
+    expect(formatError(error)).toContain('file_changes_report: ')
+  }
+})
+
+test('a planned manifest captures the pre-write baseline and new files', async () => {
+  const path = join(root, 'files', 'old.txt'), created = join(root, 'files', 'new.txt'), manifest = join(root, 'planned.json')
+  await writeFile(path, 'before')
+  await writeFile(manifest, JSON.stringify([path, created]))
+  await prepareShellFileChanges({ fileChanges: { manifest_path: manifest }, knownReadOnly: false, context })
+  await writeFile(path, 'after'); await writeFile(created, 'new')
+  expect((await fileHistoryGetDiffStats(state, id))?.filesChanged).toHaveLength(2)
+})
+
+
+test('persistent output keeps the full bounded inventory in the transcript', async () => {
+  const reported = Array.from({ length: 500 }, (_, i) => join(root, 'files', `changed-${i}.txt`))
+  const report = 'file_changes_report: ' + JSON.stringify({ reported, failed: [], truncated: false })
+  const result = await processToolResultBlock(BashTool, { stdout: 'x'.repeat(35000), stderr: '', interrupted: false, fileChangeReport: report }, 'large-inventory')
+  expect(result.content).toContain(report)
+  expect(result.content).toContain('<persisted-output>')
+})
+
+
+test.each(executableTools)('$name automatically rescans globs, catches new/deleted files and ignores timestamp-only touches', async tool => {
+  const directory = join(root, 'files')
+  for (const name of ['edited.txt', 'deleted.txt', 'touched.txt']) await writeFile(join(directory, name), 'before')
+  const python = Bun.which('python')!.replaceAll('\\', '/')
+  const script = join(root, 'glob-writer.py')
+  await writeFile(script, 'from pathlib import Path\nimport sys,os\nr=Path(sys.argv[1])\n(r/"edited.txt").write_text("after")\n(r/"deleted.txt").unlink()\n(r/"touched.txt").touch()\n(r/"created.txt").write_text("new")\nos.utime(r/"created.txt",(1,1))\nsys.exit(int(sys.argv[2]))\n')
+  const command = `${tool.name === 'PowerShell' ? '& ' : ''}'${python}' '${script.replaceAll('\\', '/')}' '${directory.replaceAll('\\', '/')}' 0`
+  const result = await tool.call({ command, file_changes: { patterns: [{ base_dir: directory, include: ['*.txt'] }] } }, context, undefined, parent)
+  const report = JSON.parse(result.data.fileChangeReport!.split('file_changes_report: ')[1]!.split('\n')[0]!)
+  expect(report.reported.sort()).toEqual(['edited.txt', 'deleted.txt', 'created.txt'].map(name => join(directory, name)).sort())
+  expect(report.failed).toEqual([])
+  expect(report.truncated).toBe(false)
+  // Only pre-existing targets have backups; the new match remains report-only.
+  expect((await fileHistoryGetDiffStats(state, id))?.filesChanged).toHaveLength(2)
 })

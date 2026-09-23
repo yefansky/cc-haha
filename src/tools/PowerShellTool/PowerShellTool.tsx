@@ -1,6 +1,8 @@
+import { finishShellChangeScan } from '../TrackFileChangesTool/shellScan.js';
 import { feature } from 'bun:bundle';
+import { finishShellFileChanges, prepareShellChangeManifest } from '../TrackFileChangesTool/shellReport.js';
 import { prepareShellFileChanges } from '../TrackFileChangesTool/shellTracking.js';
-import { shellFileChangesSchema } from '../TrackFileChangesTool/trackingSchema.js';
+import { shellFileChangesSchema, shellManifestSchema } from '../TrackFileChangesTool/trackingSchema.js';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
 import * as React from 'react';
@@ -228,6 +230,7 @@ isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS);
 const fullInputSchema = lazySchema(() => z.strictObject({
   command: z.string().describe('The PowerShell command to execute'),
   file_changes: shellFileChangesSchema.optional(),
+  file_changes_manifest: shellManifestSchema.optional(),
   timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),
   description: z.string().optional().describe('Clear, concise description of what this command does in active voice.'),
   run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run this command in the background. Use Read to read the output later.`),
@@ -244,6 +247,7 @@ type InputSchema = ReturnType<typeof inputSchema>;
 // (even when it's omitted from the schema, the code needs to handle it)
 export type PowerShellToolInput = z.infer<ReturnType<typeof fullInputSchema>>;
 const outputSchema = lazySchema(() => z.object({
+  fileChangeReport: z.string().optional(),
   stdout: z.string().describe('The standard output of the command'),
   stderr: z.string().describe('The standard error output of the command'),
   interrupted: z.boolean().describe('Whether the command was interrupted'),
@@ -382,6 +386,7 @@ export const PowerShellTool = buildTool({
   renderToolResultMessage,
   renderToolUseErrorMessage,
   mapToolResultToToolResultBlockParam({
+    fileChangeReport,
     interrupted,
     stdout,
     stderr,
@@ -431,7 +436,7 @@ export const PowerShellTool = buildTool({
     return {
       tool_use_id: toolUseID,
       type: 'tool_result' as const,
-      content: [processedStdout, errorMessage, backgroundInfo].filter(Boolean).join('\n'),
+      content: [fileChangeReport, processedStdout, errorMessage, backgroundInfo].filter(Boolean).join('\n'),
       is_error: interrupted
     };
   },
@@ -445,7 +450,10 @@ export const PowerShellTool = buildTool({
     if (isWindowsSandboxPolicyViolation()) {
       throw new Error(WINDOWS_SANDBOX_POLICY_REFUSAL);
     }
-    await prepareShellFileChanges({ fileChanges: input.file_changes, knownReadOnly: this.isReadOnly(input), context: toolUseContext, parentMessage: _parentMessage });
+    await prepareShellChangeManifest(input.file_changes_manifest);
+    const changeScan = await prepareShellFileChanges({ fileChanges: input.file_changes, knownReadOnly: this.isReadOnly(input), context: toolUseContext, parentMessage: _parentMessage });
+    const commandWindowStart = new Date().toISOString();
+    if (changeScan) changeScan.startedAt = commandWindowStart;
     const {
       abortController,
       setAppState,
@@ -487,6 +495,10 @@ export const PowerShellTool = buildTool({
         }
       } while (!generatorResult.done);
       const result = generatorResult.value;
+      const commandWindow = { startedAt: commandWindowStart, finishedAt: new Date().toISOString() };
+      if (changeScan) changeScan.finishedAt = commandWindow.finishedAt;
+      const changeReport = [await finishShellFileChanges(input.file_changes_manifest, Boolean(result.backgroundTaskId), toolUseContext, commandWindow), await finishShellChangeScan(changeScan, Boolean(result.backgroundTaskId), toolUseContext)].filter(Boolean).join('\n') || (!input.file_changes && !this.isReadOnly(input) ? 'FILE_CHANGES_UNVERIFIED: If this command changed files, call TrackFileChanges mode="report" with the actual file_paths or manifest_path before completing the task. Missing baselines remain unverified. For future writes provide file_changes.file_paths or narrow file_changes.patterns before execution; manifests alone cannot prove a change.' : '');
+
 
       // Feed git/PR usage metrics (same counters as BashTool). PS invokes
       // git/gh/glab/curl as external binaries with identical syntax, so the
@@ -537,6 +549,7 @@ export const PowerShellTool = buildTool({
         }
         return {
           data: {
+            fileChangeReport: changeReport,
             stdout: bgExtracted.stripped,
             stderr: [result.stderr || '', stderrForShellReset].filter(Boolean).join('\n'),
             interrupted: false,
@@ -583,7 +596,7 @@ export const PowerShellTool = buildTool({
         throw new Error(result.preSpawnError);
       }
       if (interpretation.isError && !isInterrupt) {
-        throw new ShellError(stdout, result.stderr || '', result.code, result.interrupted);
+        throw new ShellError(stdout, result.stderr || '', result.code, result.interrupted, changeReport);
       }
 
       // Large output: file on disk has more than getMaxOutputLength() bytes.
@@ -645,6 +658,7 @@ export const PowerShellTool = buildTool({
       });
       return {
         data: {
+          fileChangeReport: changeReport,
           stdout: compressedStdout,
           stderr: finalStderr,
           interrupted: result.interrupted,

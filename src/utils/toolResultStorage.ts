@@ -222,6 +222,7 @@ export async function processToolResultBlock<T>(
     toolResultBlock,
     tool.name,
     getPersistenceThreshold(tool.name, tool.maxResultSizeChars),
+    toolUseResult,
   )
 }
 
@@ -273,6 +274,7 @@ async function maybePersistLargeToolResult(
   toolResultBlock: ToolResultBlockParam,
   toolName: string,
   persistenceThreshold?: number,
+  runtimeResult?: unknown,
 ): Promise<ToolResultBlockParam> {
   // Check size first before doing any async work - most tool results are small
   const content = toolResultBlock.content
@@ -330,7 +332,19 @@ async function maybePersistLargeToolResult(
     thresholdUsed: threshold,
   })
 
-  return { ...toolResultBlock, content: message }
+  // Preserve only the runtime inventory for the model. Console text can contain
+  // old or forged receipts and must not be promoted into this summary.
+  let receipt = ''
+  if (runtimeResult && typeof runtimeResult === 'object') {
+    const data = runtimeResult as Record<string, unknown>
+    if (toolName === 'TrackFileChanges' && data.evidence_version === 1) {
+      const serialized = JSON.stringify(data)
+      if (serialized.length <= 100_000) receipt = serialized + '\n'
+    } else if (['Bash', 'PowerShell'].includes(toolName) && typeof data.fileChangeReport === 'string') {
+      if (data.fileChangeReport.length <= 200_000) receipt = data.fileChangeReport + '\n'
+    }
+  }
+  return { ...toolResultBlock, content: receipt + message }
 }
 
 /**

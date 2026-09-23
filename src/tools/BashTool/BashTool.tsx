@@ -1,6 +1,8 @@
+import { finishShellChangeScan } from '../TrackFileChangesTool/shellScan.js';
 import { feature } from 'bun:bundle';
+import { finishShellFileChanges, prepareShellChangeManifest } from '../TrackFileChangesTool/shellReport.js';
 import { prepareShellFileChanges } from '../TrackFileChangesTool/shellTracking.js';
-import { shellFileChangesSchema } from '../TrackFileChangesTool/trackingSchema.js';
+import { shellFileChangesSchema, shellManifestSchema } from '../TrackFileChangesTool/trackingSchema.js';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
 import * as React from 'react';
@@ -227,6 +229,7 @@ isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS);
 const fullInputSchema = lazySchema(() => z.strictObject({
   command: z.string().describe('The command to execute'),
   file_changes: shellFileChangesSchema.optional(),
+  file_changes_manifest: shellManifestSchema.optional(),
   timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),
   description: z.string().optional().describe(`Clear, concise description of what this command does in active voice. Never use words like "complex" or "risk" in the description - just describe what it does.
 
@@ -278,6 +281,7 @@ function getCommandTypeForLogging(command: string): AnalyticsMetadata_I_VERIFIED
   return 'other' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS;
 }
 const outputSchema = lazySchema(() => z.object({
+  fileChangeReport: z.string().optional(),
   stdout: z.string().describe('The standard output of the command'),
   stderr: z.string().describe('The standard error output of the command'),
   rawOutputPath: z.string().optional().describe('Path to raw output file for large MCP tool outputs'),
@@ -554,6 +558,7 @@ export const BashTool = buildTool({
     return stderr ? `${stdout}\n${stderr}` : stdout;
   },
   mapToolResultToToolResultBlockParam({
+    fileChangeReport,
     interrupted,
     stdout,
     stderr,
@@ -618,7 +623,7 @@ export const BashTool = buildTool({
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: [processedStdout, errorMessage, backgroundInfo].filter(Boolean).join('\n'),
+      content: [fileChangeReport, processedStdout, errorMessage, backgroundInfo].filter(Boolean).join('\n'),
       is_error: interrupted
     };
   },
@@ -628,7 +633,10 @@ export const BashTool = buildTool({
     if (input._simulatedSedEdit) {
       return applySedEdit(input._simulatedSedEdit, toolUseContext, parentMessage);
     }
-    await prepareShellFileChanges({ fileChanges: input.file_changes, knownReadOnly: this.isReadOnly(input), context: toolUseContext, parentMessage });
+    await prepareShellChangeManifest(input.file_changes_manifest);
+    const changeScan = await prepareShellFileChanges({ fileChanges: input.file_changes, knownReadOnly: this.isReadOnly(input), context: toolUseContext, parentMessage });
+    const commandWindowStart = new Date().toISOString();
+    if (changeScan) changeScan.startedAt = commandWindowStart;
     const {
       abortController,
       getAppState,
@@ -641,6 +649,7 @@ export const BashTool = buildTool({
     let progressCounter = 0;
     let wasInterrupted = false;
     let result: ExecResult;
+    let changeReport = '';
     const isMainThread = !toolUseContext.agentId;
     const preventCwdChanges = !isMainThread;
     try {
@@ -682,6 +691,10 @@ export const BashTool = buildTool({
 
       // Get the final result from the generator's return value
       result = generatorResult.value;
+      const commandWindow = { startedAt: commandWindowStart, finishedAt: new Date().toISOString() };
+      if (changeScan) changeScan.finishedAt = commandWindow.finishedAt;
+      changeReport = [await finishShellFileChanges(input.file_changes_manifest, Boolean(result.backgroundTaskId), toolUseContext, commandWindow), await finishShellChangeScan(changeScan, Boolean(result.backgroundTaskId), toolUseContext)].filter(Boolean).join('\n') || (!input.file_changes && !this.isReadOnly(input) ? 'FILE_CHANGES_UNVERIFIED: If this command changed files, call TrackFileChanges mode="report" with the actual file_paths or manifest_path before completing the task. Missing baselines remain unverified. For future writes provide file_changes.file_paths or narrow file_changes.patterns before execution; manifests alone cannot prove a change.' : '');
+
       trackGitOperations(input.command, result.code, result.stdout);
       const isInterrupt = result.interrupted && abortController.signal.reason === 'interrupt';
 
@@ -717,7 +730,7 @@ export const BashTool = buildTool({
         // stderr is merged into stdout (merged fd); outputWithSbFailures
         // already has the full output. Pass '' for stdout to avoid
         // duplication in getErrorParts() and processBashCommand.
-        throw new ShellError('', outputWithSbFailures, result.code, result.interrupted);
+        throw new ShellError('', outputWithSbFailures, result.code, result.interrupted, changeReport);
       }
       wasInterrupted = result.interrupted;
     } finally {
@@ -803,6 +816,7 @@ export const BashTool = buildTool({
       }
     }
     const data: Out = {
+      fileChangeReport: changeReport,
       stdout: compressedStdout,
       stderr: stderrForShellReset,
       interrupted: wasInterrupted,

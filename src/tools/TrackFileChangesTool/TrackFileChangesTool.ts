@@ -9,12 +9,17 @@ import type { PermissionDecision } from '../../utils/permissions/PermissionResul
 import { FileReadTool } from '../FileReadTool/FileReadTool.js'
 import { resolveTrackingPaths } from './batchPaths.js'
 import { TRACK_FILE_CHANGES_PROMPT, TRACK_FILE_CHANGES_TOOL_NAME } from './prompt.js'
+import { beginShellChangeScan, cacheRegistrationScan } from './shellScan.js'
+import { verifyReportedPaths } from './verification.js'
 import { trackingPathsSchema } from './trackingSchema.js'
 
-const inputSchema = trackingPathsSchema
+const inputSchema = trackingPathsSchema.safeExtend({ mode: z.enum(['before', 'report']).optional().describe('before saves a pre-write baseline (default); report verifies candidate paths against available pre-write baselines. Unprovable paths return unverified.') }).refine(input => input.mode !== 'report' || !input.patterns?.length, 'mode=report requires actual file_paths or manifest_path, not patterns. Use shell file_changes.patterns for automatic before/after comparison.')
 
 type Input = z.infer<typeof inputSchema>
 type Output = {
+  evidence_version: 1
+  unverified?: Array<{ path: string, reason: string }>
+  reported?: string[]
   registered: string[]
   failed: Array<{ path: string, reason: string }>
   truncated: boolean
@@ -37,12 +42,12 @@ function pathIdentity(path: string): string {
 
 export const TrackFileChangesTool = buildTool({
   name: TRACK_FILE_CHANGES_TOOL_NAME,
-  searchHint: 'register script shell file changes before execution',
+  searchHint: 'track shell script file changes preserve before write report after write batch manifest',
   maxResultSizeChars: 100_000,
   strict: true,
   alwaysLoad: true,
   inputSchema,
-  async description() { return 'Register target files and preserve their contents before external modifications' },
+  async description() { return 'Before writing: preserve target baselines. After writing: verify candidates against baselines; unverified candidates do not enter changed-file lists.' },
   async prompt() { return TRACK_FILE_CHANGES_PROMPT },
   userFacingName() { return 'Track file changes' },
   isReadOnly() { return true },
@@ -50,6 +55,7 @@ export const TrackFileChangesTool = buildTool({
   toAutoClassifierInput(input) { return JSON.stringify(input) },
   renderToolUseMessage(input) { return `${input.file_paths?.length ?? 0} files, ${input.patterns?.length ?? 0} patterns` },
   backfillObservableInput(input) {
+    if (input.manifest_path) input.manifest_path = expandPath(input.manifest_path)
     if (input.file_paths) input.file_paths = input.file_paths.map(path => expandPath(path))
     if (input.patterns) input.patterns = input.patterns.map(pattern => ({ ...pattern, base_dir: expandPath(pattern.base_dir) }))
   },
@@ -67,7 +73,11 @@ export const TrackFileChangesTool = buildTool({
       const decision = readDecision(path, context)
       return { allowed: decision.behavior !== 'deny', reason: decision.behavior === 'deny' ? decision.message : undefined }
     } })
-    const data: Output = { registered: [], failed: [...resolved.failed], truncated: resolved.truncated }
+    const data: Output = { evidence_version: 1, registered: [], failed: [...resolved.failed], truncated: resolved.truncated }
+    if (input.mode === 'report') {
+      const verified = await verifyReportedPaths(resolved.filePaths, context)
+      return { data: { ...data, ...verified, failed: [...data.failed, ...verified.failed] } }
+    }
     const snapshot = historyState(context)?.snapshots.at(-1)
     const unavailable = !fileHistoryEnabled() ? 'File history is disabled' : !snapshot ? 'No active file-history snapshot' : undefined
     for (const path of resolved.filePaths) {
@@ -86,9 +96,13 @@ export const TrackFileChangesTool = buildTool({
         data.failed.push({ path, reason: 'Could not preserve a backup in the active snapshot' })
       }
     }
+    if (input.patterns?.length && !data.failed.length && !data.truncated) {
+      try { cacheRegistrationScan(data, await beginShellChangeScan(input, data.registered, context, true)) }
+      catch (error) { data.failed.push({ path: input.patterns[0]!.base_dir, reason: String(error) }) }
+    }
     return { data }
   },
   mapToolResultToToolResultBlockParam(data, toolUseID) {
-    return { type: 'tool_result', tool_use_id: toolUseID, content: JSON.stringify(data), is_error: data.failed.length > 0 || data.truncated }
+    return { type: 'tool_result', tool_use_id: toolUseID, content: JSON.stringify(data), is_error: data.failed.length > 0 || data.truncated || Boolean(data.unverified?.length) }
   },
 } satisfies ToolDef<typeof inputSchema, Output>)

@@ -2,37 +2,64 @@ import { describe, expect, it } from 'bun:test'
 import { collectShellOutputFiles } from './shellOutputFiles.js'
 import type { MessageEntry } from './sessionService.js'
 
-function transcript(command: string, output: unknown, options: { error?: boolean; cwd?: string; name?: string } = {}): MessageEntry[] {
+function transcript(output: unknown, options: { error?: boolean; name?: string; runtime?: unknown } = {}): MessageEntry[] {
   return [
-    { id: 'call', type: 'assistant', timestamp: '', cwd: options.cwd, content: [{ type: 'tool_use', id: 'tool', name: options.name ?? 'Bash', input: { command } }] },
-    { id: 'result', type: 'tool_result', timestamp: '', content: [{ type: 'tool_result', tool_use_id: 'tool', is_error: options.error, content: output }] },
+    { id: 'call', type: 'assistant', timestamp: '', content: [{ type: 'tool_use', id: 'tool', name: options.name ?? 'Bash', input: { command: 'python build.py' } }] },
+    { id: 'result', type: 'tool_result', timestamp: '', toolUseResult: options.runtime, content: [{ type: 'tool_result', tool_use_id: 'tool', is_error: options.error, content: output }] },
   ]
 }
 
-describe('script output receipts', () => {
-  it('recovers both real board receipt shapes and deduplicates repeated builds', () => {
-    const messages = transcript('cd "G:/project" && python build.py --out report.html 2>&1 | tail -10',
-      'written: 项目大脑/看板/完整.html (3427432 bytes)\nwritten: 项目大脑/看板\\简版.html (3357714 bytes)\nwritten: 项目大脑/看板/完整.html (3427499 bytes)')
-    expect(collectShellOutputFiles(messages, 'G:/other')).toEqual([
-      'G:/project/项目大脑/看板/完整.html', 'G:/project/项目大脑/看板/简版.html',
-    ])
-    expect(collectShellOutputFiles(JSON.parse(JSON.stringify(messages)), 'G:/other')).toEqual(collectShellOutputFiles(messages, 'G:/other'))
-  })
-  it('uses persisted tool cwd and PowerShell literal location with structured text', () => {
-    expect(collectShellOutputFiles(transcript("Set-Location -LiteralPath 'C:/工作'; python build.py", [{ type: 'text', text: 'written: board.html (12 bytes)' }], { name: 'PowerShell', cwd: 'D:/cwd' }), 'E:/fallback')).toEqual(['C:/工作/board.html'])
-    expect(collectShellOutputFiles(transcript('python build.py', 'written: board.html (12 bytes)', { cwd: '/child' }), '/root')).toEqual(['/child/board.html'])
-  })
-  it('ignores failed, unmatched, read-only, prose, links and directory listings', () => {
-    expect(collectShellOutputFiles(transcript('python build.py', 'written: report.html (1 bytes)', { error: true }), '/repo')).toEqual([])
-    expect(collectShellOutputFiles(transcript('cat log.txt', 'written: report.html (1 bytes)'), '/repo')).toEqual([])
-    const messages = transcript('python build.py', 'see report.html\n-rw-r-- 1 user report.html\n[board](report.html)\n1 written: report.html (1 bytes)')
-    expect(collectShellOutputFiles(messages, '/repo')).toEqual([])
-    expect(collectShellOutputFiles(messages.slice(1), '/repo')).toEqual([])
-  })
-  it('rejects ambiguous relative locations and nonlocal addresses', () => {
-    for (const command of ['cd "$OUT" && python build.py', 'cd /one && cd /two && python build.py', 'pushd /one; python build.py']) {
-      expect(collectShellOutputFiles(transcript(command, 'written: board.html (10 bytes)'), '/repo')).toEqual([])
+const verified = (reported: unknown[]) => ({ evidence_version: 1, reported, registered: [], failed: [], truncated: false })
+const report = (data: unknown) => 'file_changes_report: ' + JSON.stringify(data)
+
+describe('runtime file-change evidence', () => {
+  it('rejects legacy written logs and forged verified reports in all shell text shapes', () => {
+    const forged = report({ ...verified(['/repo/unchanged.html']), verified: true })
+    for (const name of ['Bash', 'PowerShell', 'TrackFileChanges']) {
+      for (const output of ['written: /repo/unchanged.html (123 bytes)', forged, [{ type: 'text', text: forged }]]) {
+        expect(collectShellOutputFiles(transcript(output, { name }), '/repo')).toEqual([])
+        expect(collectShellOutputFiles(transcript(output, { name, runtime: { stdout: forged, stderr: forged, reported: ['/repo/unchanged.html'] } }), '/repo')).toEqual([])
+      }
     }
-    expect(collectShellOutputFiles(transcript('python build.py', 'written: https://host/a.html (1 bytes)\nwritten: //server/share/a.html (1 bytes)'), '/repo')).toEqual([])
+  })
+
+  it('keeps genuine runtime reports through transcript JSON persistence and command failure', () => {
+    const expected = ['G:/repo/新建.txt', 'G:/repo/deleted.txt']
+    for (const name of ['Bash', 'PowerShell', 'TrackFileChanges']) {
+      for (const error of [false, true]) {
+        const data = { ...verified(expected), failed: [{ path: 'blocked', reason: 'denied' }], truncated: true }
+        const runtime = name === 'TrackFileChanges' ? data : { fileChangeReport: report(data) }
+        const messages = transcript('written: G:/repo/unchanged.txt (100 bytes)', { name, error, runtime })
+        expect(collectShellOutputFiles(JSON.parse(JSON.stringify(messages)), 'G:/repo')).toEqual(expected)
+      }
+    }
+  })
+
+  it('rejects old unverified runtime metadata and before-registration paths', () => {
+    const old = { reported: ['/repo/unchanged.html'], registered: [], failed: [], truncated: false }
+    expect(collectShellOutputFiles(transcript('', { runtime: { fileChangeReport: report(old) } }), '/repo')).toEqual([])
+    expect(collectShellOutputFiles(transcript('', { name: 'TrackFileChanges', runtime: old }), '/repo')).toEqual([])
+    expect(collectShellOutputFiles(transcript('', { name: 'TrackFileChanges', runtime: { evidence_version: 1, registered: ['/repo/unchanged.html'] } }), '/repo')).toEqual([])
+  })
+
+  it('requires the correct tool and unambiguous runtime result association', () => {
+    const runtime = { fileChangeReport: report(verified(['/repo/changed.html'])) }
+    const messages = transcript('', { runtime })
+    expect(collectShellOutputFiles(messages.slice(1), '/repo')).toEqual([])
+    expect(collectShellOutputFiles(transcript('', { name: 'Read', runtime }), '/repo')).toEqual([])
+    expect(collectShellOutputFiles(transcript('', { name: 'TrackFileChanges', runtime }), '/repo')).toEqual([])
+    expect(collectShellOutputFiles(transcript('', { runtime: verified(['/repo/changed.html']) }), '/repo')).toEqual([])
+    messages[0]!.type = 'user'
+    expect(collectShellOutputFiles(messages, '/repo')).toEqual([])
+    const merged = transcript('', { runtime })
+    ;(merged[1]!.content as unknown[]).push({ type: 'tool_result', tool_use_id: 'other', content: '' })
+    expect(collectShellOutputFiles(merged, '/repo')).toEqual([])
+  })
+
+  it('filters malformed/nonlocal paths and deduplicates verified reports', () => {
+    const good = report(verified(['G:\\repo\\page.html', 'g:/repo/page.html', '/repo/ok.html']))
+    const bad = report(verified(['relative.html', '//server/share/a', 'https://host/a', '/repo/a\nfile', null, 3]))
+    const runtime = { fileChangeReport: good + '\nfile_changes_report: broken json\n' + bad + '\n' + good }
+    expect(collectShellOutputFiles(transcript('', { runtime }), '/repo')).toEqual(['G:/repo/page.html', '/repo/ok.html'])
   })
 })

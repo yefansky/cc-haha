@@ -166,7 +166,7 @@ export type SessionMessageReplacementResult = {
 export const MESSAGE_REPLACEMENT_STOP_TIMEOUT_MS = 250
 
 export type SessionTurnCheckpointPreview = SessionRewindPreview & {
-  /** Successful shell output receipts; display only, never undo evidence. */
+  /** Completed shell writes and explicit change reports (including partial failures); never undo evidence. */
   reportedFiles?: string[]
   workDir: string
   restoreAvailable: boolean

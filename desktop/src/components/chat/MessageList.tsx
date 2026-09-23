@@ -1120,7 +1120,7 @@ function buildTurnCardInsertionMap(
 
   const cardsByRenderIndex = new Map<number, TurnChangeCardModel[]>()
   turnChangeCards.forEach((card) => {
-    if (card.checkpoint.code.filesChanged.length === 0) return
+    if (card.checkpoint.code.filesChanged.length === 0 && !card.checkpoint.reportedFiles?.length) return
     const renderIndex =
       lastResponseIndexByTurnId.get(card.target.uiMessageId) ??
       userIndexByTurnId.get(card.target.uiMessageId)
@@ -2817,7 +2817,7 @@ export function MessageList({ sessionId, compact = false, mobileLayout = false }
             const target =
               targetByTranscriptMessageId.get(checkpoint.target.targetUserMessageId) ??
               targetByUserMessageIndex.get(checkpoint.target.userMessageIndex)
-            if (!target || !checkpoint.code.available) {
+            if (!target || (!checkpoint.code.available && !checkpoint.reportedFiles?.length)) {
               return []
             }
             return [{

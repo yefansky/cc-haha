@@ -9,16 +9,17 @@ export function formatError(error: unknown): string {
   if (!(error instanceof Error)) {
     return String(error)
   }
+  const report = error instanceof ShellError && error.fileChangeReport ? error.fileChangeReport + '\n' : ''
   const parts = getErrorParts(error)
   const fullMessage =
     parts.filter(Boolean).join('\n').trim() || 'Command failed with no output'
   if (fullMessage.length <= 10000) {
-    return fullMessage
+    return report + fullMessage
   }
   const halfLength = 5000
   const start = fullMessage.slice(0, halfLength)
   const end = fullMessage.slice(-halfLength)
-  return `${start}\n\n... [${fullMessage.length - 10000} characters truncated] ...\n\n${end}`
+  return report + `${start}\n\n... [${fullMessage.length - 10000} characters truncated] ...\n\n${end}`
 }
 
 export function getErrorParts(error: Error): string[] {
