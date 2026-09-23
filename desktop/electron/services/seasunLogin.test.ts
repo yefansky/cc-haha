@@ -1,10 +1,13 @@
 import { EventEmitter } from 'node:events'
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SeasunLoginService, createSeasunBackendRequest, isSeasunCallback, isSeasunLoginUrl, isSeasunIpcSource, isSeasunIpcSender } from './seasunLogin'
+import { SeasunLoginService, createSeasunBackendRequest, isSeasunCallback, isSeasunLoginUrl, isSeasunIpcSource, isSeasunIpcSender, isSeasunWpsPage } from './seasunLogin'
 
 const LOGIN = 'https://sso.seasungame.com/seasun-login/#/auth/login?channel=tokenHub&redirect=ccswitch%3A%2F%2Fseasun-sso%2Fcallback'
 const CALLBACK = 'ccswitch://seasun-sso/callback?token=fake-token&verifySign=fake-sign&tokenType=8'
+const WPS_START = 'https://sso.seasungame.com/management/sso/apis/pub/wps/authorize?channel=tokenHub&redirect=ccswitch%3A%2F%2Fseasun-sso%2Fcallback'
+const WPS_AUTH = 'https://openapi.wps.cn/oauth2/auth?state=fake-state'
+const WPS_RETURN = 'https://sso.seasungame.com/management/sso/apis/pub/wps/callback?code=fake-code&state=fake-state'
 const CONNECTED = { phase: 'connected', identityConnected: true, loggedIn: true, pending: false, active: false, modelAccess: 'unknown', providerId: 'seasun-test' }
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve() }
 
@@ -13,6 +16,7 @@ class FakeWindow extends EventEmitter {
   readonly session = Object.assign(new EventEmitter(), {
     setPermissionRequestHandler: vi.fn(), setPermissionCheckHandler: vi.fn(),
     clearStorageData: vi.fn(async () => {}), clearCache: vi.fn(async () => {}),
+    cookies: { flushStore: vi.fn(async () => {}) },
   })
   readonly webContents = Object.assign(new EventEmitter(), {
     session: this.session, mainFrame: { url: LOGIN, frames: [] as unknown[] }, setWindowOpenHandler: vi.fn(),
@@ -33,7 +37,7 @@ class FakeWindow extends EventEmitter {
   }
 }
 
-function harness() {
+function harness(prepareSession?: (session: import('electron').Session) => Promise<void>) {
   const parent = new FakeWindow()
   const windows: FakeWindow[] = []
   const options: BrowserWindowConstructorOptions[] = []
@@ -42,7 +46,7 @@ function harness() {
     if (action === 'cancel') return { ...CONNECTED, phase: 'cancelled', loggedIn: false, identityConnected: false }
     return CONNECTED
   })
-  const service = new SeasunLoginService({ request, createWindow: config => {
+  const service = new SeasunLoginService({ request, prepareSession, createWindow: config => {
     options.push(config); const window = new FakeWindow(); windows.push(window); return window as unknown as BrowserWindow
   } })
   return { parent: parent as unknown as BrowserWindow, windows, options, request, service }
@@ -51,6 +55,133 @@ function harness() {
 afterEach(() => vi.useRealTimers())
 
 describe('Seasun login trust boundary', () => {
+  it('prepares reusable cookies before sending the first navigation', async () => {
+    let ready!: () => void
+    const h = harness(() => new Promise<void>(resolve => { ready = resolve }))
+    const result = h.service.login(h.parent); await flush()
+    expect(h.windows[0]!.loadURL).not.toHaveBeenCalled()
+    ready(); await flush()
+    expect(h.windows[0]!.loadURL).toHaveBeenCalledWith(LOGIN)
+    await h.service.cancel(); await result
+    expect(h.windows[0]!.session.cookies.flushStore).toHaveBeenCalledOnce()
+    expect(h.windows[0]!.session.clearStorageData).not.toHaveBeenCalled()
+  })
+
+  it('does not navigate if the user cancels during desktop session preparation', async () => {
+    let ready!: () => void
+    const h = harness(() => new Promise<void>(resolve => { ready = resolve }))
+    const result = h.service.login(h.parent); await flush()
+    await h.service.cancel()
+    ready(); await flush()
+    expect((await result).phase).toBe('cancelled')
+    expect(h.windows[0]!.loadURL).not.toHaveBeenCalled()
+  })
+
+  it('falls back to interactive login after a desktop cookie read failure', async () => {
+    const h = harness(async () => { throw new Error('fixture failure') })
+    const result = h.service.login(h.parent); await flush()
+    expect(h.windows[0]!.loadURL).toHaveBeenCalledWith(LOGIN)
+    await h.service.cancel(); await result
+  })
+  it.each([
+    'http://openapi.wps.cn/oauth2/auth', 'https://openapi.wps.cn.evil.test/oauth2/auth',
+    'https://evil.test/?next=https://account.wps.cn', 'https://user@account.wps.cn/',
+    'https://account.wps.cn:8443/', 'https://sso.seasungame.com/management/other',
+    'https://sso.seasungame.com/management/sso/apis/pub/wps/callback/extra',
+  ])('does not expand WPS navigation to unrelated targets: %s', url => {
+    expect(isSeasunWpsPage(url)).toBe(false)
+  })
+
+  it('follows WPS authorization, account switching and the SSO ticket return before completing once', async () => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    const window = h.windows[0]!
+    expect(window.navigate(WPS_START).preventDefault).not.toHaveBeenCalled()
+    for (const url of [WPS_AUTH, 'https://openapi.wps.cn/view/v7/person/authorize', 'https://account.wps.cn/v1/changeaccount', WPS_RETURN]) {
+      const event = { preventDefault: vi.fn(), frame: null, initiator: null }
+      window.webContents.emit('will-redirect', event, url, false, true)
+      expect(event.preventDefault).not.toHaveBeenCalled()
+      await window.loadURL(url)
+    }
+    const returned = 'https://sso.seasungame.com/seasun-login/#/auth/wps-callback?ticket=fake-ticket'
+    expect(window.navigate(returned, WPS_RETURN).preventDefault).not.toHaveBeenCalled()
+    await window.loadURL(returned)
+    window.navigate(CALLBACK, returned)
+    window.navigate(CALLBACK, returned)
+    expect((await result).phase).toBe('connected')
+    expect(h.request.mock.calls.filter(([action]) => action === 'complete')).toHaveLength(1)
+    expect(window.session.clearStorageData).not.toHaveBeenCalled()
+  })
+
+  it('forgets WPS child history only after a full return to a fresh SSO document', async () => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    const window = h.windows[0]!
+    window.navigate(WPS_START)
+    await window.loadURL(WPS_AUTH)
+    window.webContents.emit('frame-created', {}, { frame: { parent: window.webContents.mainFrame, detached: false } })
+    expect(window.navigate('https://account.wps.cn/login', WPS_AUTH, false).preventDefault).not.toHaveBeenCalled()
+    expect(window.navigate(CALLBACK, WPS_AUTH, false).preventDefault).toHaveBeenCalled()
+    expect(h.request.mock.calls.some(([action]) => action === 'complete')).toBe(false)
+    await window.loadURL(LOGIN)
+    window.webContents.emit('will-frame-navigate', { url: CALLBACK, isMainFrame: true, frame: null, initiator: null, preventDefault: vi.fn() })
+    expect((await result).phase).toBe('connected')
+  })
+
+  it.each([WPS_AUTH, WPS_START.replace('tokenHub', 'other'), WPS_START.replace('ccswitch', 'evil')])('requires the trusted SSO start before WPS navigation: %s', async url => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    expect(h.windows[0]!.navigate(url).preventDefault).toHaveBeenCalled()
+    expect((await result).phase).toBe('error')
+  })
+
+  it('does not allow an iframe to initiate the WPS flow in the top frame', async () => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    const window = h.windows[0]!
+    window.webContents.emit('will-frame-navigate', {
+      url: WPS_START, isMainFrame: true, frame: window.webContents.mainFrame,
+      initiator: { url: LOGIN }, preventDefault: vi.fn(),
+    })
+    expect((await result).phase).toBe('error')
+  })
+
+  it('still rejects unrelated navigation after WPS has started', async () => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    const window = h.windows[0]!
+    window.navigate(WPS_START)
+    await window.loadURL(WPS_AUTH)
+    expect(window.navigate('https://evil.test/', WPS_AUTH, false).preventDefault).toHaveBeenCalled()
+    window.navigate('https://evil.test/', WPS_AUTH)
+    expect((await result).phase).toBe('error')
+  })
+
+  it('does not erase children in the returned SSO document', async () => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    const window = h.windows[0]!
+    window.navigate(WPS_START)
+    await window.loadURL(WPS_AUTH)
+    window.webContents.mainFrame.frames.push({ url: LOGIN })
+    await window.loadURL(LOGIN)
+    window.webContents.emit('will-frame-navigate', { url: CALLBACK, isMainFrame: true, frame: null, initiator: null, preventDefault: vi.fn() })
+    expect((await result).phase).toBe('error')
+  })
+
+  it('never accepts final credentials directly from WPS', async () => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    h.windows[0]!.navigate(WPS_START)
+    await h.windows[0]!.loadURL(WPS_AUTH)
+    h.windows[0]!.navigate(CALLBACK, WPS_AUTH)
+    expect((await result).phase).toBe('error')
+    expect(h.request.mock.calls.some(([action]) => action === 'complete')).toBe(false)
+  })
+
+  it('keeps cancellation effective while WPS is open', async () => {
+    const h = harness(); const result = h.service.login(h.parent); await flush()
+    h.windows[0]!.navigate(WPS_START)
+    await h.windows[0]!.loadURL(WPS_AUTH)
+    await h.service.cancel()
+    h.windows[0]!.navigate(CALLBACK)
+    expect((await result).phase).toBe('cancelled')
+    expect(h.request.mock.calls.some(([action]) => action === 'complete')).toBe(false)
+  })
+
   it.each([
     CALLBACK.replace('seasun-sso', 'seasun-sso.evil'), CALLBACK.replace('/callback', '/other'),
     CALLBACK + '&token=duplicate', CALLBACK + '#token=fragment', CALLBACK.replace('tokenType=8', 'tokenType=1'),
@@ -88,7 +219,7 @@ describe('Seasun login trust boundary', () => {
     expect(h.service.login(h.parent)).toBe(result)
     expect(h.windows[0]!.focus).toHaveBeenCalledOnce()
     expect(h.options[0]!.webPreferences).toMatchObject({ nodeIntegration: false, sandbox: true, contextIsolation: true, webSecurity: true })
-    expect(h.options[0]!.webPreferences?.partition).not.toMatch(/^persist:/)
+    expect(h.options[0]!.webPreferences?.partition).toBe('persist:seasun-login')
     expect(h.options[0]!.webPreferences?.preload).toBeUndefined()
     h.request.mockImplementation(async action => action === 'complete' ? { ...CONNECTED, token: 'never-render', completionSecret: 'never-render' } : CONNECTED)
     expect(h.windows[0]!.navigate(CALLBACK).preventDefault).toHaveBeenCalled()
@@ -97,7 +228,7 @@ describe('Seasun login trust boundary', () => {
     expect(status).toEqual(CONNECTED)
     expect(h.request.mock.calls.filter(([action]) => action === 'complete')).toHaveLength(1)
     expect(h.windows[0]!.destroyed).toBe(true)
-    expect(h.windows[0]!.session.clearStorageData).toHaveBeenCalledOnce()
+    expect(h.windows[0]!.session.clearStorageData).not.toHaveBeenCalled()
   })
 
   it('does not accept callback from an iframe or an unrelated main document', async () => {
@@ -205,12 +336,12 @@ describe('Seasun login trust boundary', () => {
     expect(h.request.mock.calls.some(([action]) => action === 'cancel')).toBe(true)
   })
 
-  it('clears its isolated session when the user has already closed the native window', async () => {
+  it('retains its login session when the user has already closed the native window', async () => {
     const h = harness(); const result = h.service.login(h.parent); await flush()
     h.windows[0]!.destroy()
     expect((await result).phase).toBe('cancelled')
-    expect(h.windows[0]!.session.clearStorageData).toHaveBeenCalledOnce()
-    expect(h.windows[0]!.session.clearCache).toHaveBeenCalledOnce()
+    expect(h.windows[0]!.session.clearStorageData).not.toHaveBeenCalled()
+    expect(h.windows[0]!.session.clearCache).not.toHaveBeenCalled()
   })
 
   it('closes immediately and reports an unconfirmed cancellation instead of claiming no save', async () => {

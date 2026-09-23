@@ -1,9 +1,11 @@
-import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import type { BrowserWindow, BrowserWindowConstructorOptions, Session, WebFrameMain } from 'electron'
 import { localSeasunStatus, parseSeasunStatus, type SeasunStatus } from '../../src/providerBusinesses/seasun/types'
 
 const SSO_ORIGIN = 'https://sso.seasungame.com'
+const WPS_AUTHORIZE_PATH = '/management/sso/apis/pub/wps/authorize'
+const WPS_CALLBACK_PATH = '/management/sso/apis/pub/wps/callback'
+const WPS_ORIGINS = new Set(['https://openapi.wps.cn', 'https://account.wps.cn'])
 const MAX_LOGIN_MS = 10 * 60 * 1000
 type LoginStart = { attemptId: string; completionSecret: string; authorizeUrl: string; expiresAt: string | number }
 type LoginAction = 'start' | 'complete' | 'cancel'
@@ -27,6 +29,7 @@ export function createSeasunBackendRequest(resolveAccess: () => Promise<BackendA
 type LoginDeps = {
   createWindow(options: BrowserWindowConstructorOptions): BrowserWindow
   request(action: LoginAction, body: Record<string, unknown>): Promise<unknown>
+  prepareSession?(session: Session): Promise<void>
 }
 type Attempt = {
   result: Promise<SeasunStatus>
@@ -74,6 +77,25 @@ export function isSeasunLoginUrl(raw: string): boolean {
     && params.getAll('redirect').length === 1 && params.get('redirect') === 'ccswitch://seasun-sso/callback'
 }
 
+/** Browsable identity-provider pages are not sources of Seasun credentials. */
+export function isSeasunWpsPage(raw: string): boolean {
+  try {
+    const url = new URL(raw)
+    if (url.username || url.password || url.port) return false
+    if (WPS_ORIGINS.has(url.origin)) return true
+    return url.origin === SSO_ORIGIN && [WPS_AUTHORIZE_PATH, WPS_CALLBACK_PATH].includes(url.pathname)
+  } catch { return false }
+}
+
+function isSeasunWpsStart(raw: string): boolean {
+  try {
+    const url = new URL(raw)
+    return isSeasunWpsPage(raw) && url.origin === SSO_ORIGIN && url.pathname === WPS_AUTHORIZE_PATH
+      && !url.hash && url.searchParams.size === 2 && url.searchParams.get('channel') === 'tokenHub'
+      && url.searchParams.get('redirect') === 'ccswitch://seasun-sso/callback'
+  } catch { return false }
+}
+
 export function isSeasunCallback(raw: string): boolean {
   try {
     const url = new URL(raw)
@@ -94,6 +116,7 @@ export function isSeasunCallback(raw: string): boolean {
 /** No renderer, URL, or exception text is used as a backend target. */
 export class SeasunLoginService {
   private attempt: Attempt | null = null
+  private securedSessions = new WeakSet<Session>()
   constructor(private readonly deps: LoginDeps) {}
 
   login(parent: BrowserWindow): Promise<SeasunStatus> {
@@ -153,17 +176,23 @@ export class SeasunLoginService {
       const window = this.deps.createWindow({
         width: 1000, height: 800, parent: attempt.parent, title: 'Seasun Token Hub · cc-haha',
         autoHideMenuBar: true,
-        webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, partition: `seasun-login-${randomUUID()}` },
+        webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, partition: 'persist:seasun-login' },
       })
       attempt.window = window
       const contents = window.webContents
       attempt.session = contents.session
       contents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
       contents.session.setPermissionCheckHandler(() => false)
-      contents.session.on('will-download', event => event.preventDefault())
+      if (!this.securedSessions.has(contents.session)) {
+        contents.session.on('will-download', event => event.preventDefault())
+        this.securedSessions.add(contents.session)
+      }
       contents.on('will-attach-webview', event => event.preventDefault())
       let committedSsoFrame: WebFrameMain | null = null
-      // Sticky for this dedicated window: removing an iframe must not erase its provenance.
+      let wpsFlowStarted = false
+      let committedWpsPage = false
+      // Sticky within SSO: removing an iframe must not erase its provenance.
+      // A full document return from WPS starts a new SSO document, however.
       let subframeObserved = false
       contents.on('frame-created', (_event, details) => {
         try {
@@ -172,6 +201,8 @@ export class SeasunLoginService {
       })
       contents.on('did-navigate', (_event, url) => {
         try {
+          if (wpsFlowStarted && committedWpsPage && isSeasunPage(url)) subframeObserved = false
+          committedWpsPage = wpsFlowStarted && isSeasunWpsPage(url)
           committedSsoFrame = isSeasunPage(url) ? contents.mainFrame : null
           if (contents.mainFrame.frames.length > 0) subframeObserved = true
         } catch { committedSsoFrame = null; subframeObserved = true }
@@ -191,7 +222,11 @@ export class SeasunLoginService {
         } catch { return false }
       }
       const navigate = (event: { preventDefault(): void; frame?: WebFrameMain | null; initiator?: WebFrameMain | null }, target: string, isMainFrame: boolean) => {
-        if (!isMainFrame) { event.preventDefault(); return }
+        if (!isMainFrame) {
+          // WPS may embed its account UI. Children can never complete the login.
+          if (!wpsFlowStarted || !isSeasunWpsPage(contents.getURL()) || !isSeasunWpsPage(target)) event.preventDefault()
+          return
+        }
         if (isSeasunCallback(target)) {
           const trusted = trustedSource(event)
           event.preventDefault()
@@ -199,11 +234,18 @@ export class SeasunLoginService {
           else void this.cancel('error')
           return
         }
-        if (!isSeasunPage(target)) { event.preventDefault(); void this.cancel('error') }
+        if (!wpsFlowStarted && isSeasunWpsStart(target) && trustedSource(event)) wpsFlowStarted = true
+        if (!isSeasunPage(target) && !(wpsFlowStarted && isSeasunWpsPage(target))) {
+          event.preventDefault(); void this.cancel('error')
+        }
       }
       contents.on('will-frame-navigate', event => navigate(event, event.url, event.isMainFrame))
       contents.on('will-redirect', (event, url, _inPlace, isMainFrame) => navigate(event, url, isMainFrame))
       window.on('closed', () => { if (!attempt.settled && !attempt.cancelled) void this.cancel() })
+      // Reuse the user's desktop WPS identity before any page requests are sent.
+      // Unavailable desktop storage falls back to the normal interactive login.
+      await this.deps.prepareSession?.(contents.session).catch(() => {})
+      if (attempt.cancelled || attempt.settled || window.isDestroyed()) return
       await window.loadURL(credentials.authorizeUrl)
     } catch {
       if (!attempt.cancelled && !attempt.settled) await this.cancel('error')
@@ -239,8 +281,7 @@ export class SeasunLoginService {
     const session = attempt.session
     attempt.session = undefined
     if (session) {
-      void session.clearStorageData().catch(() => {})
-      void session.clearCache().catch(() => {})
+      void session.cookies.flushStore().catch(() => {})
     }
   }
 }

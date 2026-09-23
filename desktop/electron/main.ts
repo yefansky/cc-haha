@@ -14,6 +14,7 @@ import { GatewayTunnelRuntime } from './services/gatewayTunnelRuntime'
 import { resolveGatewayTunnelExecutable } from './services/gatewayTunnelExecutable'
 import type { GatewaySaveInput } from '../src/lib/desktopHost/gatewayTypes'
 import { SeasunLoginService, createSeasunBackendRequest, isSeasunIpcSender } from './services/seasunLogin'
+import { prepareWpsLoginSession } from './services/wpsLoginSession'
 import { appendHostDiagnostic, electronHostDiagnosticsFile, sanitizeHostDiagnostic } from './services/sidecarManager'
 import { openDialog, saveDialog } from './services/dialogs'
 import { openExternalUrl, openSystemPath, openSystemSettingsUrl } from './services/shell'
@@ -473,6 +474,7 @@ async function handleCommandInvoke(payload: unknown): Promise<unknown> {
 function registerIpcHandlers() {
   const seasunLogin = new SeasunLoginService({
     createWindow: options => new BrowserWindow(options),
+    prepareSession: prepareWpsLoginSession,
     request: createSeasunBackendRequest(async () => {
       const runtime = getServerRuntime()
       return { serverUrl: await runtime.getServerUrl(), localToken: runtime.getLocalAccessToken(), integrationToken: runtime.getIntegrationToken() }
