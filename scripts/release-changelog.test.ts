@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { collectPublishedHistory, downloadPublishedHistory, parseCommit, previousRelease, readCommits, renderChangelog, validateReadableNote, verifyUpdateNotes, writeChangelog } from './release-changelog'
+import { collectPublishedHistory, downloadPublishedHistory, parseCommit, parseCommitNotes, previousRelease, readCommits, renderChangelog, validateReadableNote, verifyUpdateNotes, writeChangelog } from './release-changelog'
 import { readPackagedChangelog, readPackagedHistory } from '../desktop/scripts/packaged-changelog'
 import { parseHistory, publishedHistory, readHistorySeed } from './changelog-history'
 
@@ -20,6 +20,33 @@ function commit(root: string, text: string) {
 afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
 describe('commit-derived release notes', () => {
+  test('binds reviewed legacy notes to full commit identity and retains strict validation', () => {
+    const hash = 'a'.repeat(40), subject = 'fix: legacy change'
+    const correction = { commit: hash, subject, message: message() }
+    const corrections = parseCommitNotes({ schemaVersion: 1, commits: [correction] })
+    expect(renderChangelog('1.2.3', [{ hash, message: subject }], corrections)).toContain(note)
+    expect(() => renderChangelog('1.2.3', [{ hash, message: 'fix: different change' }], corrections)).toThrow('不一致')
+    expect(() => renderChangelog('1.2.3', [{ hash: 'b'.repeat(40), message: subject }], corrections)).toThrow('不合格')
+    expect(() => parseCommitNotes({ schemaVersion: 1, commits: [correction, correction] })).toThrow('唯一')
+    expect(() => parseCommitNotes({ schemaVersion: 1, commits: [{ ...correction, commit: 'aaaa' }] })).toThrow('完整')
+    expect(() => parseCommitNotes({ schemaVersion: 1, commits: [{ ...correction, message: subject }] })).toThrow()
+    const breaking = { ...correction, subject: 'fix!: legacy breaking change' }
+    expect(() => renderChangelog('1.2.3', [{ hash, message: breaking.subject }], [breaking])).toThrow('迁移')
+  })
+  test('pre-push range validates committed notes rather than uncommitted corrections', () => {
+    const root = temp()
+    git(root, 'init', '-b', 'main'); git(root, 'config', 'user.name', 'Test'); git(root, 'config', 'user.email', 'test@example.invalid')
+    commit(root, 'legacy baseline'); const base = git(root, 'rev-parse', 'HEAD')
+    commit(root, 'fix: legacy change'); const hash = git(root, 'rev-parse', 'HEAD')
+    mkdirSync(join(root, 'release-notes'))
+    writeFileSync(join(root, 'release-notes/commit-notes.json'), JSON.stringify({ schemaVersion: 1, commits: [{ commit: hash, subject: 'fix: legacy change', message: message() }] }))
+    const run = () => execFileSync(process.execPath, [join(import.meta.dir, 'release-changelog.ts'), '--root', root, '--check-range', base, '--to', 'HEAD'], { encoding: 'utf8', stdio: 'pipe' })
+    expect(run).toThrow()
+    git(root, 'add', 'release-notes/commit-notes.json'); commit(root, message('ci'))
+    expect(run()).toContain('检查通过')
+    commit(root, 'fix: another missing note')
+    expect(run).toThrow()
+  })
   test('fills history gaps from overlapping release builds and never hides archive errors', () => {
     const entry = (version: string) => ({ version, date: '2026-09-01', markdown: note, commit: 'abc', from: null, source: 'generated' as const })
     const release = (version: string, draft = false) => ({ tag_name: `v${version}`, draft, prerelease: false, assets: [{ name: 'changelog.json' }] })

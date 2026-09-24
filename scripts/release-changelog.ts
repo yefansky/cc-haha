@@ -3,7 +3,7 @@
 // Like conventional-changelog, group commit-derived notes by type. Only the
 // explicitly authored Chinese user summary is published, never the debug body.
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mergeHistory, publishedHistory, readHistorySeed, type ChangelogEntry } from './changelog-history'
@@ -15,6 +15,31 @@ const groups: Record<string, string> = {
 }
 const fields = ['改动说明', '修改原因', '解决问题', '更新日志'] as const
 export type Commit = { hash: string, message: string }
+export type CommitNote = { commit: string, subject: string, message: string }
+
+export function parseCommitNotes(raw: unknown): CommitNote[] {
+  const data = raw as { schemaVersion?: number, commits?: CommitNote[] } | null
+  if (data?.schemaVersion !== 1 || !Array.isArray(data.commits)) throw new Error('提交说明补录格式无效')
+  const seen = new Set<string>()
+  for (const entry of data.commits) {
+    if (!entry || !/^[a-f0-9]{40}$/.test(entry.commit) || seen.has(entry.commit)
+      || typeof entry.subject !== 'string' || !entry.subject || /[\r\n]/.test(entry.subject)
+      || typeof entry.message !== 'string') throw new Error('提交说明补录必须包含唯一完整提交编号与原始标题')
+    parseCommit({ hash: entry.commit, message: entry.message })
+    seen.add(entry.commit)
+  }
+  return data.commits
+}
+
+function readCommitNotes(root: string, ref?: string): CommitNote[] {
+  const file = 'release-notes/commit-notes.json'
+  if (ref) {
+    const revision = resolveCommit(root, ref)
+    if (!git(root, ['ls-tree', '--name-only', revision, '--', file])) return []
+    return parseCommitNotes(JSON.parse(git(root, ['show', `${revision}:${file}`])))
+  }
+  return existsSync(resolve(root, file)) ? parseCommitNotes(JSON.parse(readFileSync(resolve(root, file), 'utf8'))) : []
+}
 
 export function validateReadableNote(note: string): void {
   if (!/[\u3400-\u9fff]/u.test(note) || note.length < 8) {
@@ -65,7 +90,7 @@ export function parseCommit(commit: Commit) {
   return { type: header[1]!.toLowerCase(), notes, migration }
 }
 
-export function renderChangelog(version: string, commits: Commit[]): string {
+export function renderChangelog(version: string, commits: Commit[], corrections: CommitNote[] = []): string {
   if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version)) throw new Error('版本号无效')
   const sections = new Map<string, Set<string>>()
   const add = (group: string, note: string) => {
@@ -74,7 +99,12 @@ export function renderChangelog(version: string, commits: Commit[]): string {
   }
   for (const commit of commits) {
     try {
-      const parsed = parseCommit(commit)
+      const correction = corrections.find(entry => entry.commit === commit.hash)
+      if (correction && correction.subject !== commit.message.split(/\r?\n/)[0]) throw new Error('补录标题与原始提交不一致')
+      const parsed = parseCommit(correction ? { hash: commit.hash, message: correction.message } : commit)
+      if (correction && (/^[^\n]*!:/.test(commit.message) || /^BREAKING[ -]CHANGE:/m.test(commit.message)) && !parsed.migration) {
+        throw new Error('补录不得丢失原提交的不兼容迁移说明')
+      }
       if (parsed.migration) add('更新前请注意', parsed.migration)
       for (const note of parsed.notes) add(groups[parsed.type]!, note)
     } catch (error) {
@@ -196,7 +226,13 @@ if (import.meta.main) {
     const root = resolve(value('--root') ?? '.')
     const messageFile = value('--check-message')
     const metadataDir = value('--verify-metadata')
-    if (metadataDir) {
+    const checkFrom = value('--check-range')
+    if (checkFrom) {
+      const to = value('--to') ?? 'HEAD'
+      // Read corrections from the pushed revision, never uncommitted worktree files.
+      renderChangelog('0.0.0', readCommits(root, checkFrom, to), readCommitNotes(root, to))
+      console.log('待推送提交的更新说明检查通过。')
+    } else if (metadataDir) {
       const { parse } = await import('yaml')
       const notes = JSON.parse(readFileSync(resolve(root, 'desktop/public/changelog.json'), 'utf8'))
       const directory = resolve(root, metadataDir)
@@ -221,7 +257,7 @@ if (import.meta.main) {
         previous = collectPublishedHistory(releases, version, readHistorySeed(root), release => downloadPublishedHistory(repo, release))
       }
       if (!from) throw new Error('请设置 GITHUB_REPOSITORY 或指定 --from')
-      const markdown = renderChangelog(version, readCommits(root, from))
+      const markdown = renderChangelog(version, readCommits(root, from), readCommitNotes(root))
       if (args.includes('--dry')) console.log(markdown)
       else writeChangelog(root, version, markdown, from, git(root, ['rev-parse', 'HEAD']), previous)
       console.log(`更新日志范围：${from}..HEAD`)

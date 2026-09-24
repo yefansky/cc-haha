@@ -1,0 +1,13 @@
+#!/bin/sh
+# Git supplies the exact source/target revisions; never validate only the worktree.
+while read -r local_ref local_sha remote_ref remote_sha
+do
+  case "$remote_ref" in refs/heads/main|refs/heads/master) ;; *) continue ;; esac
+  case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
+  case "$remote_sha" in
+    0000000000000000000000000000000000000000)
+      echo '首次创建主干请先明确发布起点并人工校验更新说明。' >&2
+      exit 1 ;;
+  esac
+  bun run scripts/release-changelog.ts --check-range "$remote_sha" --to "$local_sha" || exit 1
+done

@@ -1,5 +1,19 @@
 # 从提交生成更新日志
 
+## 推送前检查与旧提交修复
+
+本仓库可启用已跟踪的推送检查：`git config --local core.hooksPath .githooks`。
+它检查实际推往主干的提交范围，缺少说明时在上传前失败；拉取请求也执行同一检查。
+此检查不替代远端分支保护，未安装本地钩子或跳过钩子的直接推送仍由发布流程最终校验。
+
+已公开的旧提交不能通过改写历史修复正文。核对其真实改动后，可在
+`release-notes/commit-notes.json` 补录完整中文提交说明，以完整提交编号及原始标题绑定。
+补录仍通过相同四字段、中文内容与不兼容迁移校验，不允许自动略过不合格提交。
+推送检查从待推送版本读取补录，未提交的补录不会使检查通过。
+
+`bun run scripts/release-changelog.ts --check-range <远端主干提交> --to HEAD`
+可手动检查待推范围；正式发布仍从上次成功发布开始，包含之前失败构建的全部改动。
+
 提交格式以根 `AGENTS.md` 的“提交与更新日志规范”为准。标题采用[约定式提交](https://www.conventionalcommits.org/zh-hans/v1.0.0/)，正文写清改动、原因、解决的问题和供用户阅读的更新说明。生成器参考 [conventional-changelog](https://github.com/conventional-changelog/conventional-changelog) 的按提交类型分类流程；这里的中文字段校验、已发布版本选择和包体接线由本仓库脚本实现，没有引入新的依赖，也不调用模型替作者编造说明。
 
 ## 发布时发生什么
