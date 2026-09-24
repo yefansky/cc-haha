@@ -5967,7 +5967,7 @@ describe('MessageList nested tool calls', () => {
       ],
     })
     vi.spyOn(sessionsApi, 'getWorkspaceFile').mockImplementation(async (_sessionId, path) => ({
-      state: 'ok', path, content: 'export const value = 1', language: 'typescript',
+      state: 'ok', path, content: 'export const value = 1', size: 21, language: 'typescript',
     }))
     const getWorkspaceDiff = vi.spyOn(sessionsApi, 'getWorkspaceDiff')
     const getTurnCheckpointDiff = vi.spyOn(sessionsApi, 'getTurnCheckpointDiff').mockResolvedValue({
@@ -6065,7 +6065,7 @@ describe('MessageList nested tool calls', () => {
       ],
     })
     vi.spyOn(sessionsApi, 'getWorkspaceFile').mockImplementation(async (_sessionId, path) => ({
-      state: 'ok', path, content: 'export const value = 1', language: 'typescript',
+      state: 'ok', path, content: 'export const value = 1', size: 21, language: 'typescript',
     }))
     const getWorkspaceDiff = vi.spyOn(sessionsApi, 'getWorkspaceDiff')
     const getTurnCheckpointDiff = vi.spyOn(sessionsApi, 'getTurnCheckpointDiff').mockResolvedValue({
@@ -6147,7 +6147,7 @@ describe('MessageList nested tool calls', () => {
       ],
     })
     vi.spyOn(sessionsApi, 'getWorkspaceFile').mockImplementation(async (_sessionId, path) => ({
-      state: 'ok', path, content: 'export const value = 1', language: 'typescript',
+      state: 'ok', path, content: 'export const value = 1', size: 21, language: 'typescript',
     }))
     const getWorkspaceDiff = vi.spyOn(sessionsApi, 'getWorkspaceDiff')
     const getTurnCheckpointDiff = vi.spyOn(sessionsApi, 'getTurnCheckpointDiff').mockResolvedValue({
