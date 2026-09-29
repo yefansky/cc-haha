@@ -1,3 +1,4 @@
+import { resolveMarkdownDocumentLink, scrollToMarkdownFragment } from '@/lib/markdownNavigation'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
 import { CircleAlert, Code2, Eye, EyeOff, Pin, FileText, FolderOpen, FolderPlus, GitCompareArrows, Link2, MessageCircle, PanelRightClose, PanelRightOpen, RefreshCw, Search, X } from 'lucide-react'
 import { Highlight } from 'prism-react-renderer'
@@ -1062,12 +1063,14 @@ function CodeSurface({
 }
 
 function MarkdownSurface({
+  anchor,
   value,
   path,
   sessionId,
   workDir,
   onAddSelection,
 }: {
+  anchor?: WorkspacePreviewTab['anchor']
   value: string
   path: string
   sessionId: string
@@ -1143,6 +1146,21 @@ function MarkdownSurface({
           content={value}
           variant="document"
           resolveImageSrc={resolveImageSrc}
+          anchor={anchor}
+          linkifyFileReferences={false}
+          onLinkClick={(href) => {
+            const target = resolveMarkdownDocumentLink(href, path)
+            if (!target) return false
+            if (target.path === path.replace(/\\/g, '/')) {
+              if (surfaceRef.current) scrollToMarkdownFragment(surfaceRef.current, target.fragment)
+            } else {
+              void useWorkspacePanelStore.getState().openPreview(
+                sessionId, target.path, 'file', undefined, undefined, undefined, undefined, undefined,
+                { fragment: target.fragment },
+              )
+            }
+            return true
+          }}
           className="workspace-markdown-preview prose-p:text-[14px] prose-p:leading-7 prose-h1:text-[24px] prose-h2:text-[18px] prose-h3:text-[15px] prose-code:text-[12px] prose-pre:my-4"
         />
       </div>
@@ -1515,6 +1533,14 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const normalizedFilterQuery = normalizeFilterQuery(filterQuery)
   const activePreviewTab =
     previewTabs.find((tab) => tab.id === activePreviewTabId) ?? previewTabs[previewTabs.length - 1] ?? null
+  const navigationTabId = activePreviewTab?.id
+  const navigationNonce = activePreviewTab?.anchor?.nonce
+  useEffect(() => {
+    if (navigationTabId && navigationNonce !== undefined) {
+      setMarkdownSourceByTab(current => current[navigationTabId]
+        ? { ...current, [navigationTabId]: false } : current)
+    }
+  }, [navigationTabId, navigationNonce])
   const activeMarkdownView = activePreviewTab && isMarkdownPreview(activePreviewTab)
     ? (markdownSourceByTab[activePreviewTab.id] ? 'source' : 'preview')
     : null
@@ -2747,6 +2773,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
           />
         ) : state === 'ok' && activeMarkdownView === 'preview' ? (
           <MarkdownSurface
+            anchor={activePreviewTab.anchor}
             value={activePreviewTab.content ?? ''}
             path={activePreviewTab.path}
             sessionId={sessionId}

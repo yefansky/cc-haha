@@ -582,3 +582,42 @@ describe('MarkdownRenderer caller-provided link titles', () => {
     expect(container.querySelector('[onmouseover], img')).toBeNull()
   })
 })
+
+
+describe('Markdown document navigation', () => {
+  it('creates stable unique heading IDs across code blocks and handles fragments locally', () => {
+    const external = vi.fn()
+    const view = render(<MarkdownRenderer content={'[Go](#t-001)\n\n### T-001\n\n```ts\n1\n```\n\n### T-001\n\n## 中文 **章节**'} onLinkClick={external} />)
+    const headings = view.container.querySelectorAll('h2,h3')
+    expect(Array.from(headings).map(h => h.id)).toEqual(['t-001', 't-001-1', '中文-章节'])
+    const scroll = vi.fn()
+    headings[0]!.scrollIntoView = scroll
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+    view.getByText('Go').dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(scroll).toHaveBeenCalledOnce()
+    expect(external).not.toHaveBeenCalled()
+  })
+
+  it('reveals encoded Chinese fragments after load and on repeated navigation', () => {
+    const scroll = vi.fn()
+    const old = HTMLElement.prototype.scrollIntoView
+    HTMLElement.prototype.scrollIntoView = scroll
+    try {
+      const view = render(<MarkdownRenderer content={'## 中文标题'} anchor={{ fragment: '%E4%B8%AD%E6%96%87%E6%A0%87%E9%A2%98', nonce: 1 }} />)
+      expect(scroll).toHaveBeenCalledOnce()
+      view.rerender(<MarkdownRenderer content={'## 中文标题'} anchor={{ fragment: '中文标题', nonce: 2 }} />)
+      expect(scroll).toHaveBeenCalledTimes(2)
+    } finally { HTMLElement.prototype.scrollIntoView = old }
+  })
+
+  it('does not send missing fragments to external handling or another document', () => {
+    const external = vi.fn()
+    const view = render(<><MarkdownRenderer content={'## Other'} /><MarkdownRenderer content={'[Missing](#other)'} onLinkClick={external} /></>)
+    const scroll = vi.fn()
+    view.container.querySelector('h2')!.scrollIntoView = scroll
+    fireEvent.click(view.getByText('Missing'))
+    expect(scroll).not.toHaveBeenCalled()
+    expect(external).not.toHaveBeenCalled()
+  })
+})

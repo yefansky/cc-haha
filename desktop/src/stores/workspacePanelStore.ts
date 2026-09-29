@@ -63,6 +63,7 @@ export type WorkspacePreviewTab = {
   kind: WorkspacePreviewKind
   title: string
   reveal?: WorkspacePreviewReveal
+  anchor?: { fragment: string; nonce: number }
   language?: string
   content?: string
   dataUrl?: string
@@ -83,6 +84,7 @@ export type WorkspacePreviewTab = {
 
 export type WorkspaceOpenPreviewOptions = {
   force?: boolean
+  fragment?: string
 }
 
 export type WorkspaceMountedRoot = {
@@ -1049,6 +1051,9 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
     const requestId = nextRequestId(previewRequestIds, requestKey)
     // Omitting a reveal must not clear the one already on the tab: reopening the
     // same file from the tree should leave the marked line where it was.
+    const nextAnchor = options?.fragment !== undefined
+      ? { fragment: options.fragment, nonce: nextRevealNonce() }
+      : existing?.anchor
     const nextReveal: WorkspacePreviewReveal | undefined = reveal
       ? { ...reveal, nonce: nextRevealNonce() }
       : existing?.reveal
@@ -1070,7 +1075,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
           [sessionId]: upsertPreviewTab(
             state.previewTabsBySession[sessionId] ?? [],
             tabId,
-            (tab) => ({ ...tab, reveal: nextReveal }),
+            (tab) => ({ ...tab, reveal: nextReveal, anchor: nextAnchor }),
           ),
         },
         activePreviewTabIdBySession: {
@@ -1091,6 +1096,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
             (tab) => ({
               ...tab,
               reveal: nextReveal,
+              anchor: nextAnchor,
               diffSource: kind === 'diff' || diffSource.kind === 'turn' ? diffSource : undefined,
               comparisonEncodings: kind === 'diff' ? effectiveComparisonEncodings : undefined,
             }),
@@ -1133,6 +1139,7 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
         state: 'loading',
         requestIdentity,
         ...(nextReveal ? { reveal: nextReveal } : {}),
+        anchor: nextAnchor,
       }
 
       set((state) => ({

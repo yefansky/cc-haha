@@ -2608,6 +2608,35 @@ describe('WorkspacePanel', () => {
     expect(image.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=')
   })
 
+  it('opens document-relative Markdown links and reveals anchors after loading and on cached reopens', async () => {
+    const sessionId = 'markdown-links'
+    const source = 'docs/start.md'
+    const sourceContent = '[Local](#t1)\n\n[Next](../guide.md#中文章节)\n\n## T1'
+    getMocks().getWorkspaceFileMock.mockImplementation(async (_session: string, path: string) => ({
+      state: 'ok', path, language: 'markdown', size: 80,
+      content: path === source ? sourceContent : '[Back](docs/start.md#t1)\n\n## 中文章节',
+    }))
+    await act(async () => { await useWorkspacePanelStore.getState().openPreview(sessionId, source, 'file') })
+    const view = await renderPanel(sessionId)
+    const old = HTMLElement.prototype.scrollIntoView
+    const scrolled: string[] = []
+    HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this.id) }
+    try {
+      await clickElement(view.getByRole('link', { name: 'Local' }))
+      expect(scrolled).toContain('t1')
+      await clickElement(view.getByRole('link', { name: 'Next' }))
+      await waitFor(() => expect(view.getByRole('heading', { name: '中文章节' })).toBeTruthy())
+      expect(scrolled).toContain('中文章节')
+      expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]?.map(tab => tab.path)).toEqual([source, 'guide.md'])
+      await clickElement(view.getByRole('link', { name: 'Back' }))
+      await waitFor(() => expect(view.getByRole('link', { name: 'Next' })).toBeTruthy())
+      const count = scrolled.filter(id => id === '中文章节').length
+      await clickElement(view.getByRole('link', { name: 'Next' }))
+      await waitFor(() => expect(scrolled.filter(id => id === '中文章节').length).toBeGreaterThan(count))
+      expect(useWorkspacePanelStore.getState().previewTabsBySession[sessionId]).toHaveLength(2)
+    } finally { HTMLElement.prototype.scrollIntoView = old }
+  })
+
   it('switches markdown files between rendered preview and source like VS Code', async () => {
     await setWorkspaceState((state) => ({
       ...state,

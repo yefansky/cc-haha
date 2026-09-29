@@ -1,4 +1,4 @@
-import { memo, useMemo, useCallback } from 'react'
+import { memo, useMemo, useCallback, useRef, useEffect } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import DOMPurify from 'dompurify'
 import katex from 'katex'
@@ -14,6 +14,7 @@ import {
   renderCodespan,
   unwrapFileLinks,
 } from '@/lib/markdownAutolink'
+import { scrollToMarkdownFragment } from '@/lib/markdownNavigation'
 import { isSafeMarkdownImageSource } from '@/lib/markdownImages'
 import { CodeViewer } from '../chat/CodeViewer'
 import { MermaidRenderer } from '../chat/MermaidRenderer'
@@ -22,10 +23,12 @@ import { t } from '../../i18n'
 
 type Props = {
   content: string
+  anchor?: { fragment: string; nonce: number }
   variant?: 'default' | 'document' | 'compact'
   className?: string
   cache?: boolean
   streaming?: boolean
+  linkifyFileReferences?: boolean
   onLinkClick?: (href: string, event: ReactMouseEvent<HTMLDivElement>) => boolean | void
   /**
    * Trusted surfaces (the workspace Markdown file preview) resolve every image
@@ -327,6 +330,7 @@ function enhanceMarkdownHtml(
   references: ReferenceLinking,
   resolveImageSrc?: (src: string) => string | null,
   resolveLinkTitle?: (href: string) => string | undefined,
+  headingIds = new Set<string>(),
 ): string {
   const cleanHtml = DOMPurify.sanitize(html, MARKDOWN_SANITIZE_CONFIG)
 
@@ -337,7 +341,7 @@ function enhanceMarkdownHtml(
   const needsDomEnhancement = mathBlocks.length > 0
     || wantsFilePathLinks
     || wantsFileLinkStripping
-    || /<(?:a|table|img|source)\b/i.test(cleanHtml)
+    || /<(?:a|table|img|source|h[1-6])\b/i.test(cleanHtml)
   if (!needsDomEnhancement) {
     return cleanHtml
   }
@@ -348,6 +352,15 @@ function enhanceMarkdownHtml(
 
   const container = document.createElement('div')
   container.innerHTML = cleanHtml
+  container.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6').forEach((heading) => {
+    const base = heading.id || (heading.textContent ?? '').toLowerCase()
+      .replace(/[^\p{L}\p{N}\p{M}_\-\s]/gu, '').replace(/\s/g, '-')
+    let id = base
+    let suffix = 0
+    while (headingIds.has(id)) id = `${base}-${++suffix}`
+    headingIds.add(id)
+    heading.id = id
+  })
   const mathById = new Map(mathBlocks.map((block) => [block.id, block]))
 
   container.querySelectorAll<HTMLImageElement | HTMLSourceElement>('img, source').forEach((image) => {
@@ -386,7 +399,7 @@ function enhanceMarkdownHtml(
   })
 
   container.querySelectorAll('a[href]').forEach((link) => {
-    link.setAttribute('target', '_blank')
+    if (!link.getAttribute('href')?.startsWith('#')) link.setAttribute('target', '_blank')
     link.setAttribute('rel', 'noreferrer noopener')
   })
 
@@ -573,7 +586,11 @@ function getProseClasses(variant: 'default' | 'document' | 'compact', className?
     .join(' ')
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({ content, variant = 'default', className, cache = true, streaming = false, onLinkClick, resolveImageSrc, resolveLinkTitle }: Props) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, anchor, variant = 'default', className, cache = true, streaming = false, linkifyFileReferences = true, onLinkClick, resolveImageSrc, resolveLinkTitle }: Props) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (anchor && rootRef.current) scrollToMarkdownFragment(rootRef.current, anchor.fragment)
+  }, [anchor, content])
   const { html, codeBlocks, mathBlocks } = useMemo(
     () => cache ? getCachedMarkdownParse(content, streaming) : parseMarkdown(content),
     [cache, content, streaming],
@@ -596,14 +613,15 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, varian
     // closing delimiter, so mid-stream `desktop/src/lib/foo.ts` is itself a valid
     // reference that changes again as `x` and `:42` arrive, flickering through
     // three targets on one line.
-    const canOpenReferences = Boolean(onLinkClick)
+    const canOpenReferences = Boolean(onLinkClick) && linkifyFileReferences
     const references: ReferenceLinking = {
       bare: canOpenReferences && !streaming,
       inlineCode: canOpenReferences,
     }
 
+    const headingIds = new Set<string>()
     if (codeBlocks.length === 0) {
-      return [{ type: 'html' as const, content: enhanceMarkdownHtml(html, mathBlocks, references, resolveImageSrc, resolveLinkTitle) }]
+      return [{ type: 'html' as const, content: enhanceMarkdownHtml(html, mathBlocks, references, resolveImageSrc, resolveLinkTitle, headingIds) }]
     }
 
     const result: MarkdownPart[] = []
@@ -616,25 +634,33 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, varian
 
       const before = remaining.slice(0, idx)
       if (before) {
-        result.push({ type: 'html', content: enhanceMarkdownHtml(before, mathBlocks, references, resolveImageSrc, resolveLinkTitle) })
+        result.push({ type: 'html', content: enhanceMarkdownHtml(before, mathBlocks, references, resolveImageSrc, resolveLinkTitle, headingIds) })
       }
       result.push({ type: 'code', block })
       remaining = remaining.slice(idx + marker.length)
     }
 
     if (remaining) {
-      result.push({ type: 'html', content: enhanceMarkdownHtml(remaining, mathBlocks, references, resolveImageSrc, resolveLinkTitle) })
+      result.push({ type: 'html', content: enhanceMarkdownHtml(remaining, mathBlocks, references, resolveImageSrc, resolveLinkTitle, headingIds) })
     }
 
     return result
-  }, [html, codeBlocks, mathBlocks, streaming, onLinkClick, resolveImageSrc, resolveLinkTitle])
+  }, [html, codeBlocks, mathBlocks, streaming, linkifyFileReferences, onLinkClick, resolveImageSrc, resolveLinkTitle])
 
   const handleClick = useCallback(async (event: ReactMouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null
     const button = target?.closest<HTMLButtonElement>('[data-copy-code]')
     if (!button) {
       const link = target?.closest<HTMLAnchorElement>('a[href], a[data-file-path]')
-      if (!link || !onLinkClick) return
+      if (!link) return
+      const href = link.getAttribute('href') ?? ''
+      if (href.startsWith('#')) {
+        event.preventDefault()
+        event.stopPropagation()
+        scrollToMarkdownFragment(event.currentTarget, href)
+        return
+      }
+      if (!onLinkClick) return
 
       const handled = onLinkClick(fileRefFromElement(link) ?? link.getAttribute('href') ?? '', event)
       if (handled) {
@@ -660,6 +686,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, varian
   if (codeBlocks.length === 0) {
     return (
       <div
+        ref={rootRef}
         className={proseClasses}
         dangerouslySetInnerHTML={{ __html: parts[0]?.type === 'html' ? parts[0].content : '' }}
         onClick={handleClick}
@@ -668,7 +695,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, varian
   }
 
   return (
-    <div className={proseClasses} onClick={handleClick}>
+    <div ref={rootRef} className={proseClasses} onClick={handleClick}>
       {parts.map((part, i) =>
         part.type === 'html' ? (
           <div key={i} dangerouslySetInnerHTML={{ __html: part.content }} />
