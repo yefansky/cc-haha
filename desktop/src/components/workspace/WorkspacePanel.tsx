@@ -1141,7 +1141,7 @@ function MarkdownSurface({
         if (event.key === 'Escape') setSelectionMenu(null)
       }}
     >
-      <div className="mx-auto w-full max-w-[860px] px-6 py-5">
+      <div className="w-full min-w-0 px-[clamp(16px,3%,48px)] py-6">
         <MarkdownRenderer
           content={value}
           variant="document"

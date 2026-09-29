@@ -1,4 +1,4 @@
-import { memo, useMemo, useCallback, useRef, useEffect } from 'react'
+import { memo, useMemo, useCallback, useRef, useEffect, useLayoutEffect } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import DOMPurify from 'dompurify'
 import katex from 'katex'
@@ -20,6 +20,7 @@ import { CodeViewer } from '../chat/CodeViewer'
 import { MermaidRenderer } from '../chat/MermaidRenderer'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { t } from '../../i18n'
+import { enhanceDocumentTables } from './markdownTableSizing'
 
 type Props = {
   content: string
@@ -547,13 +548,14 @@ const BASE_PROSE_CLASSES = `markdown-prose prose prose-sm min-w-0 max-w-none bre
   [&_.md-table-wrap]:my-5 [&_.md-table-wrap]:overflow-x-auto [&_.md-table-wrap]:rounded-[var(--radius-lg)] [&_.md-table-wrap]:border [&_.md-table-wrap]:border-[var(--color-border)] [&_.md-table-wrap]:bg-[var(--color-surface-container-lowest)]`
 
 const DOCUMENT_PROSE_CLASSES = `
+  markdown-document
   prose-p:text-[15px] prose-p:leading-7
   prose-headings:scroll-mt-6 prose-headings:tracking-[-0.01em]
   prose-h1:mb-4 prose-h1:text-2xl prose-h1:font-semibold prose-h1:leading-tight
   prose-h2:mt-8 prose-h2:mb-3 prose-h2:border-b prose-h2:border-[var(--color-border)] prose-h2:pb-2 prose-h2:text-xl prose-h2:font-semibold
   prose-h3:mt-6 prose-h3:mb-2 prose-h3:text-base prose-h3:font-semibold
   prose-h4:mt-5 prose-h4:mb-2 prose-h4:text-sm prose-h4:font-semibold
-  prose-blockquote:my-4 prose-blockquote:rounded-r-[var(--radius-md)] prose-blockquote:border-l-4 prose-blockquote:border-[var(--color-primary-fixed-dim)] prose-blockquote:bg-[var(--color-surface-container-low)] prose-blockquote:px-4 prose-blockquote:py-2 prose-blockquote:italic
+  prose-blockquote:my-4 prose-blockquote:rounded-r-[var(--radius-md)] prose-blockquote:border-l-4 prose-blockquote:border-[var(--color-primary-fixed-dim)] prose-blockquote:bg-[var(--color-surface-container-low)] prose-blockquote:px-4 prose-blockquote:py-2 prose-blockquote:not-italic prose-blockquote:[&_p]:before:content-none prose-blockquote:[&_p]:after:content-none
   prose-hr:my-6 prose-hr:border-[var(--color-border)]
   prose-img:rounded-[var(--radius-lg)] prose-img:border prose-img:border-[var(--color-border)]
   prose-kbd:rounded-[var(--radius-sm)] prose-kbd:border prose-kbd:border-[var(--color-border)] prose-kbd:bg-[var(--color-surface-container-lowest)] prose-kbd:px-1.5 prose-kbd:py-0.5 prose-kbd:font-mono prose-kbd:text-[12px] prose-kbd:font-normal prose-kbd:text-[var(--color-text-secondary)] prose-kbd:shadow-none
@@ -646,6 +648,16 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, anchor
 
     return result
   }, [html, codeBlocks, mathBlocks, streaming, linkifyFileReferences, onLinkClick, resolveImageSrc, resolveLinkTitle])
+
+  const tableWidths = useRef({ content, values: new Map<number, Map<number, number>>() })
+  useLayoutEffect(() => {
+    if (tableWidths.current.content !== content) {
+      tableWidths.current = { content, values: new Map() }
+    }
+    if (variant === 'document' && rootRef.current && !streaming) {
+      return enhanceDocumentTables(rootRef.current, tableWidths.current.values)
+    }
+  }, [parts, content, variant, streaming])
 
   const handleClick = useCallback(async (event: ReactMouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null
