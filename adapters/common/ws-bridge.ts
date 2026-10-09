@@ -99,6 +99,7 @@ export class WsBridge {
     requestId: string,
     allowed: boolean,
     rule?: string,
+    updatedInput?: Record<string, unknown>,
   ): boolean {
     const message: Record<string, unknown> = {
       type: 'permission_response',
@@ -106,6 +107,7 @@ export class WsBridge {
       allowed,
     }
     if (rule) message.rule = rule
+    if (updatedInput) message.updatedInput = updatedInput
     return this.send(chatId, message)
   }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import { WsBridge } from '../ws-bridge.js'
 import { WebSocketServer, type WebSocket as WsServerSocket } from 'ws'
+import { WechatQuestions, withWechatInteractionHint } from '../../wechat/questions.js'
 
 async function waitFor(
   predicate: () => boolean,
@@ -157,6 +158,55 @@ describe('WsBridge: handler serialization', () => {
     expect(new URL(requestUrl, serverUrl).searchParams.get('token'))
       .toBe('adapter secret/with spaces')
     bridge.destroy()
+  })
+
+  it('delivers text question answers on the existing permission protocol over a real socket', async () => {
+    const bridge = new WsBridge(serverUrl, 'wechat')
+    const questions = new WechatQuestions()
+    bridge.onServerMessage('wx', (msg) => {
+      if (msg.type === 'permission_request') questions.add(msg.requestId, msg.input)
+      if (msg.type === 'permission_resolved') questions.delete(msg.requestId)
+    })
+    try {
+      bridge.connectSession('wx', 'wx-session')
+      expect(await bridge.waitForOpen('wx')).toBe(true)
+      const ws = await waitForServerConnection()
+      const input = { questions: [{ question: '继续吗？', header: '确认', multiSelect: false,
+        options: [{ label: '继续', description: '继续操作' }, { label: '停止', description: '结束' }] }] }
+      ws.send(JSON.stringify({ type: 'permission_request', requestId: 'ask-1', toolName: 'AskUserQuestion', input }))
+      expect(await waitFor(() => questions.has('ask-1'))).toBe(true)
+      const reply = questions.reply('1', true)
+      expect(reply.kind).toBe('answer')
+      const received = new Promise<any>(resolve => ws.once('message', raw => resolve(JSON.parse(raw.toString()))))
+      if (reply.kind === 'answer') {
+        expect(bridge.sendPermissionResponse('wx', reply.requestId, true, undefined, reply.updatedInput)).toBe(true)
+      }
+      expect(await received).toEqual({ type: 'permission_response', requestId: 'ask-1', allowed: true,
+        updatedInput: { ...input, answers: { '继续吗？': '继续' } } })
+      ws.send(JSON.stringify({ type: 'permission_resolved', requestId: 'ask-1', permissionType: 'tool' }))
+      expect(await waitFor(() => !questions.has('ask-1'))).toBe(true)
+      expect(questions.reply('接着聊', true).kind).toBe('unhandled')
+    } finally { bridge.destroy() }
+  })
+
+  it('keeps other adapter messages and ordinary approvals unchanged', async () => {
+    const bridge = new WsBridge(serverUrl, 'telegram')
+    try {
+      bridge.connectSession('other', 'other-session')
+      expect(await bridge.waitForOpen('other')).toBe(true)
+      const ws = await waitForServerConnection()
+      const messages: any[] = []
+      ws.on('message', raw => messages.push(JSON.parse(raw.toString())))
+      bridge.sendUserMessage('other', '选择方案')
+      bridge.sendPermissionResponse('other', 'bash-1', true, 'always')
+      bridge.sendUserMessage('other', withWechatInteractionHint('/clear'))
+      expect(await waitFor(() => messages.length === 3)).toBe(true)
+      expect(messages).toEqual([
+        { type: 'user_message', content: '选择方案' },
+        { type: 'permission_response', requestId: 'bash-1', allowed: true, rule: 'always' },
+        { type: 'user_message', content: '/clear' },
+      ])
+    } finally { bridge.destroy() }
   })
 
   it('processes handler calls in strict FIFO order per chatId', async () => {

@@ -22,6 +22,7 @@ import { isAllowedUser, tryPair } from '../common/pairing.js'
 import { AttachmentStore } from '../common/attachment/attachment-store.js'
 import { checkAttachmentLimit } from '../common/attachment/attachment-limits.js'
 import { WechatTypingController } from './typing.js'
+import { WechatQuestions, withWechatInteractionHint } from './questions.js'
 import {
   extractWechatText,
   getWechatConfig,
@@ -57,6 +58,16 @@ const blockBuffers = new Map<string, MessageBuffer>()
 const contextTokens = new Map<string, string>()
 const typingTickets = new Map<string, string>()
 const pendingPermissions = new Map<string, Set<string>>()
+const pendingQuestions = new Map<string, WechatQuestions>()
+
+function getQuestions(chatId: string): WechatQuestions {
+  let questions = pendingQuestions.get(chatId)
+  if (!questions) {
+    questions = new WechatQuestions()
+    pendingQuestions.set(chatId, questions)
+  }
+  return questions
+}
 const typingController = new WechatTypingController(sendTypingIndicator)
 
 let getUpdatesBuf = ''
@@ -178,6 +189,7 @@ function clearTransientChatState(chatId: string): void {
   blockBuffers.get(chatId)?.reset()
   blockBuffers.delete(chatId)
   pendingPermissions.delete(chatId)
+  pendingQuestions.delete(chatId)
   typingController.stop(chatId)
   const runtime = getRuntimeState(chatId)
   runtime.state = 'idle'
@@ -389,7 +401,6 @@ async function handleServerMessage(chatId: string, msg: ServerMessage): Promise<
       typingController.start(chatId)
       break
     case 'permission_request': {
-      runtime.pendingPermissionCount += 1
       runtime.state = 'permission_pending'
       let pending = pendingPermissions.get(chatId)
       if (!pending) {
@@ -397,13 +408,36 @@ async function handleServerMessage(chatId: string, msg: ServerMessage): Promise<
         pendingPermissions.set(chatId, pending)
       }
       pending.add(msg.requestId)
+      runtime.pendingPermissionCount = pending.size
       typingController.stop(chatId)
+      if (msg.toolName === 'AskUserQuestion') {
+        await blockBuffers.get(chatId)?.complete()
+        blockBuffers.delete(chatId)
+        await sendText(chatId, getQuestions(chatId).add(msg.requestId, msg.input))
+        break
+      }
       await sendText(
         chatId,
         `${formatPermissionRequest(msg.toolName, msg.input, msg.requestId)}\n\n${formatPermissionInstructions(msg.requestId)}`,
       )
       break
     }
+    case 'permission_resolved': {
+      pendingPermissions.get(chatId)?.delete(msg.requestId)
+      pendingQuestions.get(chatId)?.delete(msg.requestId)
+      runtime.pendingPermissionCount = pendingPermissions.get(chatId)?.size ?? 0
+      break
+    }
+    case 'permission_requests_snapshot': {
+      const ids = new Set<string>(msg.toolRequestIds ?? [])
+      pendingPermissions.set(chatId, ids)
+      pendingQuestions.get(chatId)?.reconcile(ids)
+      runtime.pendingPermissionCount = ids.size
+      break
+    }
+    case 'permission_response_failed':
+      await sendText(chatId, `确认未送达：${msg.message}。请重试，或发送 /stop 停止当前轮次。`)
+      break
     case 'message_complete': {
       runtime.state = 'idle'
       runtime.verb = undefined
@@ -494,20 +528,32 @@ async function routeUserMessage(message: WechatMessage): Promise<void> {
       await sendText(chatId, sent ? '已清空当前会话上下文。' : '无法发送 /clear，请先发送 /new 重新连接会话。')
       return
     }
-    const permissionDecision = !hasAttachments ? parsePermissionCommand(text, pendingPermissions.get(chatId)) : null
+    const pending = pendingPermissions.get(chatId)
+    const questions = getQuestions(chatId)
+    const questionReply = !hasAttachments ? questions.reply(text, (pending?.size ?? 0) === 1) : { kind: 'unhandled' as const }
+    if (questionReply.kind === 'text') {
+      await sendText(chatId, questionReply.text)
+      return
+    }
+    if (questionReply.kind === 'answer') {
+      const sent = bridge.sendPermissionResponse(chatId, questionReply.requestId, true, undefined, questionReply.updatedInput)
+      await sendText(chatId, sent ? '答案已发送，等待助手继续。' : '答案发送失败，请重试；问题仍保留。')
+      return
+    }
+    const permissionDecision = !hasAttachments ? parsePermissionCommand(text, pending) : null
     if (permissionDecision) {
       const { requestId, allowed, rule } = permissionDecision
+      if (questions.has(requestId) && allowed) {
+        await sendText(chatId, `这是一条提问，请用 /answer ${requestId} <答案> 回答，不能用允许权限代替答案。`)
+        return
+      }
       const pending = pendingPermissions.get(chatId)
       if (!pending?.has(requestId)) {
         await sendText(chatId, `未找到待确认的权限请求：${requestId}`)
         return
       }
       const sent = bridge.sendPermissionResponse(chatId, requestId, allowed, rule)
-      const runtime = getRuntimeState(chatId)
-      if (sent) {
-        runtime.pendingPermissionCount = Math.max(0, runtime.pendingPermissionCount - 1)
-        pending.delete(requestId)
-      }
+      // The server's permission_resolved event is authoritative, including PC/H5 responses.
       await sendText(chatId, sent ? `${formatPermissionDecisionStatus(permissionDecision)}。` : '权限响应发送失败，请检查会话状态。')
       return
     }
@@ -522,7 +568,7 @@ async function routeUserMessage(message: WechatMessage): Promise<void> {
     const effectiveText = text || (attachments.length > 0 ? '(用户发送了附件)' : '')
     if (!effectiveText && attachments.length === 0) return
     typingController.start(chatId)
-    const sent = bridge.sendUserMessage(chatId, effectiveText, attachments.length ? attachments : undefined)
+    const sent = bridge.sendUserMessage(chatId, withWechatInteractionHint(effectiveText), attachments.length ? attachments : undefined)
     if (!sent) await sendText(chatId, '消息发送失败，连接可能已断开。请发送 /new 重新开始。')
   })
 }
