@@ -3,6 +3,8 @@ import { useTranslation } from '../../i18n'
 import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import { BrowserAddressBar } from './BrowserAddressBar'
 import { resolveBrowserNavigationUrl } from './BrowserSurface'
+import { FileDownloadLink } from '../workspace/FileDownloadLink'
+import { previewFileDownloadUrl } from '../../lib/fileDownload'
 
 /** The H5 client has no native preview window. Keep generated HTML in an
  * opaque-origin sandbox so it cannot read the parent application's session. */
@@ -14,10 +16,12 @@ export function WebBrowserSurface({ sessionId }: { sessionId: string }) {
   if (!session) return null
   const url = resolveBrowserNavigationUrl(session.url, sessionId)
   const safeUrl = /^https?:\/\//i.test(url) ? url : ''
+  const downloadUrl = previewFileDownloadUrl(safeUrl)
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <BrowserAddressBar url={url} canGoBack={session.canGoBack} canGoForward={session.canGoForward}
+        rightActions={downloadUrl ? <FileDownloadLink key={downloadUrl} url={downloadUrl} /> : undefined}
         loading={session.loading && Boolean(safeUrl)}
         onNavigate={(value) => store.navigate(sessionId, resolveBrowserNavigationUrl(value, sessionId))}
         onBack={() => store.goBack(sessionId)} onForward={() => store.goForward(sessionId)}

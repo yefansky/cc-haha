@@ -240,6 +240,10 @@ export const kr: Record<TranslationKey, string> = {
   'assistantOutputs.open': '열기',
 
   // ─── Workspace Panel ───────────────────────────────
+  'workspace.downloadFile': '다운로드',
+  'workspace.downloadPreparing': '준비 중…',
+  'workspace.downloadSave': '파일 저장',
+  'workspace.downloadFailed': '다운로드에 실패했습니다. 연결을 확인하고 다시 시도하세요.',
   'workspace.changedFiles': '변경된 파일',
   'workspace.svnCommitMessage': '커밋 메시지',
   'workspace.svnCommitPlaceholder': '메시지 (Ctrl+Enter로 커밋)',

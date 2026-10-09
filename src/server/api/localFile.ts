@@ -1,6 +1,6 @@
 import * as path from 'node:path'
 import { isAllowedFilesystemPath } from './filesystem.js'
-import { serveFileWithRange } from './previewFs.js'
+import { serveFileDownload, serveFileWithRange } from './previewFs.js'
 import { canonicalizeExistingFilesystemPath } from '../services/filesystemPathSecurity.js'
 import { normalizeDriveRootPathForPlatform } from '../services/windowsDrivePath.js'
 
@@ -95,5 +95,7 @@ export async function handleLocalFile(
     return new Response('forbidden', { status: 403 })
   }
 
-  return serveFileWithRange(canonicalPath, reqHeaders)
+  return url.searchParams.get('download') === '1'
+    ? serveFileDownload(canonicalPath, reqHeaders)
+    : serveFileWithRange(canonicalPath, reqHeaders)
 }

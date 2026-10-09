@@ -240,6 +240,10 @@ export const zh: Record<TranslationKey, string> = {
   'assistantOutputs.open': '打开',
 
   // ─── Workspace Panel ───────────────────────────────
+  'workspace.downloadFile': '下载',
+  'workspace.downloadPreparing': '准备中…',
+  'workspace.downloadSave': '保存文件',
+  'workspace.downloadFailed': '下载失败，请检查连接后重试。',
   'workspace.changedFiles': '已更改文件',
   'workspace.svnCommitMessage': '提交说明',
   'workspace.svnCommitPlaceholder': '输入提交说明（Ctrl+Enter 提交）',

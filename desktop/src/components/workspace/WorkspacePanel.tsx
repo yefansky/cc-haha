@@ -48,6 +48,8 @@ import {
   type WorkspaceDiffCommentSelection,
 } from './WorkspaceCodeSurface'
 import { WorkspaceFileOpenWith } from './WorkspaceFileOpenWith'
+import { FileDownloadLink } from './FileDownloadLink'
+import { workspaceFileDownloadUrl } from '../../lib/fileDownload'
 import { WorkspaceSideBySideDiffSurface } from './WorkspaceSideBySideDiffSurface'
 import {
   discardWorkspaceComparisonSession,
@@ -2576,6 +2578,9 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
             </span>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {activePreviewTab.kind === 'file' && state !== 'missing' && state !== 'loading' && state !== 'error' && (
+              <FileDownloadLink key={activePreviewTab.path} url={workspaceFileDownloadUrl(sessionId, activePreviewTab.path, status?.workDir)} />
+            )}
             {activePreviewTab.previewType !== 'image' && activePreviewTab.kind !== 'diff' && (
               <IconButton
                 icon={activePreviewTab.kind === 'file'

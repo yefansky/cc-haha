@@ -20,6 +20,7 @@ describe('WebBrowserSurface', () => {
     const frame = screen.getByTitle('Browser')
     expect(frame).toHaveAttribute('src', 'https://gateway.example/local-file/G%3A/reports/%E6%8A%A5%E5%91%8A.html')
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
+    expect(screen.getByRole('link', { name: 'Download' })).toHaveAttribute('href', 'https://gateway.example/local-file/G%3A/reports/%E6%8A%A5%E5%91%8A.html?download=1')
     fireEvent.load(frame)
     expect(useBrowserPanelStore.getState().bySession.s?.loading).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
@@ -30,6 +31,7 @@ describe('WebBrowserSurface', () => {
   it('navigates back to a prior document and rejects executable URL schemes', () => {
     useBrowserPanelStore.getState().open('s', 'https://gateway.example/one.html')
     render(<WebBrowserSurface sessionId="s" />)
+    expect(screen.queryByRole('link', { name: 'Download' })).not.toBeInTheDocument()
     act(() => useBrowserPanelStore.getState().navigate('s', 'https://gateway.example/two.html'))
     expect(screen.getByTitle('Browser')).toHaveAttribute('src', 'https://gateway.example/two.html')
     fireEvent.click(screen.getByRole('button', { name: 'Back' }))

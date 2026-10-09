@@ -239,6 +239,10 @@ export const en = {
   'assistantOutputs.open': 'Open',
 
   // ─── Workspace Panel ───────────────────────────────
+  'workspace.downloadFile': 'Download',
+  'workspace.downloadPreparing': 'Preparing…',
+  'workspace.downloadSave': 'Save file',
+  'workspace.downloadFailed': 'Download failed. Check your connection and try again.',
   'workspace.changedFiles': 'Changed files',
   'workspace.svnCommitMessage': 'Commit message',
   'workspace.svnCommitPlaceholder': 'Message (Ctrl+Enter to commit)',

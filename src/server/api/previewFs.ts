@@ -175,7 +175,25 @@ export async function handlePreviewFs(
     return new Response('forbidden', { status: 403 })
   }
 
+  if (url.searchParams.get('download') === '1') {
+    return serveFileDownload(canonicalTarget, reqHeaders)
+  }
   return servePreviewFsFile(canonicalTarget, url.pathname, reqHeaders)
+}
+
+/** Only call after the existing route's canonical-path access checks. */
+export function serveFileDownload(target: string, reqHeaders?: Headers): Promise<Response> {
+  const name = path.basename(target)
+  const fallback = name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'download'
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, (char) =>
+    `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
+  return serveFileWithRange(target, reqHeaders, {
+    'Content-Disposition': `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`,
+    'Content-Type': 'application/octet-stream',
+    'X-Content-Type-Options': 'nosniff',
+    'Access-Control-Expose-Headers': 'Content-Disposition',
+    'Cache-Control': 'private, no-store',
+  })
 }
 
 function previewHtmlBasePath(pathname: string): string {

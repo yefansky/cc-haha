@@ -240,6 +240,10 @@ export const jp: Record<TranslationKey, string> = {
   'assistantOutputs.open': '開く',
 
   // ─── Workspace Panel ───────────────────────────────
+  'workspace.downloadFile': 'ダウンロード',
+  'workspace.downloadPreparing': '準備中…',
+  'workspace.downloadSave': 'ファイルを保存',
+  'workspace.downloadFailed': 'ダウンロードできませんでした。接続を確認して再試行してください。',
   'workspace.changedFiles': '変更されたファイル',
   'workspace.svnCommitMessage': 'コミットメッセージ',
   'workspace.svnCommitPlaceholder': 'メッセージ（Ctrl+Enter でコミット）',
