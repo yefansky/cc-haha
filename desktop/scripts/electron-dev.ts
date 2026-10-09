@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer, type ViteDevServer } from 'vite'
 
-export const DEFAULT_RENDERER_URL = 'http://localhost:1420'
+export const DEFAULT_RENDERER_URL = 'http://127.0.0.1:1420'
 export const LOCAL_NO_PROXY_ENTRIES = ['localhost', '127.0.0.1', '::1']
 
 export function mergeNoProxy(existing: string | undefined, required = LOCAL_NO_PROXY_ENTRIES) {
@@ -115,23 +115,39 @@ async function ensureFreshSidecar(desktopRoot: string) {
   if (exitCode !== 0) throw new Error(`Development sidecar build failed (exit ${exitCode})`)
 }
 
+export function rendererReadinessUrls(rendererUrl: string) {
+  // Index HTML alone can answer 200 before the module graph is usable.
+  // Probe the real bootstrap entry so Electron does not race a cold Vite transform.
+  const base = rendererUrl.replace(/\/$/, '')
+  return [`${base}/`, `${base}/src/main.tsx`]
+}
+
 async function waitForRenderer(rendererUrl: string) {
-  const deadline = Date.now() + 30_000
+  const deadline = Date.now() + 60_000
+  const urls = rendererReadinessUrls(rendererUrl)
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(rendererUrl)
-      if (response.ok) return
+      const responses = await Promise.all(urls.map(url => fetch(url)))
+      if (responses.every(response => response.ok)) return
     } catch {
-      await Bun.sleep(250)
+      // keep polling
     }
+    await Bun.sleep(250)
   }
-  throw new Error(`Timed out waiting for Vite renderer at ${rendererUrl}`)
+  throw new Error(`Timed out waiting for Vite renderer at ${urls.join(', ')}`)
 }
 
 async function startVite(desktopRoot: string) {
+  // Force IPv4 loopback. Vite default host:false binds localhost, which on
+  // Windows can be [::1]-only while Electron still fetches 127.0.0.1.
   const server = await createServer({
     root: desktopRoot,
     configFile: path.join(desktopRoot, 'vite.config.ts'),
+    server: {
+      host: '127.0.0.1',
+      port: 1420,
+      strictPort: true,
+    },
   })
   await server.listen()
   server.printUrls()

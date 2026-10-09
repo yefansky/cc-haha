@@ -70,22 +70,54 @@ try {
     return
   }
 
+  # Stale Vite host: historically `node vite.js`, now `bun run ./scripts/electron-dev.ts`
+  # which embeds Vite. Match only this lab's desktop path / electron-dev entry.
   $staleVite = @($allProcesses | Where-Object {
-    $_.Name -eq 'node.exe' -and
-    -not [string]::IsNullOrWhiteSpace($_.CommandLine) -and
-    $_.CommandLine.IndexOf($viteEntry, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    -not [string]::IsNullOrWhiteSpace($_.CommandLine) -and (
+      (
+        $_.Name -eq 'node.exe' -and
+        $_.CommandLine.IndexOf($viteEntry, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+      ) -or (
+        $_.Name -eq 'bun.exe' -and (
+          $_.CommandLine.IndexOf(($desktopRoot + '\scripts\electron-dev.ts'), [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+          $_.CommandLine.IndexOf(($desktopRoot + '/scripts/electron-dev.ts'), [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+          ($_.CommandLine -like '*electron:dev*' -and $_.CommandLine.IndexOf($desktopRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+        )
+      )
+    )
   })
   if ($staleVite.Count -gt 0) {
     $processIds = ($staleVite | ForEach-Object { $_.ProcessId }) -join ', '
-    Write-Host "Removing stale cc-haha Vite process (PID: $processIds) before launch..." -ForegroundColor Yellow
-    $staleVite | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Milliseconds 500
+    Write-Host "Removing stale cc-haha Vite/electron-dev process (PID: $processIds) before launch..." -ForegroundColor Yellow
+    foreach ($proc in $staleVite) {
+      & taskkill.exe /T /F /PID $proc.ProcessId 2>$null | Out-Null
+      Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 800
   }
 
-  # Give a useful, safe error when a different application owns the fixed
-  # Tauri/Vite development port.  Do not stop a process outside this lab.
+  # If 1420 is still held by this lab's bun/electron-dev tree, tear it down.
+  # Foreign owners still get a hard error (do not kill other projects).
   $portOwner = Get-NetTCPConnection -State Listen -LocalPort 1420 -ErrorAction SilentlyContinue |
     Select-Object -First 1
+  if ($portOwner) {
+    $ownerProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($portOwner.OwningProcess)" -ErrorAction SilentlyContinue
+    $ownerCmd = if ($ownerProcess) { $ownerProcess.CommandLine } else { '' }
+    $isOurs = $ownerProcess -and $ownerProcess.Name -in @('bun.exe', 'node.exe') -and $ownerCmd -and (
+      $ownerCmd.IndexOf($desktopRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and (
+        $ownerCmd -like '*electron-dev.ts*' -or
+        $ownerCmd -like '*electron:dev*' -or
+        $ownerCmd.IndexOf($viteEntry, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+      )
+    )
+    if ($isOurs) {
+      Write-Host "Removing stale cc-haha process still holding port 1420 (PID: $($portOwner.OwningProcess))..." -ForegroundColor Yellow
+      & taskkill.exe /T /F /PID $portOwner.OwningProcess 2>$null | Out-Null
+      Stop-Process -Id $portOwner.OwningProcess -Force -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 800
+      $portOwner = Get-NetTCPConnection -State Listen -LocalPort 1420 -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+  }
   if ($portOwner) {
     $ownerProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($portOwner.OwningProcess)" -ErrorAction SilentlyContinue
     $ownerName = if ($ownerProcess) { "$($ownerProcess.Name) (PID: $($ownerProcess.ProcessId))" } else { "PID: $($portOwner.OwningProcess)" }

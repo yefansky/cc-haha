@@ -7,6 +7,7 @@ import {
   DEFAULT_RENDERER_URL,
   isSidecarBuildStale,
   mergeNoProxy,
+  rendererReadinessUrls,
   resolveSidecarBuildCommand,
   resolveElectronExecutable,
 } from './electron-dev'
@@ -26,7 +27,7 @@ function createDesktopRootFixture(withExecutables = true) {
 }
 
 describe('desktop dev launcher environment', () => {
-  it('uses localhost and bypasses proxies for local renderer startup', () => {
+  it('uses 127.0.0.1 and bypasses proxies for local renderer startup', () => {
     const env = createElectronDevEnv({
       HTTPS_PROXY: 'http://proxy.example',
       NO_PROXY: 'example.com',
@@ -51,6 +52,18 @@ describe('desktop dev launcher environment', () => {
   it('deduplicates no_proxy entries', () => {
     expect(mergeNoProxy('localhost,127.0.0.1')).toBe('localhost,127.0.0.1,::1')
   })
+
+  it('probes index and main.tsx before declaring the renderer ready', () => {
+    expect(rendererReadinessUrls('http://127.0.0.1:1420')).toEqual([
+      'http://127.0.0.1:1420/',
+      'http://127.0.0.1:1420/src/main.tsx',
+    ])
+    expect(rendererReadinessUrls('http://127.0.0.1:1420/')).toEqual([
+      'http://127.0.0.1:1420/',
+      'http://127.0.0.1:1420/src/main.tsx',
+    ])
+  })
+
 
   it.each([
     ['win32', /electron\.exe$/],
