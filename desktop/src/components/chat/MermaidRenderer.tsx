@@ -723,15 +723,15 @@ export function MermaidRenderer({ code }: Props) {
       </div>
 
       {/* Fullscreen preview modal */}
-      <Modal open={previewOpen} onClose={handlePreviewClose} width={1100}>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
+      <Modal open={previewOpen} onClose={handlePreviewClose} variant="expanded" title="Mermaid Diagram">
+        <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 p-3 sm:p-5">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
               <span className="material-symbols-outlined text-[18px]">account_tree</span>
               Mermaid Diagram
             </div>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1 py-1">
+            <div className="order-last flex w-full flex-wrap items-center gap-2 sm:order-none sm:w-auto">
+              <div className="flex flex-wrap items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1 py-1">
                 <IconButton
                   icon="remove"
                   label={t('mermaid.zoomOut')}
@@ -768,14 +768,22 @@ export function MermaidRenderer({ code }: Props) {
               </div>
               <CopyButton text={code} className={COPY_CHIP_CLASS} />
             </div>
+            <IconButton
+              icon="close"
+              label="Close diagram preview"
+              showTooltip={false}
+              size="md"
+              tone="secondary"
+              onClick={handlePreviewClose}
+            />
           </div>
           <div
             ref={previewViewportRef}
             data-testid="mermaid-preview-viewport"
-            className="overflow-auto rounded-xl bg-[var(--color-surface-container-lowest)]"
+            className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain rounded-xl bg-[var(--color-surface-container-lowest)]"
             style={{
-              maxHeight: '75vh',
               scrollbarGutter: 'stable',
+              touchAction: 'none',
               cursor: isDraggingPreview ? 'grabbing' : 'grab',
             }}
             onWheel={handlePreviewWheel}
@@ -800,7 +808,7 @@ export function MermaidRenderer({ code }: Props) {
                 </div>
               </div>
             </div>
-          <div className="text-[11px] text-[var(--color-text-tertiary)]">
+          <div className="hidden shrink-0 text-[11px] text-[var(--color-text-tertiary)] sm:block">
             Use the zoom controls to enlarge the diagram. Drag inside the preview to pan, or use the trackpad, mouse wheel, and scrollbars. Hold Ctrl/Command while scrolling to zoom.
           </div>
         </div>
