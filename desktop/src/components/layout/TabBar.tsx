@@ -535,7 +535,7 @@ export function TabBar() {
         No `border-b`: the selected tab's bottom edge has to run straight into
         the content below it, and a rule across the whole strip cuts through it.
       */
-      className="flex min-h-[52px] items-stretch bg-[var(--color-surface-sidebar)] select-none"
+      className="flex w-full min-w-0 shrink-0 min-h-[52px] items-stretch bg-[var(--color-surface-sidebar)] select-none"
     >
 
       {canScrollLeft && (
@@ -553,7 +553,7 @@ export function TabBar() {
           than as a corner clipped by the window frame. The visible viewport
           owns native no-drag hit testing so offscreen tabs cannot mask the sidebar.
         */
-        className="tab-bar-scroll-viewport flex-1 flex items-stretch gap-[2px] overflow-x-hidden pt-[6px]"
+        className="tab-bar-scroll-viewport min-w-0 flex-1 flex items-stretch gap-[2px] overflow-x-hidden pt-[6px]"
         onDragOver={(e) => e.preventDefault()}
       >
         {tabs.map((tab, index) => {

@@ -5,6 +5,11 @@ import { useTranslation } from '../../i18n'
 
 const isWindows = typeof navigator !== 'undefined' && /Win/.test(navigator.platform)
 
+type ControlsOverlay = EventTarget & { visible: boolean }
+function getControlsOverlay(): ControlsOverlay | undefined {
+  return (navigator as Navigator & { windowControlsOverlay?: ControlsOverlay }).windowControlsOverlay
+}
+
 /** Whether to render custom window controls (Windows + desktop host only) */
 export const showWindowControls = isWindows && getDesktopHost().capabilities.windowControls
 
@@ -19,11 +24,21 @@ const WINDOW_CONTROL_CLASS =
 
 export function WindowControls() {
   const t = useTranslation()
+  const [nativeControls, setNativeControls] = useState(() => !!getControlsOverlay()?.visible)
   const [maximized, setMaximized] = useState(false)
   const [win, setWin] = useState<DesktopHost['window'] | null>(null)
 
   useEffect(() => {
-    if (!showWindowControls) return
+    const overlay = getControlsOverlay()
+    if (!overlay) return
+    const update = () => setNativeControls(overlay.visible)
+    update()
+    overlay.addEventListener('geometrychange', update)
+    return () => overlay.removeEventListener('geometrychange', update)
+  }, [])
+
+  useEffect(() => {
+    if (!showWindowControls || nativeControls) return
     let unlisten: (() => void) | undefined
     let cancelled = false
 
@@ -48,7 +63,7 @@ export function WindowControls() {
       cancelled = true
       unlisten?.()
     }
-  }, [])
+  }, [nativeControls])
 
   const runWindowAction = (action: () => Promise<void>) => {
     void action().catch((error) => {
@@ -56,7 +71,17 @@ export function WindowControls() {
     })
   }
 
-  if (!showWindowControls || !win) return null
+  if (!showWindowControls) return null
+  if (nativeControls) {
+    // Chromium supplies the actual DIP/zoom-aware space occupied by OS buttons.
+    return <div
+      data-testid="native-window-controls-space"
+      aria-hidden="true"
+      className="shrink-0"
+      style={{ width: 'calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px)))' }}
+    />
+  }
+  if (!win) return null
 
   return (
     <div data-testid="window-controls" className="flex items-stretch flex-shrink-0 -my-px">

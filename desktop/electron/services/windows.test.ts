@@ -192,9 +192,10 @@ describe('Electron window service', () => {
     expect(maximize).toHaveBeenCalledTimes(1)
   })
 
-  it('uses frameless custom chrome only on Windows', () => {
+  it('keeps native window controls over the custom Windows titlebar', () => {
     expect(windowChromeOptionsForPlatform('win32')).toEqual({
-      frame: false,
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { height: 52 },
       autoHideMenuBar: true,
       fullscreenable: true,
     })

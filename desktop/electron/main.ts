@@ -171,6 +171,11 @@ function resolveStartupWindowBackground(): string {
   return startupWindowBackground(currentAppearance(), nativeTheme.shouldUseDarkColors)
 }
 
+function syncMainWindowControls(background: string, isDark: boolean) {
+  if (process.platform !== 'win32' || !mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.setTitleBarOverlay({ color: background, symbolColor: isDark ? '#F4F4F4' : '#303030', height: 52 })
+}
+
 /**
  * While the user follows the OS, repaint window backgrounds the moment the OS
  * flips instead of waiting for the renderer to notice and report back — that
@@ -181,6 +186,7 @@ function installSystemAppearanceWatch() {
     const current = currentAppearance()
     if (current && !current.followSystem) return
     const background = startupWindowBackground(current, nativeTheme.shouldUseDarkColors)
+    syncMainWindowControls(background, nativeTheme.shouldUseDarkColors)
     for (const window of [mainWindow, ...traceWindows.values()]) {
       if (!window || window.isDestroyed()) continue
       window.setBackgroundColor(background)
@@ -802,6 +808,7 @@ function registerIpcHandlers() {
       // The pet window is deliberately transparent, so it stays out of this.
       windows: () => [mainWindow, ...traceWindows.values()].filter((window): window is BrowserWindow => !!window),
     })
+    syncMainWindowControls(payload.background, payload.isDark)
   })
 }
 
@@ -824,6 +831,9 @@ async function createMainWindow() {
       sandbox: true,
     },
   })
+  const appearance = currentAppearance()
+  syncMainWindowControls(resolveStartupWindowBackground(), appearance && !appearance.followSystem
+    ? appearance.isDark : nativeTheme.shouldUseDarkColors)
   configureLocalServerRequestAuth(
     mainWindow.webContents.session.webRequest,
     resolveMainRendererServerAccess,

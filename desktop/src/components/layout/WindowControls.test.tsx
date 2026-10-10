@@ -80,6 +80,7 @@ describe('WindowControls', () => {
   })
 
   afterEach(() => {
+    Reflect.deleteProperty(navigator, 'windowControlsOverlay')
     window.localStorage.removeItem('cc-haha-locale')
     Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
     Reflect.deleteProperty(window, 'desktopHost')
@@ -87,6 +88,21 @@ describe('WindowControls', () => {
       configurable: true,
       value: originalPlatform,
     })
+  })
+
+  it('reserves native controls space and tracks overlay visibility without duplicating buttons', async () => {
+    const overlay = Object.assign(new EventTarget(), { visible: true })
+    Object.defineProperty(navigator, 'windowControlsOverlay', { configurable: true, value: overlay })
+    const { WindowControls } = await import('./WindowControls')
+    const { unmount } = render(<WindowControls />)
+    expect(screen.getByTestId('native-window-controls-space')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Close window' })).not.toBeInTheDocument()
+    expect(hostOnResized).not.toHaveBeenCalled()
+    act(() => { overlay.visible = false; overlay.dispatchEvent(new Event('geometrychange')) })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close window' })).toBeInTheDocument())
+    act(() => { overlay.visible = true; overlay.dispatchEvent(new Event('geometrychange')) })
+    expect(screen.queryByRole('button', { name: 'Close window' })).not.toBeInTheDocument()
+    unmount()
   })
 
   it('invokes desktop host window APIs for custom controls on Windows', async () => {

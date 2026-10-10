@@ -24,7 +24,7 @@ export type WindowCreateBounds =
   & Pick<StoredWindowState, 'width' | 'height'>
 export type WindowChromeOptions = Pick<
   BrowserWindowConstructorOptions,
-  'autoHideMenuBar' | 'frame' | 'fullscreenable' | 'titleBarStyle'
+  'autoHideMenuBar' | 'frame' | 'fullscreenable' | 'titleBarStyle' | 'titleBarOverlay'
 >
 
 export function windowStatePath(app: App, env: NodeJS.ProcessEnv = process.env): string {
@@ -166,7 +166,9 @@ export function windowChromeOptionsForPlatform(
 
   if (platform === 'win32') {
     return {
-      frame: false,
+      // OS-owned controls stay reachable even if renderer layout stalls.
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { height: 52 },
       autoHideMenuBar: true,
       fullscreenable: true,
     }
