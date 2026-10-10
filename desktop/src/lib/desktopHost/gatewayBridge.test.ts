@@ -59,13 +59,14 @@ describe('gateway desktop boundary', () => {
     await host.gateway.getConfig()
     await host.gateway.saveConfig(input)
     await host.gateway.clearKey()
+    await host.gateway.recoverConfig()
     await host.gateway.testConnection()
     await host.gateway.start()
     await host.gateway.stop()
     await host.gateway.getStatus()
     expect(invoke.mock.calls).toEqual([
       [IPC.gatewayGetConfig, undefined], [IPC.gatewaySaveConfig, input],
-      [IPC.gatewayClearKey, undefined], [IPC.gatewayTestConnection, undefined],
+      [IPC.gatewayClearKey, undefined], [IPC.gatewayRecoverConfig, undefined], [IPC.gatewayTestConnection, undefined],
       [IPC.gatewayStart, undefined], [IPC.gatewayStop, undefined], [IPC.gatewayGetStatus, undefined],
     ])
     const handler = vi.fn()
@@ -75,7 +76,7 @@ describe('gateway desktop boundary', () => {
     expect(unlisten).toHaveBeenCalledOnce()
   })
 
-  it.each(['getConfig', 'clearKey', 'testConnection', 'start', 'stop', 'getStatus'] as const)('browser rejects %s', async method => {
+  it.each(['getConfig', 'clearKey', 'recoverConfig', 'testConnection', 'start', 'stop', 'getStatus'] as const)('browser rejects %s', async method => {
     await expect(browserHost.gateway[method]()).rejects.toThrow('desktop app runtime')
   })
   it('browser rejects saves and subscriptions', async () => {

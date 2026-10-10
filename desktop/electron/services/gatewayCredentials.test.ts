@@ -39,6 +39,36 @@ function setup(platform: NodeJS.Platform = 'win32', safeStorage = storage()) {
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
 describe('GatewayCredentials', () => {
+  test('explicit recovery backs up foreign ciphertext, keeps the address, and permits reentry', () => {
+    const fixture = setup()
+    fixture.create().save({ gatewayUrl: url, accessKey: secret, autoStart: true })
+    const original = readFileSync(fixture.file, 'utf8')
+    const newStorage = storage()
+    expect(() => new GatewayCredentials({ directory: fixture.dir, safeStorage: newStorage })).toThrow('STORAGE_ERROR')
+    GatewayCredentials.recover(fixture.dir)
+    const backups = readdirSync(fixture.dir).filter(name => name.endsWith('.bak'))
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(fixture.dir, backups[0]!), 'utf8')).toBe(original)
+    const recovered = new GatewayCredentials({ directory: fixture.dir, safeStorage: newStorage })
+    expect(recovered.getConfig()).toEqual({ gatewayUrl: url, autoStart: true, hasKey: false, credentialStorage: 'none' })
+    recovered.save({ gatewayUrl: url, accessKey: 'replacement' })
+    expect(recovered.getAccessKey()).toBe('replacement')
+    expect(readFileSync(fixture.file, 'utf8')).not.toContain('replacement')
+  })
+
+  test('explicit recovery preserves malformed JSON and creates an editable empty config', () => {
+    const fixture = setup()
+    const original = '{invalid-json'
+    writeFileSync(fixture.file, original)
+    GatewayCredentials.recover(fixture.dir)
+    const backup = readdirSync(fixture.dir).find(name => name.endsWith('.bak'))!
+    expect(readFileSync(join(fixture.dir, backup), 'utf8')).toBe(original)
+    expect(fixture.create().getConfig()).toEqual({ gatewayUrl: '', autoStart: false, hasKey: false, credentialStorage: 'none' })
+  })
+
+  test('failed recovery leaves the original intact and reports a fixed storage error', () => {
+    expect(() => GatewayCredentials.recover(join(directory(), 'missing'))).toThrow(/^STORAGE_ERROR$/)
+  })
   test('fixed errors expose code without requiring message parsing', () => {
     const fixture = setup()
     const credentials = fixture.create()

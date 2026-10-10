@@ -32,6 +32,7 @@ export type GatewayHost = {
   getConfig(): Promise<GatewayConfig>
   saveConfig(input: GatewaySaveInput): Promise<GatewayConfig>
   clearKey(): Promise<GatewayConfig>
+  recoverConfig(): Promise<GatewayConfig>
   testConnection(): Promise<GatewayTestResult>
   start(): Promise<GatewayStatus>
   stop(): Promise<GatewayStatus>

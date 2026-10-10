@@ -13,6 +13,11 @@ export interface SafeStorageLike {
 type RecordV1 = { version: 1; gatewayUrl: string; autoStart: boolean; encryptedKey?: string }
 const fail = (code: 'STORAGE_ERROR' | 'CONFIG_INVALID'): never => { throw Object.assign(new Error(code), { code }) }
 
+function writeDurableExclusive(file: string, raw: string): void {
+  const fd = openSync(file, 'wx', 0o600)
+  try { writeFileSync(fd, raw, 'utf8'); fsyncSync(fd) } finally { closeSync(fd) }
+}
+
 function gatewayUrl(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 2048 || /\s|\p{Cc}/u.test(value)) return fail('CONFIG_INVALID')
   try {
@@ -29,6 +34,30 @@ function validKey(value: unknown): value is string {
 
 /** Main-process only. Never expose getAccessKey through IPC. */
 export class GatewayCredentials {
+  /** Explicit user recovery only: preserve original bytes before replacing the key. */
+  static recover(directory: string): void {
+    const file = join(directory, 'gateway-access.json')
+    const temporary = `${file}.${randomUUID()}.tmp`
+    try {
+      const original = readFileSync(file, 'utf8')
+      let url = ''
+      let autoStart = false
+      try {
+        const data = JSON.parse(original)
+        if (data && typeof data === 'object' && !Array.isArray(data)) {
+          try { url = gatewayUrl(data.gatewayUrl) } catch { /* Invalid public address needs reentry. */ }
+          autoStart = data.autoStart === true
+        }
+      } catch { /* Corrupt JSON is preserved in the backup. */ }
+      writeDurableExclusive(`${file}.recovery-${randomUUID()}.bak`, original)
+      writeDurableExclusive(temporary, JSON.stringify({ version: 1, gatewayUrl: url, autoStart }) + '\n')
+      if (readFileSync(file, 'utf8') !== original) return fail('STORAGE_ERROR')
+      renameSync(temporary, file)
+    } catch { fail('STORAGE_ERROR') } finally {
+      try { if (existsSync(temporary)) unlinkSync(temporary) } catch { /* Fixed error only. */ }
+    }
+  }
+
   private readonly file: string
   private readonly safeStorage: SafeStorageLike
   private readonly platform: NodeJS.Platform

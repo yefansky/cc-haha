@@ -100,6 +100,7 @@ let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
 let serverRecoverySubscribed = false
 let gatewayRuntime: GatewayTunnelRuntime | null = null
+let gatewayServerSubscription: (() => void) | null = null
 let updaterService: ElectronUpdaterService | null = null
 let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
@@ -278,7 +279,8 @@ function getGatewayRuntime() {
   })
   // Down transitions trigger recovery. The subsequent successful startup must
   // not cancel the very tunnel launch that requested the new local port.
-  local.onServerChanged(url => {
+  gatewayServerSubscription?.()
+  gatewayServerSubscription = local.onServerChanged(url => {
     if (!isQuitting && url === null) void gatewayRuntime?.localServerChanged().catch(() => {})
   })
   return gatewayRuntime
@@ -502,6 +504,17 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.gatewayClearKey, event => {
     requireMainFrame(event)
     return getGatewayRuntime().clearKey()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.gatewayRecoverConfig, async event => {
+    requireMainFrame(event)
+    if (gatewayRuntime) {
+      const status = await gatewayRuntime.getStatus()
+      if (!['stopped', 'error'].includes(status.state)) throw new Error('BUSY')
+    }
+    GatewayCredentials.recover(app.getPath('userData'))
+    gatewayRuntime?.disposeSync()
+    gatewayRuntime = null
+    return getGatewayRuntime().getConfig()
   })
   registerHandler(ELECTRON_IPC_CHANNELS.gatewayTestConnection, event => {
     requireMainFrame(event)

@@ -41,6 +41,7 @@ export const browserHost: DesktopHost = {
     async getConfig() { unsupported('Gateway management') },
     async saveConfig() { unsupported('Gateway management') },
     async clearKey() { unsupported('Gateway management') },
+    async recoverConfig() { unsupported('Gateway management') },
     async testConnection() { unsupported('Gateway management') },
     async start() { unsupported('Gateway management') },
     async stop() { unsupported('Gateway management') },

@@ -40,7 +40,8 @@ const resultKeys = {
 } as const
 
 function safeCode(error: unknown): GatewayErrorCode {
-  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : error
+  const code = typeof error === 'object' && error !== null
+    ? ('code' in error ? error.code : 'message' in error ? error.message : error) : error
   return typeof code === 'string' && Object.hasOwn(errorKeys, code) ? code as GatewayErrorCode : 'CONNECTION_FAILED'
 }
 
@@ -73,6 +74,14 @@ export function GatewayAccessSettings() {
     setConfig(next)
     setGatewayUrl(next.gatewayUrl)
     setAutoStart(next.autoStart)
+  }
+
+  async function load() {
+    const revision = statusRevision.current
+    const [nextConfig, nextStatus] = await Promise.all([host.gateway.getConfig(), host.gateway.getStatus()])
+    if (!mounted.current) return
+    acceptConfig(nextConfig)
+    if (statusRevision.current === revision) acceptStatus(nextStatus)
   }
 
   useEffect(() => {
@@ -115,9 +124,11 @@ export function GatewayAccessSettings() {
     if (actionLock.current) return
     actionLock.current = true
     setBusy(true)
-    setError(null)
     setResult(null)
-    try { await action() } catch (reason) {
+    try {
+      await action()
+      if (mounted.current) setError(null)
+    } catch (reason) {
       if (mounted.current) setError(safeCode(reason))
     } finally {
       actionLock.current = false
@@ -150,6 +161,17 @@ export function GatewayAccessSettings() {
         {config?.credentialStorage === 'memory' && <p className={warningClass}>{t('settings.gateway.memoryWarning')}</p>}
         {dirty && <p className="text-xs text-[var(--color-text-secondary)]">{t('settings.gateway.saveFirst')}</p>}
         <div className="flex flex-wrap gap-2">
+          {(!config || error) && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(load)}>
+            {t('settings.gateway.retryLoad')}
+          </Button>}
+          {error === 'STORAGE_ERROR' && <Button size="sm" variant="secondary" disabled={busy || running}
+            onClick={() => void run(async () => {
+              const next = await host.gateway.recoverConfig()
+              if (mounted.current) { acceptConfig(next); setAccessKey('') }
+              const nextStatus = await host.gateway.getStatus()
+              latestStatus.current = { generation: -1, state: 'stopped' }
+              acceptStatus(nextStatus)
+            })}>{t('settings.gateway.recoverConfig')}</Button>}
           <Button size="sm" variant="secondary" disabled={locked || !dirty} onClick={() => void run(async () => {
             const next = await host.gateway.saveConfig({ gatewayUrl, autoStart, ...(accessKey ? { accessKey } : {}) })
             if (mounted.current) { acceptConfig(next); setAccessKey('') }
@@ -171,6 +193,9 @@ export function GatewayAccessSettings() {
             {t('settings.gateway.stop')}
           </Button>
         </div>
+        {error === 'STORAGE_ERROR' && <p className="text-xs text-[var(--color-text-secondary)]">
+          {t('settings.gateway.recoveryHint')}
+        </p>}
         {shownError && <p id={errorId} role="alert" className="text-xs text-[var(--color-error)]">{t(errorKeys[safeCode(shownError)])}</p>}
         {result && <dl aria-label={t('settings.gateway.testResults')} className="grid grid-cols-2 gap-2 text-xs text-[var(--color-text-secondary)]">
           {(Object.keys(resultKeys) as Array<keyof typeof resultKeys>).map(key => <div key={key}>

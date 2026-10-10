@@ -2,6 +2,7 @@ export const ELECTRON_IPC_CHANNELS = {
   gatewayGetConfig: 'desktop:gateway:get-config',
   gatewaySaveConfig: 'desktop:gateway:save-config',
   gatewayClearKey: 'desktop:gateway:clear-key',
+  gatewayRecoverConfig: 'desktop:gateway:recover-config',
   gatewayTestConnection: 'desktop:gateway:test-connection',
   gatewayStart: 'desktop:gateway:start',
   gatewayStop: 'desktop:gateway:stop',

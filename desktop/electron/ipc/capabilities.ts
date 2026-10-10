@@ -228,6 +228,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.gatewayGetConfig]: noPayload,
   [ELECTRON_IPC_CHANNELS.gatewaySaveConfig]: gatewaySaveConfig,
   [ELECTRON_IPC_CHANNELS.gatewayClearKey]: noPayload,
+  [ELECTRON_IPC_CHANNELS.gatewayRecoverConfig]: noPayload,
   [ELECTRON_IPC_CHANNELS.gatewayTestConnection]: noPayload,
   [ELECTRON_IPC_CHANNELS.gatewayStart]: noPayload,
   [ELECTRON_IPC_CHANNELS.gatewayStop]: noPayload,

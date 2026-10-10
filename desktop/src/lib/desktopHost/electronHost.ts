@@ -83,6 +83,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       getConfig: async () => parseGatewayConfig(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayGetConfig)),
       saveConfig: async input => parseGatewayConfig(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewaySaveConfig, input)),
       clearKey: async () => parseGatewayConfig(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayClearKey)),
+      recoverConfig: async () => parseGatewayConfig(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayRecoverConfig)),
       testConnection: async () => parseGatewayTestResult(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayTestConnection)),
       start: async () => parseGatewayStatus(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayStart)),
       stop: async () => parseGatewayStatus(await gatewayInvoke(ELECTRON_IPC_CHANNELS.gatewayStop)),

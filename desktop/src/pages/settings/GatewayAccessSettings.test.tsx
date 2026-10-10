@@ -39,6 +39,7 @@ describe('GatewayAccessSettings', () => {
         config = { ...config, gatewayUrl: input.gatewayUrl, autoStart: input.autoStart ?? config.autoStart, hasKey: !!input.accessKey || config.hasKey }
         return config
       }),
+      recoverConfig: vi.fn(async () => { config = { ...config, hasKey: false, credentialStorage: 'none' }; return config }),
       clearKey: vi.fn(async () => { config = { ...config, hasKey: false, credentialStorage: 'none' }; return config }),
       getStatus: vi.fn(async () => status),
       onStatus: vi.fn(async handler => { listener = handler; return unsubscribe }),
@@ -155,6 +156,62 @@ describe('GatewayAccessSettings', () => {
     await user.click(screen.getByRole('button', { name: 'Save gateway settings' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not connect to the gateway.')
     expect(screen.getByLabelText('Access key')).toHaveValue('unsaved-secret')
+  })
+
+  it('offers retry after a transient loading failure without resetting credentials', async () => {
+    vi.mocked(gateway.getConfig).mockRejectedValueOnce(new Error('offline private-secret'))
+    render(<GatewayAccessSettings />)
+    const retry = await screen.findByRole('button', { name: 'Retry loading' })
+    await waitFor(() => expect(retry).toBeEnabled())
+    expect(screen.queryByRole('button', { name: 'Back up and reset saved key' })).not.toBeInTheDocument()
+    await userEvent.click(retry)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start connection' })).toBeEnabled())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(gateway.recoverConfig).not.toHaveBeenCalled()
+  })
+
+  it('recovers unreadable credentials explicitly and permits a replacement key', async () => {
+    vi.mocked(gateway.getConfig).mockRejectedValueOnce(new Error('STORAGE_ERROR'))
+    render(<GatewayAccessSettings />)
+    expect(await screen.findByRole('alert')).toHaveTextContent(en['settings.gateway.error.STORAGE_ERROR'])
+    const reset = screen.getByRole('button', { name: 'Back up and reset saved key' })
+    await waitFor(() => expect(reset).toBeEnabled())
+    expect(gateway.recoverConfig).not.toHaveBeenCalled()
+    await userEvent.click(reset)
+    await waitFor(() => expect(screen.getByLabelText('Access key')).toBeEnabled())
+    expect(screen.getByLabelText('Gateway URL')).toHaveValue(config.gatewayUrl)
+    expect(screen.getByRole('button', { name: 'Start connection' })).toBeDisabled()
+    await userEvent.type(screen.getByLabelText('Access key'), 'replacement-key')
+    await userEvent.click(screen.getByRole('button', { name: 'Save gateway settings' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start connection' })).toBeEnabled())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('keeps recovery available after reset fails and prevents duplicate reset operations', async () => {
+    vi.mocked(gateway.getConfig).mockRejectedValueOnce({ code: 'STORAGE_ERROR' })
+    const resetResult = deferred<GatewayConfig>()
+    vi.mocked(gateway.recoverConfig).mockReturnValueOnce(resetResult.promise)
+    render(<GatewayAccessSettings />)
+    const reset = await screen.findByRole('button', { name: 'Back up and reset saved key' })
+    await waitFor(() => expect(reset).toBeEnabled())
+    await userEvent.click(reset)
+    expect(reset).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Retry loading' })).toBeDisabled()
+    await act(async () => resetResult.reject(new Error('STORAGE_ERROR')))
+    expect(reset).toBeEnabled()
+    expect(gateway.recoverConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers a storage failure after loading and accepts the replacement runtime generation', async () => {
+    const user = await ready()
+    act(() => listener({ generation: 7, state: 'error', code: 'PROCESS_EXITED' }))
+    await user.type(screen.getByLabelText('Access key'), 'replacement-key')
+    vi.mocked(gateway.saveConfig).mockRejectedValueOnce(new Error('STORAGE_ERROR'))
+    await user.click(screen.getByRole('button', { name: 'Save gateway settings' }))
+    await user.click(await screen.findByRole('button', { name: 'Back up and reset saved key' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Stopped'))
+    expect(screen.getByLabelText('Access key')).toBeEnabled()
+    expect(screen.getByLabelText('Access key')).toHaveValue('')
   })
 
   it('does not expose native controls or call host methods in a browser', () => {
