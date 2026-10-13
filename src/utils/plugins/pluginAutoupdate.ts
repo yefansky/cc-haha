@@ -12,6 +12,7 @@
 
 import { updatePluginOp } from '../../services/plugins/pluginOperations.js'
 import { shouldSkipPluginAutoupdate } from '../config.js'
+import { logForDiagnosticsNoPII } from '../diagLogs.js'
 import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
 import { logError } from '../log.js'
@@ -27,6 +28,8 @@ import {
   refreshMarketplace,
 } from './marketplaceManager.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
+import { runBackgroundPluginUpdate } from './backgroundUpdate.js'
+import { getPluginsDirectory } from './pluginDirectories.js'
 import { isMarketplaceAutoUpdate, type PluginScope } from './schemas.js'
 
 /**
@@ -227,56 +230,65 @@ async function updatePlugins(
 export function autoUpdateMarketplacesAndPluginsInBackground(): void {
   void (async () => {
     if (shouldSkipPluginAutoupdate()) {
+      logForDiagnosticsNoPII('info', 'plugin_background_skipped', { reason: 'disabled', pid: process.pid })
       logForDebugging('Plugin autoupdate: skipped (auto-updater disabled)')
       return
     }
 
     try {
-      // Get marketplaces with autoUpdate enabled
-      const autoUpdateEnabledMarketplaces =
-        await getAutoUpdateEnabledMarketplaces()
+      const outcome = await runBackgroundPluginUpdate(getPluginsDirectory(), async () => {
+        // Get marketplaces with autoUpdate enabled
+        const autoUpdateEnabledMarketplaces =
+          await getAutoUpdateEnabledMarketplaces()
 
-      if (autoUpdateEnabledMarketplaces.size === 0) {
-        return
-      }
-
-      // Refresh only marketplaces with autoUpdate enabled
-      const refreshResults = await Promise.allSettled(
-        Array.from(autoUpdateEnabledMarketplaces).map(async name => {
-          try {
-            await refreshMarketplace(name, undefined, {
-              disableCredentialHelper: true,
-            })
-          } catch (error) {
-            logForDebugging(
-              `Plugin autoupdate: failed to refresh marketplace ${name}: ${errorMessage(error)}`,
-              { level: 'warn' },
-            )
-          }
-        }),
-      )
-
-      // Log any refresh failures
-      const failures = refreshResults.filter(r => r.status === 'rejected')
-      if (failures.length > 0) {
-        logForDebugging(
-          `Plugin autoupdate: ${failures.length} marketplace refresh(es) failed`,
-          { level: 'warn' },
-        )
-      }
-
-      logForDebugging('Plugin autoupdate: checking installed plugins')
-      const updatedPlugins = await updatePlugins(autoUpdateEnabledMarketplaces)
-
-      if (updatedPlugins.length > 0) {
-        if (pluginUpdateCallback) {
-          // Callback is already registered, invoke it immediately
-          pluginUpdateCallback(updatedPlugins)
-        } else {
-          // Callback not yet registered (REPL not mounted), store for later delivery
-          pendingNotification = updatedPlugins
+        logForDiagnosticsNoPII('info', 'plugin_background_markets', { count: autoUpdateEnabledMarketplaces.size, pid: process.pid })
+        if (autoUpdateEnabledMarketplaces.size === 0) {
+          return
         }
-      }
+
+        // Refresh only marketplaces with autoUpdate enabled
+        const refreshedMarketplaces = new Set<string>()
+        const refreshResults = await Promise.allSettled(
+          Array.from(autoUpdateEnabledMarketplaces).map(async name => {
+            try {
+              await refreshMarketplace(name, undefined, {
+                disableCredentialHelper: true,
+              })
+              refreshedMarketplaces.add(name)
+              logForDiagnosticsNoPII('info', 'plugin_marketplace_completed', { pid: process.pid })
+            } catch (error) {
+              logForDiagnosticsNoPII('warn', 'plugin_marketplace_failed', { pid: process.pid })
+              logForDebugging(
+                `Plugin autoupdate: failed to refresh marketplace ${name}: ${errorMessage(error)}`,
+                { level: 'warn' },
+              )
+            }
+          }),
+        )
+
+        // Log any refresh failures
+        const failures = refreshResults.filter(r => r.status === 'rejected')
+        if (failures.length > 0) {
+          logForDebugging(
+            `Plugin autoupdate: ${failures.length} marketplace refresh(es) failed`,
+            { level: 'warn' },
+          )
+        }
+
+        logForDebugging('Plugin autoupdate: checking installed plugins')
+        const updatedPlugins = await updatePlugins(refreshedMarketplaces)
+
+        if (updatedPlugins.length > 0) {
+          if (pluginUpdateCallback) {
+            // Callback is already registered, invoke it immediately
+            pluginUpdateCallback(updatedPlugins)
+          } else {
+            // Callback not yet registered (REPL not mounted), store for later delivery
+            pendingNotification = updatedPlugins
+          }
+        }
+      })
+      logForDebugging(`Plugin autoupdate: ${outcome}`)
     } catch (error) {
       logError(error)
     }

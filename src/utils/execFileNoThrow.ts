@@ -5,6 +5,8 @@
 import { type ExecaError, execa } from 'execa'
 import { getCwd } from '../utils/cwd.js'
 import { logError } from './log.js'
+import { logForDiagnosticsNoPII } from './diagLogs.js'
+import { backgroundPluginGitOptions } from './plugins/backgroundUpdate.js'
 
 export { execSyncWithDefaults_DEPRECATED } from './execFileNoThrowPortable.js'
 
@@ -107,18 +109,28 @@ export function execFileNoThrowWithCwd(
 ): Promise<{ stdout: string; stderr: string; code: number; error?: string }> {
   return new Promise(resolve => {
     // Use execa for cross-platform .bat/.cmd compatibility on Windows
-    execa(file, args, {
+    const backgroundOptions = backgroundPluginGitOptions(file, args, finalEnv)
+    const backgroundGit = backgroundOptions.args !== args
+    const operation = args.find(arg => ['clone', 'pull', 'fetch', 'ls-remote', 'checkout', 'sparse-checkout', 'rev-parse', 'config'].includes(arg)) ?? 'other'
+    const started = Date.now()
+    if (backgroundGit) logForDiagnosticsNoPII('info', 'plugin_git_started', { operation, interactive: false, pid: process.pid })
+    execa(file, backgroundOptions.args, {
       maxBuffer,
       signal: abortSignal,
       timeout: finalTimeout,
       cwd: finalCwd,
-      env: finalEnv,
+      env: backgroundOptions.env,
       shell,
       stdin: finalStdin,
       input: finalInput,
       reject: false, // Don't throw on non-zero exit codes
     })
       .then(result => {
+        if (backgroundGit) {
+          const stderr = result.stderr || ''
+          const errorCategory = !result.failed ? 'none' : /authentication|username|credential|401|403|permission denied/i.test(stderr) ? 'authentication' : /resolve host|connect|timeout|timed out|SSL|certificate/i.test(stderr) ? 'network' : 'git'
+          logForDiagnosticsNoPII(result.failed ? 'warn' : 'info', 'plugin_git_completed', { operation, code: result.exitCode ?? (result.failed ? 1 : 0), errorCategory, duration_ms: Date.now() - started, interactive: false, pid: process.pid })
+        }
         if (result.failed) {
           if (finalPreserveOutput) {
             const errorCode = result.exitCode ?? 1
@@ -143,6 +155,7 @@ export function execFileNoThrowWithCwd(
         }
       })
       .catch((error: ExecaError) => {
+        if (backgroundGit) logForDiagnosticsNoPII('warn', 'plugin_git_completed', { operation, code: 1, errorCategory: 'spawn', duration_ms: Date.now() - started, interactive: false, pid: process.pid })
         logError(error)
         void resolve({ stdout: '', stderr: '', code: 1 })
       })

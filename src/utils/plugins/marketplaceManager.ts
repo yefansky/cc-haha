@@ -24,6 +24,7 @@ import isEqual from 'lodash-es/isEqual.js'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'path'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import { logForDiagnosticsNoPII } from '../diagLogs.js'
 import { logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import {
@@ -74,6 +75,7 @@ import {
   getPluginsDirectory,
 } from './pluginDirectories.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
+import { isBackgroundPluginUpdate } from './backgroundUpdate.js'
 import { deletePluginOptions } from './pluginOptionsStorage.js'
 import {
   isLocalMarketplaceSource,
@@ -1110,6 +1112,7 @@ async function cacheMarketplaceFromGit(
   // (Sparse→Full transition) or fails (missing dir, not a repo), skip straight
   // to the rm+clone fallback.
   const reconcileResult = await reconcileSparseCheckout(cachePath, sparsePaths)
+  let refreshError = reconcileResult.stderr
   if (reconcileResult.code === 0) {
     const pullStarted = performance.now()
     const pullResult = await gitPull(cachePath, ref, {
@@ -1124,6 +1127,7 @@ async function cacheMarketplaceFromGit(
       pullResult.code === 0 ? undefined : classifyFetchError(pullResult.stderr),
     )
     if (pullResult.code === 0) return
+    refreshError = pullResult.stderr
     logForDebugging(`git pull failed, will re-clone: ${pullResult.stderr}`, {
       level: 'warn',
     })
@@ -1131,6 +1135,19 @@ async function cacheMarketplaceFromGit(
     logForDebugging(
       `sparse-checkout reconcile requires re-clone: ${reconcileResult.stderr}`,
     )
+  }
+
+  // Includes mirror-installed caches, which intentionally have no .git. A
+  // failed mirror or pull must not remove usable plugins in the background.
+  if (isBackgroundPluginUpdate()) {
+    const hasManifest = await fs.stat(join(cachePath, '.claude-plugin', 'marketplace.json')).then(
+      () => true,
+      error => { if (!isENOENT(error)) throw error; return false },
+    )
+    if (hasManifest) {
+      logForDiagnosticsNoPII('warn', 'plugin_cache_preserved', { pid: process.pid })
+      throw new Error(`Background marketplace refresh failed; kept existing cache: ${refreshError}`)
+    }
   }
 
   try {
@@ -2320,6 +2337,7 @@ export async function refreshAllMarketplaces(): Promise<void> {
         getMarketplacesCacheDir(),
       )
       if (sha !== null) {
+        if (isBackgroundPluginUpdate()) logForDiagnosticsNoPII('info', 'plugin_mirror_completed', { pid: process.pid })
         config[name]!.lastUpdated = new Date().toISOString()
         continue
       }
@@ -2437,6 +2455,7 @@ export async function refreshMarketplace(
         getMarketplacesCacheDir(),
       )
       if (sha !== null) {
+        if (isBackgroundPluginUpdate()) logForDiagnosticsNoPII('info', 'plugin_mirror_completed', { pid: process.pid })
         config[name] = { ...entry, lastUpdated: new Date().toISOString() }
         await saveKnownMarketplacesConfig(config)
         return
@@ -2459,6 +2478,7 @@ export async function refreshMarketplace(
           'Official marketplace GCS fetch failed and git fallback is disabled',
         )
       }
+      if (isBackgroundPluginUpdate()) logForDiagnosticsNoPII('warn', 'plugin_mirror_git_fallback', { pid: process.pid })
       logForDebugging('Official marketplace GCS failed; falling back to git', {
         level: 'warn',
       })

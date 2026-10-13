@@ -1,3 +1,5 @@
+import { isBackgroundPluginUpdate } from './backgroundUpdate.js'
+import { logForDiagnosticsNoPII } from '../diagLogs.js'
 /**
  * inc-5046: fetch the official marketplace from a GCS mirror instead of
  * git-cloning GitHub on every startup.
@@ -147,6 +149,7 @@ export async function fetchOfficialMarketplaceFromGcs(
     return sha
   } catch (e) {
     errKind = classifyGcsError(e)
+    if (isBackgroundPluginUpdate()) logForDiagnosticsNoPII('warn', 'plugin_mirror_failed', { errorCategory: errKind, duration_ms: Math.round(performance.now() - start), pid: process.pid })
     logForDebugging(
       `Official marketplace GCS fetch failed: ${errorMessage(e)}`,
       { level: 'warn' },

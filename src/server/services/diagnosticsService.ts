@@ -1,3 +1,4 @@
+import { parsePluginDiagnosticEvents } from './pluginDiagnostics.js'
 import * as fs from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import * as os from 'node:os'
@@ -260,7 +261,7 @@ export class DiagnosticsService {
     await this.ensureLogDir()
     await this.runRetentionSerialized(true, false)
     const scan = await this.scanDiagnosticsFile()
-    const events = scan.events
+    const events = await this.withPluginEvents(scan.events)
     const totalBytes = await this.getDirectorySize(this.getLogDir())
     const cutoff = Date.now() - 24 * 60 * 60 * 1000
     return {
@@ -288,7 +289,12 @@ export class DiagnosticsService {
   async readRecentEvents(limit = 100): Promise<DiagnosticEvent[]> {
     const boundedLimit = Math.max(1, Math.min(limit, 1000))
     const scan = await this.scanDiagnosticsFile()
-    return scan.events.slice(-boundedLimit).reverse()
+    return (await this.withPluginEvents(scan.events)).slice(-boundedLimit).reverse()
+  }
+
+  private async withPluginEvents(events: DiagnosticEvent[]): Promise<DiagnosticEvent[]> {
+    const cli = parsePluginDiagnosticEvents(await this.readCliDiagnosticsForSharing(MAX_TEXT_FILE_EXPORT_LENGTH))
+    return [...events, ...cli].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
   }
 
   private async scanDiagnosticsFile(): Promise<DiagnosticsScanResult> {
@@ -345,7 +351,7 @@ export class DiagnosticsService {
     const fileName = `cc-haha-diagnostics-${timestamp}.tar.gz`
     const outPath = path.join(this.getExportDir(), fileName)
     const scan = await this.scanDiagnosticsFile()
-    const events = scan.events.slice(-MAX_SHARED_EVENTS).reverse()
+    const events = (await this.withPluginEvents(scan.events)).slice(-MAX_SHARED_EVENTS).reverse()
     const sharedEvents = events.map(projectDiagnosticEventForSharing)
     const files = [
       {
@@ -400,7 +406,7 @@ export class DiagnosticsService {
       generatedAt: new Date().toISOString(),
       appInfo: this.buildAppInfo(),
       providersSummary: await this.buildProvidersSummary(),
-      events: scan.events.slice(-MAX_ISSUE_REPORT_EVENTS).reverse().map(projectDiagnosticEventForSharing),
+      events: (await this.withPluginEvents(scan.events)).slice(-MAX_ISSUE_REPORT_EVENTS).reverse().map(projectDiagnosticEventForSharing),
       corruptLineCount: scan.corruptLineCount,
     })
   }

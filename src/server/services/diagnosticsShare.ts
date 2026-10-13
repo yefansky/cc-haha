@@ -41,6 +41,13 @@ const CONTENT_BEARING_KEYS = new Set([
 ])
 
 const SAFE_SCALAR_KEYS = new Set([
+  'pid',
+  'count',
+  'duration_ms',
+  'retry_after_ms',
+  'operation',
+  'reason',
+  'interactive',
   'code',
   'errorcategory',
   'errorcode',
@@ -182,6 +189,9 @@ export function buildDiagnosticsIssueReport(input: DiagnosticsIssueReportInput):
     '',
     '## 复现步骤',
     '1. <!-- 请补充 -->',
+    '',
+    '## 会话启动与插件维护',
+    ...input.events.filter(event => event.type.startsWith('plugin_') || event.type === 'session_cli_start').slice(0, 50).map(event => `- ${formatMetadata(event.timestamp)} ${formatMetadata(event.type)} ${JSON.stringify(event.details ?? {})}`),
     '',
     '## 错误摘要',
     ...errorLines,

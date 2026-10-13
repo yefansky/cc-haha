@@ -3693,6 +3693,7 @@ async function ensureCliSessionStarted(
       : runtimeSettings
     const sdkUrl = buildSdkWebSocketUrl(ws, sessionId)
     await sendRepositoryStartupStatus(ws, sessionId, reason)
+    void diagnosticsService.recordEvent({ type: 'session_cli_start', summary: reason === 'prewarm_session' ? '打开会话后预热 CLI（尚未发送消息）' : '发送消息后启动 CLI', sessionId, details: { reason } })
     console.log(`[WS] Starting CLI for ${sessionId} due to ${reason}`)
     await conversationService.startSession(sessionId, workDir, sdkUrl, startupSettings)
     // Remember the configuration that actually started. A restored session may

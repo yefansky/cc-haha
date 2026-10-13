@@ -9,6 +9,7 @@ import {
   isStrictMarketplaceCachePath,
   refreshMarketplace,
 } from './marketplaceManager.js'
+import { runBackgroundPluginUpdate } from './backgroundUpdate.js'
 
 describe('marketplace cache deletion safety', () => {
   let tempDir: string
@@ -44,6 +45,28 @@ describe('marketplace cache deletion safety', () => {
     expect(isStrictMarketplaceCachePath(cacheDir)).toBe(false)
     expect(isStrictMarketplaceCachePath(path.join(cacheDir, 'official'))).toBe(true)
     expect(isStrictMarketplaceCachePath(path.join(tempDir, '.claude'))).toBe(false)
+  })
+
+  test('keeps a mirror cache when background Git fallback fails, but allows manual repair', async () => {
+    const cacheDir = getMarketplacesCacheDir()
+    const location = path.join(cacheDir, 'mirror-cache')
+    const manifestPath = path.join(location, '.claude-plugin', 'marketplace.json')
+    await fs.mkdir(path.dirname(manifestPath), { recursive: true })
+    await fs.writeFile(manifestPath, '{"name":"mirror-cache","owner":{"name":"Test"},"plugins":[]}')
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('unavailable', { status: 503 }) })
+    try {
+      await fs.writeFile(path.join(process.env.CLAUDE_CONFIG_DIR!, 'plugins', 'known_marketplaces.json'), JSON.stringify({
+        'mirror-cache': { source: { source: 'git', url: `${server.url}repo.git` }, installLocation: location, lastUpdated: new Date().toISOString() },
+      }))
+      await runBackgroundPluginUpdate(path.join(tempDir, 'maintenance'), async () => {
+        await expect(refreshMarketplace('mirror-cache', undefined, { disableCredentialHelper: true })).rejects.toThrow('kept existing cache')
+      })
+      expect(await fs.readFile(manifestPath, 'utf8')).toContain('mirror-cache')
+      await expect(refreshMarketplace('mirror-cache')).rejects.toThrow('Failed to clone marketplace')
+      await expect(fs.stat(manifestPath)).rejects.toThrow()
+    } finally {
+      server.stop(true)
+    }
   })
 
   test('does not delete the marketplace cache root from corrupted stored state', async () => {
