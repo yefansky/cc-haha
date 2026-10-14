@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+import { getPluginDiagnosticContext, pluginDiagnosticEvent } from './plugins/diagnosticTrace.js'
 // This file represents useful wrappers over node:child_process
 // These wrappers ease error handling and cross-platform compatbility
 // By using execa, Windows automatically gets shell escaping + BAT / CMD handling
@@ -113,8 +115,13 @@ export function execFileNoThrowWithCwd(
     const backgroundGit = backgroundOptions.args !== args
     const operation = args.find(arg => ['clone', 'pull', 'fetch', 'ls-remote', 'checkout', 'sparse-checkout', 'rev-parse', 'config'].includes(arg)) ?? 'other'
     const started = Date.now()
+    const isGit = /^git(?:\.(?:exe|cmd|bat))?$/i.test(file.replaceAll('\\', '/').split('/').at(-1) ?? '')
+    const traceGit = isGit && (backgroundGit || Boolean(getPluginDiagnosticContext().trace_id) || ['clone', 'fetch', 'pull', 'ls-remote'].includes(operation))
+    const git_operation_id = randomUUID()
+    const gitData = { operation, git_operation_id, source: backgroundGit ? 'background_update' : getPluginDiagnosticContext().source ?? 'internal_git', credential_policy: backgroundGit ? 'non_interactive' : 'inherited', remote_kind: args.some(arg => /(?:https?:\/\/|git@)github\.com[/:]/i.test(arg)) ? 'github' : args.some(arg => /^(?:https?:\/\/|ssh:\/\/|git@)/i.test(arg)) ? 'other_remote' : 'implicit' }
+    if (traceGit) pluginDiagnosticEvent('info', 'git_process_started', gitData)
     if (backgroundGit) logForDiagnosticsNoPII('info', 'plugin_git_started', { operation, interactive: false, pid: process.pid })
-    execa(file, backgroundOptions.args, {
+    const child = execa(file, backgroundOptions.args, {
       maxBuffer,
       signal: abortSignal,
       timeout: finalTimeout,
@@ -125,7 +132,13 @@ export function execFileNoThrowWithCwd(
       input: finalInput,
       reject: false, // Don't throw on non-zero exit codes
     })
-      .then(result => {
+    if (traceGit) pluginDiagnosticEvent('info', 'git_process_spawned', { ...gitData, ...(child.pid ? { child_pid: child.pid } : {}) })
+    child.then(result => {
+        if (traceGit) {
+          const stderr = result.stderr || ''
+          const errorCategory = !result.failed ? 'none' : /authentication|username|credential|401|403|permission denied/i.test(stderr) ? 'authentication' : /resolve host|connect|timeout|timed out|SSL|certificate/i.test(stderr) ? 'network' : 'git'
+          pluginDiagnosticEvent(result.failed ? 'warn' : 'info', 'git_process_completed', { ...gitData, child_pid: child.pid, code: result.exitCode ?? (result.failed ? 1 : 0), errorCategory, duration_ms: Date.now() - started })
+        }
         if (backgroundGit) {
           const stderr = result.stderr || ''
           const errorCategory = !result.failed ? 'none' : /authentication|username|credential|401|403|permission denied/i.test(stderr) ? 'authentication' : /resolve host|connect|timeout|timed out|SSL|certificate/i.test(stderr) ? 'network' : 'git'
@@ -156,6 +169,7 @@ export function execFileNoThrowWithCwd(
       })
       .catch((error: ExecaError) => {
         if (backgroundGit) logForDiagnosticsNoPII('warn', 'plugin_git_completed', { operation, code: 1, errorCategory: 'spawn', duration_ms: Date.now() - started, interactive: false, pid: process.pid })
+        if (traceGit) pluginDiagnosticEvent('warn', 'git_process_completed', { ...gitData, child_pid: child.pid, code: 1, errorCategory: 'spawn', duration_ms: Date.now() - started })
         logError(error)
         void resolve({ stdout: '', stderr: '', code: 1 })
       })

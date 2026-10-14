@@ -8,6 +8,7 @@
  * for UI reason/text only. If re-introduced, serve from downloads.claude.ai.
  */
 
+import { withPluginDiagnosticScope, pluginDiagnosticEvent, marketplaceDiagnosticId } from './diagnosticTrace.js'
 import { uninstallPluginOp } from '../../services/plugins/pluginOperations.js'
 import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
@@ -62,6 +63,14 @@ export function detectDelistedPlugins(
  * @returns List of newly flagged plugin IDs
  */
 export async function detectAndUninstallDelistedPlugins(): Promise<string[]> {
+  return withPluginDiagnosticScope('delisting', async () => {
+    pluginDiagnosticEvent('info', 'plugin_delisting_started')
+    const result = await detectAndUninstallDelistedPluginsImpl()
+    pluginDiagnosticEvent('info', 'plugin_delisting_completed', { count: result.length })
+    return result
+  })
+}
+async function detectAndUninstallDelistedPluginsImpl(): Promise<string[]> {
   await loadFlaggedPlugins()
 
   const installedPlugins = loadInstalledPluginsV2()
@@ -72,9 +81,13 @@ export async function detectAndUninstallDelistedPlugins(): Promise<string[]> {
   const knownMarketplaces = await loadKnownMarketplacesConfigSafe()
   const newlyFlagged: string[] = []
 
+  pluginDiagnosticEvent('info', 'plugin_delisting_inventory', { count: Object.keys(knownMarketplaces).length, installed_count: Object.keys(installedPlugins.plugins).length })
   for (const marketplaceName of Object.keys(knownMarketplaces)) {
     try {
+      const market_id = marketplaceDiagnosticId(marketplaceName)
+      pluginDiagnosticEvent('info', 'plugin_delisting_market_started', { market_id })
       const marketplace = await getMarketplace(marketplaceName)
+      pluginDiagnosticEvent('info', 'plugin_delisting_market_completed', { market_id, force_remove: marketplace.forceRemoveDeletedPlugins === true })
 
       if (!marketplace.forceRemoveDeletedPlugins) continue
 
@@ -115,6 +128,7 @@ export async function detectAndUninstallDelistedPlugins(): Promise<string[]> {
         newlyFlagged.push(pluginId)
       }
     } catch (error) {
+      pluginDiagnosticEvent('warn', 'plugin_delisting_market_failed', { market_id: marketplaceDiagnosticId(marketplaceName) })
       // Marketplace may not be available yet — log and continue
       logForDebugging(
         `Failed to check for delisted plugins in "${marketplaceName}": ${errorMessage(error)}`,

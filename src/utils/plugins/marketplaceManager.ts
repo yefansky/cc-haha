@@ -18,6 +18,7 @@
  *                   └── marketplace.json
  */
 
+import { withPluginDiagnosticScope, pluginDiagnosticEvent, marketplaceDiagnosticId } from './diagnosticTrace.js'
 import axios from 'axios'
 import { writeFile } from 'fs/promises'
 import isEqual from 'lodash-es/isEqual.js'
@@ -2168,8 +2169,11 @@ export const getMarketplace = memoize(
 
     // Try to read from disk cache
     try {
-      return await readCachedMarketplace(entry.installLocation)
+      const cached = await readCachedMarketplace(entry.installLocation)
+      pluginDiagnosticEvent('info', 'plugin_market_cache_hit', { market_id: marketplaceDiagnosticId(name) })
+      return cached
     } catch (error) {
+      pluginDiagnosticEvent('warn', 'plugin_market_cache_miss', { market_id: marketplaceDiagnosticId(name), reason: isENOENT(error) ? 'missing' : 'invalid' })
       // Log cache corruption before re-fetching
       logForDebugging(
         `Cache corrupted or missing for marketplace ${name}, re-fetching from source: ${errorMessage(error)}`,
@@ -2182,8 +2186,14 @@ export const getMarketplace = memoize(
     // Cache doesn't exist or is invalid, fetch from source
     let marketplace: PluginMarketplace
     try {
-      ;({ marketplace } = await loadAndCacheMarketplace(entry.source))
+      ;({ marketplace } = await withPluginDiagnosticScope('cache_reload', async () => {
+        pluginDiagnosticEvent('warn', 'plugin_market_refetch_started', { source_type: entry.source.source })
+        const result = await loadAndCacheMarketplace(entry.source)
+        pluginDiagnosticEvent('info', 'plugin_market_refetch_completed')
+        return result
+      }, marketplaceDiagnosticId(name)))
     } catch (error) {
+      pluginDiagnosticEvent('warn', 'plugin_market_refetch_failed', { market_id: marketplaceDiagnosticId(name) })
       throw new Error(
         `Failed to load marketplace "${name}" from source (${entry.source.source}): ${errorMessage(error)}`,
       )

@@ -911,6 +911,8 @@ if (!acquireSingleInstanceLock(app, () => mainWindow)) {
 registerIpcHandlers()
 
 app.whenReady().then(async () => {
+  // Carry the packaged desktop version into server/CLI diagnostic exports.
+  process.env.APP_VERSION = app.getVersion()
   applyWindowsAppUserModelId(app)
   applyStartupPortableMode(app)
   installSystemAppearanceWatch()

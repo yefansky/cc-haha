@@ -41,6 +41,19 @@ const CONTENT_BEARING_KEYS = new Set([
 ])
 
 const SAFE_SCALAR_KEYS = new Set([
+  'ppid',
+  'child_pid',
+  'installed_count',
+  'source',
+  'phase',
+  'remote_kind',
+  'credential_policy',
+  'source_type',
+  'trace_id',
+  'git_operation_id',
+  'market_id',
+  'changed',
+  'force_remove',
   'pid',
   'count',
   'duration_ms',
@@ -191,7 +204,7 @@ export function buildDiagnosticsIssueReport(input: DiagnosticsIssueReportInput):
     '1. <!-- 请补充 -->',
     '',
     '## 会话启动与插件维护',
-    ...input.events.filter(event => event.type.startsWith('plugin_') || event.type === 'session_cli_start').slice(0, 50).map(event => `- ${formatMetadata(event.timestamp)} ${formatMetadata(event.type)} ${JSON.stringify(event.details ?? {})}`),
+    ...input.events.filter(event => event.type.startsWith('plugin_') || event.type.startsWith('git_process_') || event.type === 'session_cli_start').slice(0, 50).map(event => `- ${formatMetadata(event.timestamp)} ${formatMetadata(event.type)} ${JSON.stringify(event.details ?? {})}`),
     '',
     '## 错误摘要',
     ...errorLines,

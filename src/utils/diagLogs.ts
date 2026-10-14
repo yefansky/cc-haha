@@ -42,7 +42,7 @@ export function logForDiagnosticsNoPII(
     timestamp: new Date().toISOString(),
     level,
     event,
-    data: data ?? {},
+    data: { pid: process.pid, ppid: process.ppid, ...data, ...(/^[a-f0-9-]{36}$/i.test(process.env.CC_HAHA_DIAGNOSTIC_SESSION_ID ?? '') ? { sessionId: process.env.CC_HAHA_DIAGNOSTIC_SESSION_ID } : {}) },
   }
 
   const fs = getFsImplementation()

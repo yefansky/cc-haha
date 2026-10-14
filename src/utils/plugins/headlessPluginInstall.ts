@@ -9,6 +9,7 @@
  * ZIP creation on install and extraction on load transparently.
  */
 
+import { withPluginDiagnosticScope, pluginDiagnosticEvent } from './diagnosticTrace.js'
 import { logEvent } from '../../services/analytics/index.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from '../debug.js'
@@ -41,6 +42,20 @@ import { syncMarketplacesToZipCache } from './zipCacheAdapters.js'
  * @returns true if any plugins were installed (caller should refresh MCP)
  */
 export async function installPluginsForHeadless(): Promise<boolean> {
+  return withPluginDiagnosticScope('startup', async () => {
+    pluginDiagnosticEvent('info', 'plugin_startup_started')
+    const started = Date.now()
+    try {
+      const changed = await installPluginsForHeadlessImpl()
+      pluginDiagnosticEvent('info', 'plugin_startup_completed', { changed, duration_ms: Date.now() - started })
+      return changed
+    } catch (error) {
+      pluginDiagnosticEvent('warn', 'plugin_startup_failed', { duration_ms: Date.now() - started })
+      throw error
+    }
+  })
+}
+async function installPluginsForHeadlessImpl(): Promise<boolean> {
   const zipCacheMode = isPluginZipCacheEnabled()
   logForDebugging(
     `installPluginsForHeadless: starting${zipCacheMode ? ' (zip cache mode)' : ''}`,
@@ -166,6 +181,7 @@ export async function installPluginsForHeadless(): Promise<boolean> {
 
     return pluginsChanged
   } catch (error) {
+    pluginDiagnosticEvent('warn', 'plugin_startup_failed')
     logError(error)
     return false
   } finally {

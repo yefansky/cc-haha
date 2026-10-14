@@ -459,6 +459,7 @@ export class ConversationService {
       networkSettings,
       networkRuntimeMetadata,
     )
+    childEnv.CC_HAHA_DIAGNOSTIC_SESSION_ID = sessionId
     const usesOfficialOAuth = !networkRuntimeMetadata.providerSnapshot && this.shouldMarkManagedOAuth(options?.providerId)
     let providerSnapshotId: string | undefined
     if (networkRuntimeMetadata.providerSnapshot) {

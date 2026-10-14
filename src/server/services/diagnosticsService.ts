@@ -1,3 +1,4 @@
+import { collectProcessDiagnostics } from './processDiagnostics.js'
 import { parsePluginDiagnosticEvents } from './pluginDiagnostics.js'
 import * as fs from 'node:fs/promises'
 import { createHash } from 'node:crypto'
@@ -353,6 +354,7 @@ export class DiagnosticsService {
     const scan = await this.scanDiagnosticsFile()
     const events = (await this.withPluginEvents(scan.events)).slice(-MAX_SHARED_EVENTS).reverse()
     const sharedEvents = events.map(projectDiagnosticEventForSharing)
+    const processSnapshot = await collectProcessDiagnostics()
     const files = [
       {
         name: 'README.txt',
@@ -386,6 +388,7 @@ export class DiagnosticsService {
         name: 'providers-summary.json',
         content: JSON.stringify(await this.buildProvidersSummary(), null, 2) + '\n',
       },
+      { name: 'processes-summary.json', content: JSON.stringify(processSnapshot, null, 2) + '\n' },
       {
         name: 'sessions-summary.json',
         content: JSON.stringify(this.buildSessionsSummary(sharedEvents), null, 2) + '\n',
@@ -713,6 +716,7 @@ export class DiagnosticsService {
       '- diagnostics.jsonl: sanitized structured diagnostic events.',
       '- recent-errors.md: human-readable warning/error timeline for GitHub issues.',
       '- runtime-errors.log: warning/error timeline with projected diagnostic metadata/details.',
+      '- processes-summary.json: best-effort Windows Git/credential-manager process ancestry at export time; no command lines or paths.',
       '- cli-diagnostics.jsonl: sanitized no-PII CLI internal diagnostics emitted by the child process.',
       '- electron-host.log: sanitized recent Electron host lifecycle diagnostics.',
       '- providers-summary.json: provider count, active id, base URL host, model ids, and API format without API keys.',

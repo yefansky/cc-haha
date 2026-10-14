@@ -1,3 +1,5 @@
+import { clearInstalledPluginsCache } from './installedPluginsManager.js'
+import { detectAndUninstallDelistedPlugins } from './pluginBlocklist.js'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
@@ -23,10 +25,12 @@ describe('marketplace cache deletion safety', () => {
     process.env.CLAUDE_CONFIG_DIR = path.join(tempDir, '.claude')
     delete process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR
     clearMarketplacesCache()
+    clearInstalledPluginsCache()
   })
 
   afterEach(async () => {
     clearMarketplacesCache()
+    clearInstalledPluginsCache()
     if (originalConfigDir === undefined) {
       delete process.env.CLAUDE_CONFIG_DIR
     } else {
@@ -66,6 +70,41 @@ describe('marketplace cache deletion safety', () => {
       await expect(fs.stat(manifestPath)).rejects.toThrow()
     } finally {
       server.stop(true)
+    }
+  })
+
+  test('traces delisting cache reload with no installed plugins even when autoupdate is disabled', async () => {
+    const original = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM, CLAUDE_CODE_DIAGNOSTICS_FILE: process.env.CLAUDE_CODE_DIAGNOSTICS_FILE, DISABLE_AUTOUPDATER: process.env.DISABLE_AUTOUPDATER }
+    const log = path.join(tempDir, 'cli-diagnostics.jsonl')
+    const marker = path.join(tempDir, 'helper-called')
+    const helper = path.join(tempDir, 'helper.js')
+    const config = path.join(tempDir, 'gitconfig')
+    await fs.writeFile(helper, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'called')`)
+    await fs.writeFile(config, `[credential]\n\thelper = ${JSON.stringify(`!node '${helper.replaceAll('\\', '/')}'`)}\n`)
+    Object.assign(process.env, { GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: '1', CLAUDE_CODE_DIAGNOSTICS_FILE: log, DISABLE_AUTOUPDATER: '1' })
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('auth required', { status: 401, headers: { 'WWW-Authenticate': 'Basic realm="test"' } }) })
+    try {
+      const directory = path.join(process.env.CLAUDE_CONFIG_DIR!, 'plugins')
+      await fs.mkdir(directory, { recursive: true })
+      await fs.writeFile(path.join(directory, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {} }))
+      await fs.writeFile(path.join(directory, 'known_marketplaces.json'), JSON.stringify({ 'private-market-name': { source: { source: 'git', url: `${server.url}repo.git` }, installLocation: path.join(getMarketplacesCacheDir(), 'missing'), lastUpdated: new Date().toISOString() } }))
+      clearInstalledPluginsCache()
+      expect(await detectAndUninstallDelistedPlugins()).toEqual([])
+      expect(await fs.readFile(marker, 'utf8')).toBe('called')
+      const raw = await fs.readFile(`${log}.${process.pid}.current.jsonl`, 'utf8')
+      const events = raw.trim().split('\n').map(line => JSON.parse(line))
+      expect(events.find(e => e.event === 'plugin_delisting_inventory').data.installed_count).toBe(0)
+      expect(events.some(e => e.event === 'plugin_market_cache_miss')).toBe(true)
+      const git = events.find(e => e.event === 'git_process_completed' && e.data.operation === 'clone')
+      expect(git.data.phase).toBe('cache_reload')
+      expect(git.data.credential_policy).toBe('inherited')
+      expect(git.data.errorCategory).toBe('authentication')
+      expect(typeof git.data.child_pid).toBe('number')
+      expect(raw).not.toContain('private-market-name')
+      expect(raw).not.toContain(server.url.toString())
+    } finally {
+      server.stop(true)
+      for (const [key, value] of Object.entries(original)) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
     }
   })
 
