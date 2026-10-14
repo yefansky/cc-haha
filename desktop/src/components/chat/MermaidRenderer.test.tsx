@@ -30,6 +30,32 @@ describe('MermaidRenderer', () => {
     })
   })
 
+  it.each([
+    { layout: 'document' as const, width: 240, height: 1600, expanded: true },
+    { layout: 'document' as const, width: 960, height: 900, expanded: true },
+    { layout: 'document' as const, width: 2400, height: 900, expanded: false },
+    { layout: 'chat' as const, width: 240, height: 1600, expanded: false },
+  ])('uses readable document height for $layout diagram $width x $height', async ({ layout, width, height, expanded }) => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get() { return this.dataset.testid === 'mermaid-diagram-surface' ? 800 : 0 },
+    })
+    renderMock.mockResolvedValue({ svg: `<svg viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" /></svg>` })
+    try {
+      render(<MermaidRenderer code={'graph TB\nA-->B'} layout={layout} />)
+      const surface = await screen.findByTestId('mermaid-diagram-surface')
+      await waitFor(() => expect(surface.style.maxHeight).toBe(expanded ? '' : '400px'))
+      const scale = Math.min(1, 768 / width)
+      expect(screen.getByLabelText('Mermaid inline canvas').parentElement).toHaveStyle({ height: `${height * scale}px` })
+      fireEvent.click(screen.getByRole('button', { name: /preview/i }))
+      expect(await screen.findByTestId('mermaid-preview-viewport')).toBeInTheDocument()
+    } finally {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, 'clientWidth', descriptor)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'clientWidth')
+    }
+  })
+
   it('normalizes large SVGs so edges stay visible when the diagram is scaled', async () => {
     renderMock.mockResolvedValue({
       svg: [

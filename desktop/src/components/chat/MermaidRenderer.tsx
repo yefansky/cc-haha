@@ -10,6 +10,7 @@ import { isDarkTheme, type ThemeMode } from '../../types/settings'
 
 type Props = {
   code: string
+  layout?: 'chat' | 'document'
 }
 
 /**
@@ -29,6 +30,8 @@ const MIN_PREVIEW_ZOOM = 0.05
 const MAX_PREVIEW_ZOOM = 3
 const PREVIEW_ZOOM_STEP = 0.25
 const PREVIEW_FIT_PADDING = 48
+// Below this scale, document labels are better read in the zoomable preview.
+const MIN_DOCUMENT_INLINE_ZOOM = 0.75
 
 type SvgMetrics = {
   width: number
@@ -413,7 +416,7 @@ function parseSvgMetrics(svg: string): SvgMetrics | null {
   return null
 }
 
-export function MermaidRenderer({ code }: Props) {
+export function MermaidRenderer({ code, layout = 'chat' }: Props) {
   const t = useTranslation()
   const theme = useUIStore((state) => state.theme)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -433,6 +436,7 @@ export function MermaidRenderer({ code }: Props) {
   const inlineZoom = svgMetrics && inlineViewportWidth > 0
     ? clampZoom(Math.min(1, Math.max(1, inlineViewportWidth - 32) / svgMetrics.width))
     : 1
+  const expandDocument = layout === 'document' && inlineZoom >= MIN_DOCUMENT_INLINE_ZOOM
 
   const inlineFrameStyle = svgMetrics
     ? {
@@ -708,8 +712,9 @@ export function MermaidRenderer({ code }: Props) {
           ref={containerRef}
           data-testid="mermaid-diagram-surface"
           className="overflow-auto bg-[var(--color-surface-container-lowest)] p-4 cursor-pointer"
-          // Width-based scaling must not toggle its own scrollbar at the height cap.
-          style={{ maxHeight: 400, scrollbarGutter: 'stable' }}
+          // Documents scroll with the page; only hard-to-read wide diagrams need a capped preview.
+          // Keep the gutter stable so width-based scaling cannot toggle its own scrollbar.
+          style={{ maxHeight: expandDocument ? undefined : 400, scrollbarGutter: 'stable' }}
           onClick={handlePreview}
         >
           <div className="mx-auto shrink-0 select-none" style={inlineFrameStyle}>

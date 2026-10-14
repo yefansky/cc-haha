@@ -11,8 +11,8 @@ vi.mock('../chat/CodeViewer', () => ({
 }))
 
 vi.mock('../chat/MermaidRenderer', () => ({
-  MermaidRenderer: ({ code }: { code: string }) => (
-    <div data-testid="mermaid-renderer">{code}</div>
+  MermaidRenderer: ({ code, layout }: { code: string; layout?: string }) => (
+    <div data-testid="mermaid-renderer" data-layout={layout}>{code}</div>
   ),
 }))
 
@@ -31,6 +31,10 @@ function visibleMathText(container: HTMLElement): string {
 }
 
 describe('MarkdownRenderer', () => {
+  it.each(['default', 'document', 'compact'] as const)('routes %s Mermaid blocks to the appropriate layout', (variant) => {
+    render(<MarkdownRenderer content={'```mermaid\ngraph TB\nA-->B\n```'} variant={variant} />)
+    expect(screen.getByTestId('mermaid-renderer')).toHaveAttribute('data-layout', variant === 'document' ? 'document' : 'chat')
+  })
   it('applies document prose classes and custom width classes', () => {
     const { container } = render(
       <MarkdownRenderer

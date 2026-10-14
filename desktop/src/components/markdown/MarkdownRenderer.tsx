@@ -715,7 +715,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, anchor
           streaming ? (
             <MermaidStreamingPlaceholder key={part.block.id} />
           ) : (
-            <MermaidRenderer key={part.block.id} code={part.block.code} />
+            <MermaidRenderer key={part.block.id} code={part.block.code} layout={variant === 'document' ? 'document' : 'chat'} />
           )
         ) : (
           <div key={part.block.id} className="my-4">
