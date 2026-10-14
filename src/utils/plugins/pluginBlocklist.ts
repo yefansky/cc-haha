@@ -14,7 +14,7 @@ import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
 import { loadInstalledPluginsV2 } from './installedPluginsManager.js'
 import {
-  getMarketplace,
+  getMarketplaceCacheOnly,
   loadKnownMarketplacesConfigSafe,
 } from './marketplaceManager.js'
 import {
@@ -82,11 +82,26 @@ async function detectAndUninstallDelistedPluginsImpl(): Promise<string[]> {
   const newlyFlagged: string[] = []
 
   pluginDiagnosticEvent('info', 'plugin_delisting_inventory', { count: Object.keys(knownMarketplaces).length, installed_count: Object.keys(installedPlugins.plugins).length })
+  const installedIds = Object.keys(installedPlugins.plugins)
+  if (installedIds.length === 0) {
+    pluginDiagnosticEvent('info', 'plugin_delisting_skipped', { reason: 'no_installed_plugins' })
+    return newlyFlagged
+  }
   for (const marketplaceName of Object.keys(knownMarketplaces)) {
+    if (!installedIds.some(id => id.endsWith(`@${marketplaceName}`))) {
+      pluginDiagnosticEvent('info', 'plugin_delisting_market_skipped', { market_id: marketplaceDiagnosticId(marketplaceName), reason: 'no_matching_plugins' })
+      continue
+    }
     try {
       const market_id = marketplaceDiagnosticId(marketplaceName)
       pluginDiagnosticEvent('info', 'plugin_delisting_market_started', { market_id })
-      const marketplace = await getMarketplace(marketplaceName)
+      // Delisting is startup bookkeeping, not an instruction to repair or
+      // update a remote market. Missing/invalid cache must never trigger Git.
+      const marketplace = await getMarketplaceCacheOnly(marketplaceName)
+      if (!marketplace) {
+        pluginDiagnosticEvent('warn', 'plugin_delisting_market_skipped', { market_id, reason: 'cache_unavailable' })
+        continue
+      }
       pluginDiagnosticEvent('info', 'plugin_delisting_market_completed', { market_id, force_remove: marketplace.forceRemoveDeletedPlugins === true })
 
       if (!marketplace.forceRemoveDeletedPlugins) continue

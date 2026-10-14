@@ -5,6 +5,8 @@ const summaries: Record<string, string> = {
   plugin_startup_started: '会话启动：开始插件协调（独立于自动更新开关）',
   plugin_startup_completed: '会话启动：插件协调返回结果（请结合失败事件判断）',
   plugin_startup_failed: '会话启动：插件协调发生异常',
+  plugin_delisting_skipped: '跳过插件下架检查：没有已安装插件',
+  plugin_delisting_market_skipped: '插件下架检查：跳过无相关插件或缓存不可用的市场（不联网）',
   plugin_delisting_started: '会话启动：开始插件下架检查',
   plugin_delisting_inventory: '插件下架检查：已登记市场与已安装插件数量',
   plugin_delisting_completed: '插件下架检查结束',
@@ -36,7 +38,7 @@ const summaries: Record<string, string> = {
 const numericKeys = ['pid', 'ppid', 'child_pid', 'count', 'installed_count', 'code', 'duration_ms', 'retry_after_ms']
 const enumValues: Record<string, string[]> = {
   operation: ['clone', 'pull', 'fetch', 'ls-remote', 'checkout', 'sparse-checkout', 'rev-parse', 'config', 'other'],
-  reason: ['busy', 'recent', 'disabled', 'missing', 'invalid'],
+  reason: ['busy', 'recent', 'disabled', 'missing', 'invalid', 'no_installed_plugins', 'no_matching_plugins', 'cache_unavailable'],
   source: ['headless', 'internal_git', 'background_update'],
   phase: ['startup', 'delisting', 'cache_reload'],
   remote_kind: ['github', 'other_remote', 'implicit'],
