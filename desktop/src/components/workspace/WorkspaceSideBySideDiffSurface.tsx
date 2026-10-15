@@ -1,3 +1,4 @@
+import { WorkspaceTableCompareSurface, canCompareAsTable } from './WorkspaceTableCompareSurface'
 import {
   memo,
   useCallback,
@@ -329,7 +330,7 @@ interface DiffLineContextMenu {
   y: number
 }
 
-export function WorkspaceSideBySideDiffSurface({
+function WorkspaceTextCompareSurface({
   value,
   comparison,
   path,
@@ -1966,4 +1967,13 @@ export function WorkspaceSideBySideDiffSurface({
       })()}
     </div>
   )
+}
+
+export function WorkspaceSideBySideDiffSurface(props: WorkspaceSideBySideDiffSurfaceProps) {
+  const [textMode, setTextMode] = useState(false)
+  const table = canCompareAsTable(props)
+  return <div className="flex min-h-0 flex-1 flex-col">
+    {table && <div className="flex gap-2 border-b p-1"><button type="button" onClick={() => setTextMode(false)} aria-pressed={!textMode}>表格比较</button><button type="button" onClick={() => setTextMode(true)} aria-pressed={textMode}>文本比较</button></div>}
+    {table && !textMode ? <WorkspaceTableCompareSurface {...props} /> : <WorkspaceTextCompareSurface {...props} />}
+  </div>
 }

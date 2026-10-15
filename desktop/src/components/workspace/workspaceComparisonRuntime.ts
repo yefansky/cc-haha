@@ -1,9 +1,11 @@
+import { buildWorkspaceTableModel } from './workspaceTableCompareModel'
 import type { WorkspaceComparison } from '@/api/sessions'
 import type { WorkspaceManualAlignmentAnchor } from './workspaceManualAlignment'
 import { buildWorkspaceSideBySideModel, type WorkspaceSideBySideModel } from './workspaceSideBySideModel'
 import type { WorkspaceComparisonSettings } from './workspaceComparisonSettings'
 
 export interface WorkspaceComparisonRuntimeRequest {
+  table?: boolean
   id: number
   sessionRevision: number
   settingsRevision: number
@@ -26,7 +28,7 @@ export function computeWorkspaceComparisonModel(request: WorkspaceComparisonRunt
     id: request.id,
     sessionRevision: request.sessionRevision,
     settingsRevision: request.settingsRevision,
-    model: buildWorkspaceSideBySideModel(
+    model: request.table ? buildWorkspaceTableModel(request.comparison, request.path) : buildWorkspaceSideBySideModel(
       request.value,
       request.comparison,
       request.path,
@@ -65,6 +67,7 @@ function comparisonInputCacheKey(input: Omit<WorkspaceComparisonRuntimeRequest, 
   // bytes rather than edited buffers. Key the computation by its actual input
   // so different edits cannot collide and saving unchanged text can reuse it.
   return JSON.stringify([
+    input.table ?? false,
     input.path,
     input.comparison ? '' : input.value,
     sideIdentity(input.comparison?.left),

@@ -33,6 +33,7 @@ const MAX_PREVIEW_BYTES = 1024 * 1024
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
+const MAX_COMPARISON_BYTES = 32 * 1024 * 1024
 const MAX_SVN_BASE_CACHE_BYTES = 16 * 1024 * 1024
 const MAX_SVN_BASE_CACHE_ENTRIES = 64
 const MAX_COMMAND_ERROR_DETAILS_CHARS = 2_048
@@ -1370,6 +1371,12 @@ export class WorkspaceService {
       return { state: 'missing', path: resolvedPath.relativePath }
     }
 
+    if (/\.(tab|tsv)$/i.test(resolvedPath.relativePath)) {
+      const comparison = await this.buildGitComparison(resolvedPath, repoInfo.repoRoot, statusEntry, leftRequestedEncoding, rightRequestedEncoding)
+      if ((comparison.left.size ?? 0) > MAX_GIT_BUFFER_BYTES || (comparison.right.size ?? 0) > MAX_GIT_BUFFER_BYTES) {
+        return { state: 'ok', path: resolvedPath.relativePath, diff: '', comparison }
+      }
+    }
     if (statusEntry.status === 'untracked') {
       const diff = await this.buildUntrackedDiff(
         resolvedPath.canonicalTargetPath,
@@ -1525,7 +1532,7 @@ export class WorkspaceService {
     const objectSpec = `HEAD:${repoPath}`
     const objectSize = await this.runGit(repoRoot, ['cat-file', '-s', objectSpec])
     const parsedSize = objectSize.code === 0 ? Number.parseInt(objectSize.stdout.trim(), 10) : Number.NaN
-    if (Number.isFinite(parsedSize) && parsedSize > MAX_GIT_BUFFER_BYTES) {
+    if (Number.isFinite(parsedSize) && parsedSize > MAX_COMPARISON_BYTES) {
       const objectRevision = await this.runGit(repoRoot, ['rev-parse', objectSpec])
       const revision = objectRevision.code === 0 && objectRevision.stdout.trim()
         ? `git-object:${objectRevision.stdout.trim()}`
@@ -1541,11 +1548,11 @@ export class WorkspaceService {
         lineEnding: 'unknown',
         writable: false,
         readOnlyReason: 'Git HEAD baselines are read-only.',
-        error: `Workspace comparison source exceeds ${MAX_GIT_BUFFER_BYTES} bytes.`,
+        error: `Workspace comparison source exceeds ${MAX_COMPARISON_BYTES} bytes.`,
       }
     }
 
-    const result = await this.runGitBuffer(repoRoot, ['show', objectSpec])
+    const result = await this.runGitBuffer(repoRoot, ['show', objectSpec], MAX_COMPARISON_BYTES)
     if (result.code !== 0) {
       return this.buildUnavailableComparisonSide(
         'git_head',
@@ -1616,7 +1623,7 @@ export class WorkspaceService {
     // Only a resolved URL and numeric revision identify immutable bytes. The
     // local working copy's literal BASE changes after update, switch or commit.
     if (!/^\d+$/.test(revision) || !/^[a-z][a-z\d+.-]*:\/\//i.test(target)) {
-      return this.runSvnBuffer(svnRoot, args)
+      return this.runSvnBuffer(svnRoot, args, MAX_COMPARISON_BYTES)
     }
     const key = JSON.stringify([svnRoot, target, revision])
     const cached = this.svnBaseBytesCache.get(key)
@@ -1627,7 +1634,7 @@ export class WorkspaceService {
     }
     const pending = this.svnBaseRequestsInFlight.get(key)
     if (pending) return pending
-    const request = this.runSvnBuffer(svnRoot, args).then((result) => {
+    const request = this.runSvnBuffer(svnRoot, args, MAX_COMPARISON_BYTES).then((result) => {
       if (result.code === 0 && result.stdout.length <= MAX_SVN_BASE_CACHE_BYTES) {
         this.svnBaseBytesCache.set(key, result.stdout)
         this.svnBaseCacheBytes += result.stdout.length
@@ -1777,7 +1784,7 @@ export class WorkspaceService {
         writable.readOnlyReason,
       )
     }
-    if (stat.stat.size > MAX_GIT_BUFFER_BYTES) {
+    if (stat.stat.size > MAX_COMPARISON_BYTES) {
       let fingerprint: string
       try {
         fingerprint = await this.fingerprintWorkspaceFile(resolvedPath.absolutePath)
@@ -1806,7 +1813,7 @@ export class WorkspaceService {
         lineEnding: 'unknown',
         writable: writable.writable,
         ...(writable.readOnlyReason ? { readOnlyReason: writable.readOnlyReason } : {}),
-        error: `Workspace comparison source exceeds ${MAX_GIT_BUFFER_BYTES} bytes.`,
+        error: `Workspace comparison source exceeds ${MAX_COMPARISON_BYTES} bytes.`,
       }
     }
     try {
@@ -1850,13 +1857,13 @@ export class WorkspaceService {
       ...(!writable && readOnlyReason ? { readOnlyReason } : {}),
     }
 
-    if (buffer.length > MAX_GIT_BUFFER_BYTES) {
+    if (buffer.length > MAX_COMPARISON_BYTES) {
       return {
         ...base,
         state: 'too_large',
         bom: this.detectComparisonBom(buffer),
         lineEnding: 'unknown',
-        error: `Workspace comparison source exceeds ${MAX_GIT_BUFFER_BYTES} bytes.`,
+        error: `Workspace comparison source exceeds ${MAX_COMPARISON_BYTES} bytes.`,
       }
     }
     const bom = this.detectComparisonBom(buffer)
@@ -3613,6 +3620,12 @@ export class WorkspaceService {
           }
         : { state: 'missing', path: resolvedPath.relativePath }
     }
+    if (/\.(tab|tsv)$/i.test(resolvedPath.relativePath)) {
+      const comparison = await this.buildSvnComparison(resolvedPath, svnRoot, entry, leftRequestedEncoding, rightRequestedEncoding)
+      if ((comparison.left.size ?? 0) > MAX_GIT_BUFFER_BYTES || (comparison.right.size ?? 0) > MAX_GIT_BUFFER_BYTES) {
+        return { state: 'ok', path: resolvedPath.relativePath, diff: '', comparison }
+      }
+    }
     if (entry.status === 'untracked') {
       const diff = await this.buildUntrackedDiff(entry.absolutePath, entry.path, rightRequestedEncoding)
       return diff.kind === 'ok'
@@ -4117,12 +4130,13 @@ export class WorkspaceService {
   private async runGitBuffer(
     workDir: string,
     args: string[],
+    maxBuffer = MAX_GIT_BUFFER_BYTES,
   ): Promise<BufferCommandResult> {
     try {
       const result = await execFile('git', args, {
         cwd: workDir,
         timeout: GIT_TIMEOUT_MS,
-        maxBuffer: MAX_GIT_BUFFER_BYTES,
+        maxBuffer,
         encoding: 'buffer',
       })
       return { stdout: result.stdout, stderr: result.stderr.toString('utf8'), code: 0 }
@@ -4134,7 +4148,7 @@ export class WorkspaceService {
         stderr: outputLimitExceeded ? '' : decodeCommandOutput(err.stderr),
         code: typeof err.code === 'number' ? err.code : 1,
         failure: outputLimitExceeded
-          ? `Git command output exceeded ${MAX_GIT_BUFFER_BYTES} bytes.`
+          ? `Git command output exceeded ${maxBuffer} bytes.`
           : err.message || (typeof err.code === 'string' ? err.code : undefined),
         ...(outputLimitExceeded ? { outputLimitExceeded: true } : {}),
       }
