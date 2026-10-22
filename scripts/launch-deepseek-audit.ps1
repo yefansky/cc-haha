@@ -70,6 +70,8 @@ try {
     return
   }
 
+  & (Join-Path $PSScriptRoot 'prepare-source-desktop.ps1') -RepoRoot $repoRoot -BunExe $bunExe
+
   # Stale Vite host: historically `node vite.js`, now `bun run ./scripts/electron-dev.ts`
   # which embeds Vite. Match only this lab's desktop path / electron-dev entry.
   $staleVite = @($allProcesses | Where-Object {
@@ -162,6 +164,9 @@ try {
     }
   }
   & $bunExe run electron:dev
+  if ($LASTEXITCODE -ne 0) {
+    throw "Source desktop startup failed (exit $LASTEXITCODE). See the output above for details."
+  }
 } finally {
   Pop-Location
 }
