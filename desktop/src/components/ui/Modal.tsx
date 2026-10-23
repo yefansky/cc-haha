@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { useSuppressBrowserOverlay } from '../../stores/overlayStore'
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -30,6 +31,7 @@ export function Modal({
   variant = 'dialog',
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
+  useSuppressBrowserOverlay(open)
 
   useEffect(() => {
     if (!open) return
@@ -81,7 +83,7 @@ export function Modal({
   if (!open) return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center">
+    <div className={`fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center${variant === 'media' ? ' media-modal-stage' : ''}`}>
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-[var(--color-modal-scrim)] transition-opacity duration-200"
@@ -99,7 +101,7 @@ export function Modal({
           : variant === 'fullscreen'
           ? 'relative flex h-[100dvh] w-full min-w-0 flex-col overflow-hidden bg-[var(--color-surface)] text-[var(--color-text-primary)]'
           : variant === 'media'
-          ? 'relative flex h-[calc(100dvh-24px)] w-[calc(100vw-24px)] flex-col overflow-hidden rounded-[var(--radius-2xl)] bg-[var(--color-terminal-bg)] text-[var(--color-terminal-fg)]'
+          ? 'media-modal-panel relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[var(--radius-2xl)] bg-[var(--color-terminal-bg)] text-[var(--color-terminal-fg)]'
           : 'dialog-panel relative flex max-h-[85vh] flex-col rounded-[var(--radius-3xl)]'}
         style={variant === 'expanded'
           ? {
@@ -110,7 +112,7 @@ export function Modal({
           : variant === 'fullscreen'
           ? { paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }
           : variant === 'media'
-          ? { maxHeight: 'calc(100dvh - 24px)', maxWidth: 'calc(100vw - 24px)' }
+          ? undefined
           : { width, maxWidth: 'calc(100vw - 48px)' }}
         role="dialog"
         aria-modal="true"

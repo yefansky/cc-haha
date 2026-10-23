@@ -3,8 +3,21 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { describe, expect, it, vi } from 'vitest'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Modal } from './Modal'
+import { useOverlayStore } from '../../stores/overlayStore'
 
 describe('Modal', () => {
+  it.each(['dialog', 'media', 'fullscreen', 'expanded'] as const)('suppresses native browser surfaces while %s is open', (variant) => {
+    const initialCount = useOverlayStore.getState().count
+    const view = (open: boolean) => <Modal open={open} onClose={vi.fn()} variant={variant}><button>Action</button></Modal>
+    const { rerender, unmount } = render(view(true))
+    expect(useOverlayStore.getState().count).toBe(initialCount + 1)
+    expect(screen.getByRole('dialog').parentElement?.classList.contains('media-modal-stage')).toBe(variant === 'media')
+    rerender(view(false))
+    expect(useOverlayStore.getState().count).toBe(initialCount)
+    unmount()
+    expect(useOverlayStore.getState().count).toBe(initialCount)
+  })
+
   it('portals the dialog to body so the scrim covers the full app shell', () => {
     const onClose = vi.fn()
     const { container } = render(
@@ -57,7 +70,8 @@ describe('Modal', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Preview' })
     expect(dialog).toHaveClass('bg-[var(--color-terminal-bg)]')
-    expect(dialog).toHaveClass('h-[calc(100dvh-24px)]')
+    expect(dialog).toHaveClass('media-modal-panel')
+    expect(dialog.parentElement).toHaveClass('media-modal-stage')
     expect(dialog).not.toHaveClass('dialog-panel')
     expect(screen.getByRole('img', { name: 'Preview' }).parentElement).not.toHaveClass('px-6')
   })

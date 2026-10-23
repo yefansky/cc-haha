@@ -1466,6 +1466,23 @@ html, body, #root {
   color: var(--color-selection-fg);
 }
 
+/* Media previews must stay below native titlebar buttons: DOM z-index cannot
+   cover those controls. The env value also follows Windows display/zoom scale.
+   Keep a visible border on every side, including H5 safe areas and small windows. */
+.media-modal-stage {
+  box-sizing: border-box;
+  padding-top: max(64px, calc(env(titlebar-area-height, 0px) + 16px), env(safe-area-inset-top, 0px));
+  padding-right: max(clamp(16px, 4vw, 64px), env(safe-area-inset-right, 0px));
+  padding-bottom: max(clamp(16px, 4vh, 48px), env(safe-area-inset-bottom, 0px));
+  padding-left: max(clamp(16px, 4vw, 64px), env(safe-area-inset-left, 0px));
+  -webkit-app-region: no-drag;
+}
+.media-modal-panel {
+  width: 100%;
+  height: 100%;
+  max-width: 1440px;
+}
+
 /* Desktop drag region */
 [data-desktop-drag-region] {
   app-region: drag;

@@ -96,6 +96,17 @@ describe('ImageGalleryModal · overlay suppression', () => {
 })
 
 describe('ImageGalleryModal · navigation', () => {
+  it('closes with the visible control or outer backdrop while image clicks keep it open', () => {
+    const onClose = vi.fn()
+    render(<ImageGalleryModal open images={images} activeIndex={0} onClose={onClose} onSelect={() => {}} />)
+    fireEvent.click(screen.getByRole('img', { name: 'a.png' }))
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('dialog').previousElementSibling!)
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
   it('names both arrows, which an icon-only control otherwise lacks', () => {
     render(<ImageGalleryModal open images={gallery} activeIndex={0} onClose={() => {}} onSelect={() => {}} />)
 
