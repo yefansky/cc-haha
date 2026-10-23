@@ -88,6 +88,20 @@ describe('GatewayTunnelRuntime real child boundary', () => {
     return runtime
   }
 
+  it('keeps public configuration and stopped status available when the stored credential is unreadable', async () => {
+    credentials.getConfig = () => ({ gatewayUrl: 'https://gateway.example', autoStart: true, hasKey: false, credentialStorage: 'unavailable' })
+    credentials.getAccessKey = () => { throw new Error('private OS error') }
+    const runtime = make()
+    const config = await runtime.getConfig()
+    expect(config).toEqual({ gatewayUrl: 'https://gateway.example', autoStart: true, hasKey: false, credentialStorage: 'unavailable' })
+    expect(await runtime.getStatus()).toEqual({ generation: 0, state: 'stopped' })
+    // Same guard as desktop startup: no automatic connection for unusable keys.
+    if (config.autoStart && config.hasKey) await runtime.start()
+    expect(calls).toHaveLength(0)
+    expect((await runtime.testConnection()).code).toBe('STORAGE_ERROR')
+    expect(calls).toHaveLength(0)
+  })
+
   it('starts from one UTF8 secret line with stdin open, emits safe status, and reaps on stop', async () => {
     const events: GatewayStatus[] = []
     const runtime = make()

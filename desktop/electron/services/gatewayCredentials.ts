@@ -89,7 +89,8 @@ export class GatewayCredentials {
         data.encryptedKey.length > 65536 || Buffer.from(data.encryptedKey, 'base64').toString('base64') !== data.encryptedKey)) return fail('STORAGE_ERROR')
       this.record = { version: 1, gatewayUrl: normalized, autoStart: data.autoStart ?? false,
         ...(data.encryptedKey === undefined ? {} : { encryptedKey: data.encryptedKey }) }
-      if (this.record.encryptedKey !== undefined) this.decrypt()
+      // Public configuration remains readable even when the OS cannot decrypt the key.
+      // Only secret-consuming or destructive operations require a usable credential.
     } catch { fail('STORAGE_ERROR') }
   }
 
@@ -121,7 +122,12 @@ export class GatewayCredentials {
   getConfig(): GatewayConfig {
     // Recheck backend availability; protected ciphertext must not silently become "no key".
     const encrypted = this.record.encryptedKey !== undefined
-    if (encrypted) this.decrypt()
+    if (encrypted) {
+      try { this.decrypt() } catch {
+        return { gatewayUrl: this.record.gatewayUrl, autoStart: this.record.autoStart,
+          hasKey: false, credentialStorage: 'unavailable' }
+      }
+    }
     return { gatewayUrl: this.record.gatewayUrl, autoStart: this.record.autoStart,
       hasKey: encrypted || this.memoryKey !== undefined,
       credentialStorage: encrypted ? 'encrypted' : this.memoryKey !== undefined ? 'memory' : 'none' }
@@ -135,7 +141,7 @@ export class GatewayCredentials {
       (input.autoStart !== undefined && typeof input.autoStart !== 'boolean') ||
       (input.accessKey !== undefined && !validKey(input.accessKey))) return fail('CONFIG_INVALID')
     const url = gatewayUrl(input.gatewayUrl)
-    this.getConfig()
+    this.decrypt() // Explicit recovery must back up unreadable ciphertext before any save.
     const next: RecordV1 = { ...this.record, gatewayUrl: url, autoStart: input.autoStart ?? this.record.autoStart }
     let memory = this.memoryKey
     if (input.accessKey !== undefined) {
@@ -158,7 +164,7 @@ export class GatewayCredentials {
   }
 
   clearKey(): GatewayConfig {
-    this.getConfig()
+    this.decrypt() // Clearing an unreadable key also requires the backup recovery path.
     const next = { ...this.record }
     delete next.encryptedKey
     this.persist(next)

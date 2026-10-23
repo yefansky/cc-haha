@@ -76,12 +76,14 @@ export function GatewayAccessSettings() {
     setAutoStart(next.autoStart)
   }
 
-  async function load() {
+  async function load(isActive: () => boolean = () => mounted.current) {
     const revision = statusRevision.current
-    const [nextConfig, nextStatus] = await Promise.all([host.gateway.getConfig(), host.gateway.getStatus()])
-    if (!mounted.current) return
-    acceptConfig(nextConfig)
-    if (statusRevision.current === revision) acceptStatus(nextStatus)
+    const [nextConfig, nextStatus] = await Promise.allSettled([host.gateway.getConfig(), host.gateway.getStatus()])
+    if (!mounted.current || !isActive()) return
+    if (nextConfig.status === 'fulfilled') acceptConfig(nextConfig.value)
+    if (nextStatus.status === 'fulfilled' && statusRevision.current === revision) acceptStatus(nextStatus.value)
+    if (nextConfig.status === 'rejected') throw nextConfig.reason
+    if (nextStatus.status === 'rejected') throw nextStatus.reason
   }
 
   useEffect(() => {
@@ -89,19 +91,13 @@ export function GatewayAccessSettings() {
     let active = true
     let unsubscribe: (() => void) | undefined
     mounted.current = true
-    const revision = statusRevision.current
     void host.gateway.onStatus(next => {
       if (active) acceptStatus(next)
     }).then(dispose => {
       if (!active) dispose()
       else unsubscribe = dispose
     }).catch(reason => { if (active) setError(safeCode(reason)) })
-    void Promise.all([host.gateway.getConfig(), host.gateway.getStatus()]).then(([nextConfig, nextStatus]) => {
-      if (!active) return
-      acceptConfig(nextConfig)
-      // An initial snapshot must not overwrite an event received during loading.
-      if (statusRevision.current === revision) acceptStatus(nextStatus)
-    }).catch(reason => { if (active) setError(safeCode(reason)) }).finally(() => {
+    void load(() => active).catch(reason => { if (active) setError(safeCode(reason)) }).finally(() => {
       if (active) setBusy(false)
     })
     return () => {
@@ -114,10 +110,11 @@ export function GatewayAccessSettings() {
   if (!host.isDesktop || !host.gateway) return null
 
   const running = !['stopped', 'error'].includes(status.state)
-  const locked = busy || running || !config
+  const locked = busy || running || !config || status.generation < 0
   const dirty = !!config && (gatewayUrl !== config.gatewayUrl || autoStart !== config.autoStart || accessKey.length > 0)
+  const keyUnavailable = config?.credentialStorage === 'unavailable'
   const canConnect = !locked && !dirty && !!config?.hasKey && !!gatewayUrl
-  const shownError = error ?? result?.code ?? status.code
+  const shownError = error ?? (keyUnavailable ? 'STORAGE_ERROR' : undefined) ?? result?.code ?? status.code
   const warningClass = 'text-xs rounded-[var(--radius-md)] bg-[var(--color-warning-container)] text-[var(--color-on-warning-container)] p-3'
 
   async function run(action: () => Promise<void>) {
@@ -155,16 +152,16 @@ export function GatewayAccessSettings() {
         <Input label={t('settings.gateway.accessKey')} type="password" autoComplete="new-password" spellCheck={false}
           value={accessKey} disabled={locked} size="md" onChange={event => setAccessKey(event.target.value)}
           aria-describedby={shownError ? errorId : undefined}
-          hint={t(config?.hasKey ? 'settings.gateway.keyConfigured' : 'settings.gateway.keyMissing')} />
+          hint={t(keyUnavailable ? 'settings.gateway.keyUnavailable' : config?.hasKey ? 'settings.gateway.keyConfigured' : 'settings.gateway.keyMissing')} />
         <Switch label={t('settings.gateway.autoStart')} checked={autoStart} onChange={setAutoStart} disabled={locked} size="sm" />
         {gatewayUrl.trim().toLowerCase().startsWith('http:') && <p className={warningClass}>{t('settings.gateway.httpWarning')}</p>}
         {config?.credentialStorage === 'memory' && <p className={warningClass}>{t('settings.gateway.memoryWarning')}</p>}
         {dirty && <p className="text-xs text-[var(--color-text-secondary)]">{t('settings.gateway.saveFirst')}</p>}
         <div className="flex flex-wrap gap-2">
-          {(!config || error) && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(load)}>
+          {(!config || shownError) && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(load)}>
             {t('settings.gateway.retryLoad')}
           </Button>}
-          {error === 'STORAGE_ERROR' && <Button size="sm" variant="secondary" disabled={busy || running}
+          {shownError === 'STORAGE_ERROR' && <Button size="sm" variant="secondary" disabled={busy || running}
             onClick={() => void run(async () => {
               const next = await host.gateway.recoverConfig()
               if (mounted.current) { acceptConfig(next); setAccessKey('') }
@@ -172,7 +169,7 @@ export function GatewayAccessSettings() {
               latestStatus.current = { generation: -1, state: 'stopped' }
               acceptStatus(nextStatus)
             })}>{t('settings.gateway.recoverConfig')}</Button>}
-          <Button size="sm" variant="secondary" disabled={locked || !dirty} onClick={() => void run(async () => {
+          <Button size="sm" variant="secondary" disabled={locked || keyUnavailable || !dirty} onClick={() => void run(async () => {
             const next = await host.gateway.saveConfig({ gatewayUrl, autoStart, ...(accessKey ? { accessKey } : {}) })
             if (mounted.current) { acceptConfig(next); setAccessKey('') }
           })}>{t('settings.gateway.save')}</Button>
@@ -193,7 +190,7 @@ export function GatewayAccessSettings() {
             {t('settings.gateway.stop')}
           </Button>
         </div>
-        {error === 'STORAGE_ERROR' && <p className="text-xs text-[var(--color-text-secondary)]">
+        {shownError === 'STORAGE_ERROR' && <p className="text-xs text-[var(--color-text-secondary)]">
           {t('settings.gateway.recoveryHint')}
         </p>}
         {shownError && <p id={errorId} role="alert" className="text-xs text-[var(--color-error)]">{t(errorKeys[safeCode(shownError)])}</p>}

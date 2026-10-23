@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -214,6 +215,39 @@ describe('GatewayAccessSettings', () => {
     expect(screen.getByLabelText('Access key')).toHaveValue('')
   })
 
+  it('shows public config with an unreadable key, requires backed up recovery, then permits reentry', async () => {
+    config = { ...config, hasKey: false, autoStart: true, credentialStorage: 'unavailable' }
+    const user = userEvent.setup()
+    render(<GatewayAccessSettings />)
+    await screen.findByDisplayValue(config.gatewayUrl)
+    expect(screen.getByLabelText('Gateway URL')).toBeEnabled()
+    expect(screen.getByLabelText('Access key')).toBeEnabled()
+    expect(screen.getByRole('switch')).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Start connection' })).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('credentials')
+    await user.type(screen.getByLabelText('Access key'), 'replacement')
+    expect(screen.getByRole('button', { name: 'Save gateway settings' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Back up and reset saved key' }))
+    expect(gateway.recoverConfig).toHaveBeenCalledTimes(1)
+    await user.type(screen.getByLabelText('Access key'), 'replacement')
+    // The real host returns a usable storage state after explicit recovery.
+    config = { ...config, credentialStorage: 'encrypted' }
+    await user.click(screen.getByRole('button', { name: 'Save gateway settings' }))
+    await waitFor(() => expect(screen.getByLabelText('Access key')).toHaveValue(''))
+    expect(gateway.saveConfig).toHaveBeenCalledWith({ gatewayUrl: config.gatewayUrl, autoStart: true, accessKey: 'replacement' })
+  })
+
+  it('retains a successful public snapshot if runtime status fails and keeps actions locked until retry', async () => {
+    vi.mocked(gateway.getStatus).mockRejectedValueOnce(new Error('STORAGE_ERROR'))
+    render(<GatewayAccessSettings />)
+    await screen.findByDisplayValue(config.gatewayUrl)
+    await screen.findByRole('alert')
+    expect(screen.getByLabelText('Gateway URL')).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Retry loading' }))
+    await waitFor(() => expect(screen.getByLabelText('Gateway URL')).toBeEnabled())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('does not expose native controls or call host methods in a browser', () => {
     window.desktopHost = { ...browserHost, gateway }
     const { container } = render(<GatewayAccessSettings />)
@@ -244,6 +278,15 @@ describe('GatewayAccessSettings', () => {
     expect(screen.getByRole('button', { name: 'Test connection' })).toBeDisabled()
     view.unmount()
     expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores an initial config request from the cleaned up StrictMode effect', async () => {
+    const stale = deferred<GatewayConfig>()
+    vi.mocked(gateway.getConfig).mockReturnValueOnce(stale.promise)
+    render(<StrictMode><GatewayAccessSettings /></StrictMode>)
+    await screen.findByDisplayValue(config.gatewayUrl)
+    await act(async () => stale.resolve({ ...config, gatewayUrl: 'https://stale.example' }))
+    expect(screen.getByLabelText('Gateway URL')).toHaveValue(config.gatewayUrl)
   })
 
   it('keeps all gateway translation keys present in all five locales', () => {

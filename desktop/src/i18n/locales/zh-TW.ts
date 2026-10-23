@@ -19,6 +19,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.gateway.gatewayUrl': "閘道位址",
   'settings.gateway.accessKey': "存取 Key",
   'settings.gateway.autoStart': "啟動應用程式時自動連線",
+  'settings.gateway.keyUnavailable': '已儲存 Key 暫時無法解密，閘道位址已保留。請先備份並重設已存 Key，再重新輸入。',
   'settings.gateway.keyConfigured': "已設定 Key；留空可保留原憑證。",
   'settings.gateway.keyMissing': "尚未設定 Key。",
   'settings.gateway.httpWarning': "HTTP 未加密：憑證與 H5 內容可能被截取。僅限可信內網實驗，保護傳輸隱私請使用 HTTPS。",

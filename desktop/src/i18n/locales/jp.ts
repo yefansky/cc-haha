@@ -19,6 +19,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.gateway.gatewayUrl': "ゲートウェイ URL",
   'settings.gateway.accessKey': "アクセスキー",
   'settings.gateway.autoStart': "アプリ起動時に自動接続",
+  'settings.gateway.keyUnavailable': '保存したキーを復号できません。ゲートウェイアドレスは保持されています。バックアップしてキーをリセットし、再入力してください。',
   'settings.gateway.keyConfigured': "キー設定済み。空欄なら現在のキーを保持します。",
   'settings.gateway.keyMissing': "キー未設定。",
   'settings.gateway.httpWarning': "HTTP は暗号化されません。認証情報や H5 の内容が傍受される可能性があります。信頼できる LAN での実験専用です。プライバシー保護には HTTPS を使用してください。",

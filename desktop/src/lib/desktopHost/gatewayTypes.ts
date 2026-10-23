@@ -8,7 +8,7 @@ export type GatewayErrorCode = typeof GATEWAY_ERROR_CODES[number]
 export type GatewayConfig = {
   gatewayUrl: string
   hasKey: boolean
-  credentialStorage: 'encrypted' | 'memory' | 'none'
+  credentialStorage: 'encrypted' | 'memory' | 'none' | 'unavailable'
   autoStart: boolean
 }
 export type GatewaySaveInput = {
@@ -57,8 +57,8 @@ export function parseGatewayConfig(value: unknown): GatewayConfig {
   }
   return {
     gatewayUrl,
-    hasKey: data.hasKey === true,
-    credentialStorage: data.credentialStorage === 'encrypted' || data.credentialStorage === 'memory' ? data.credentialStorage : 'none',
+    hasKey: data.hasKey === true && data.credentialStorage !== 'unavailable',
+    credentialStorage: data.credentialStorage === 'encrypted' || data.credentialStorage === 'memory' || data.credentialStorage === 'unavailable' ? data.credentialStorage : 'none',
     autoStart: data.autoStart === true,
   }
 }

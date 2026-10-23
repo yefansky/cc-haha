@@ -18,6 +18,7 @@ export const en = {
   'settings.gateway.gatewayUrl': "Gateway URL",
   'settings.gateway.accessKey': "Access key",
   'settings.gateway.autoStart': "Connect automatically on startup",
+  'settings.gateway.keyUnavailable': 'The saved key cannot be decrypted. Your gateway address is preserved. Back up and reset the saved key to enter it again.',
   'settings.gateway.keyConfigured': "Key configured. Leave empty to keep it.",
   'settings.gateway.keyMissing': "No key configured.",
   'settings.gateway.httpWarning': "HTTP is unencrypted: credentials and H5 content can be intercepted. Use only for trusted LAN experiments; use HTTPS for privacy.",

@@ -50,6 +50,12 @@ describe('gateway desktop boundary', () => {
     subscribe.mock.calls[0]![1]({ generation: 3, state: 'error', code: 'KEY_INVALID', accessKey: 'private-value' })
     expect(handler).toHaveBeenCalledWith({ generation: 3, state: 'error', code: 'KEY_INVALID' })
   })
+  it('preserves unavailable credential status without treating ciphertext as a usable key', async () => {
+    const host = createElectronHost({ invoke: vi.fn().mockResolvedValue({ gatewayUrl: 'https://host', autoStart: true,
+      hasKey: true, credentialStorage: 'unavailable', encryptedKey: 'must-not-cross', accessKey: 'must-not-cross' }), subscribe: vi.fn() })
+    expect(await host.gateway.getConfig()).toEqual({ gatewayUrl: 'https://host', autoStart: true,
+      hasKey: false, credentialStorage: 'unavailable' })
+  })
   it('routes config, lifecycle and status subscription through the bridge', async () => {
     const invoke = vi.fn().mockResolvedValue({})
     const unlisten = vi.fn()

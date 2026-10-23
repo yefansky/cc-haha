@@ -19,6 +19,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.gateway.gatewayUrl': "게이트웨이 URL",
   'settings.gateway.accessKey': "접속 키",
   'settings.gateway.autoStart': "앱 시작 시 자동 연결",
+  'settings.gateway.keyUnavailable': '저장된 키를 해독할 수 없습니다. 게이트웨이 주소는 유지됩니다. 키를 백업하고 재설정한 후 다시 입력하세요.',
   'settings.gateway.keyConfigured': "키가 설정되었습니다. 비워 두면 기존 키를 유지합니다.",
   'settings.gateway.keyMissing': "키가 설정되지 않았습니다.",
   'settings.gateway.httpWarning': "HTTP는 암호화되지 않습니다. 인증 정보와 H5 내용이 도청될 수 있습니다. 신뢰할 수 있는 LAN 실험에만 사용하고 전송 개인정보 보호에는 HTTPS를 사용하세요.",

@@ -44,7 +44,7 @@ describe('GatewayCredentials', () => {
     fixture.create().save({ gatewayUrl: url, accessKey: secret, autoStart: true })
     const original = readFileSync(fixture.file, 'utf8')
     const newStorage = storage()
-    expect(() => new GatewayCredentials({ directory: fixture.dir, safeStorage: newStorage })).toThrow('STORAGE_ERROR')
+    expect(new GatewayCredentials({ directory: fixture.dir, safeStorage: newStorage }).getConfig()).toEqual({ gatewayUrl: url, autoStart: true, hasKey: false, credentialStorage: 'unavailable' })
     GatewayCredentials.recover(fixture.dir)
     const backups = readdirSync(fixture.dir).filter(name => name.endsWith('.bak'))
     expect(backups).toHaveLength(1)
@@ -170,13 +170,29 @@ describe('GatewayCredentials', () => {
     credentials.save({ gatewayUrl: url, accessKey: secret })
     const original = readFileSync(fixture.file, 'utf8')
     fixture.safeStorage.decryptString = () => { throw new Error(secret) }
-    for (const action of [fixture.create, () => credentials.getConfig(), () => credentials.getAccessKey(),
+    for (const action of [() => credentials.getAccessKey(),
       () => credentials.save({ gatewayUrl: url, accessKey: 'new' }), () => credentials.clearKey()]) {
       expect(action).toThrow(/^STORAGE_ERROR$/)
       expect(readFileSync(fixture.file, 'utf8')).toBe(original)
     }
     fixture.safeStorage.isEncryptionAvailable = () => false
-    expect(fixture.create).toThrow(/^STORAGE_ERROR$/)
+    expect(fixture.create().getConfig()).toMatchObject({ gatewayUrl: url, hasKey: false, credentialStorage: 'unavailable' })
+    expect(readFileSync(fixture.file, 'utf8')).toBe(original)
+  })
+  test('temporary backend loss keeps public fields and recovers without writing or resetting', () => {
+    const fixture = setup()
+    const credentials = fixture.create()
+    credentials.save({ gatewayUrl: url, accessKey: secret, autoStart: true })
+    const original = readFileSync(fixture.file, 'utf8')
+    fixture.safeStorage.isEncryptionAvailable = () => false
+    const reopened = fixture.create()
+    expect(reopened.getConfig()).toEqual({ gatewayUrl: url, autoStart: true, hasKey: false, credentialStorage: 'unavailable' })
+    expect(() => reopened.getAccessKey()).toThrow(/^STORAGE_ERROR$/)
+    expect(() => reopened.save({ gatewayUrl: 'https://changed.example' })).toThrow(/^STORAGE_ERROR$/)
+    expect(readFileSync(fixture.file, 'utf8')).toBe(original)
+    fixture.safeStorage.isEncryptionAvailable = () => true
+    expect(reopened.getConfig()).toEqual({ gatewayUrl: url, autoStart: true, hasKey: true, credentialStorage: 'encrypted' })
+    expect(reopened.getAccessKey()).toBe(secret)
     expect(readFileSync(fixture.file, 'utf8')).toBe(original)
   })
   test('encryption failure is sanitized and does not change state or file', () => {
@@ -195,7 +211,7 @@ describe('GatewayCredentials', () => {
     credentials.save({ gatewayUrl: url, accessKey: secret })
     const original = readFileSync(fixture.file, 'utf8')
     fixture.safeStorage.getSelectedStorageBackend = () => 'basic_text'
-    expect(fixture.create).toThrow(/^STORAGE_ERROR$/)
+    expect(fixture.create().getConfig()).toMatchObject({ gatewayUrl: url, hasKey: false, credentialStorage: 'unavailable' })
     expect(() => credentials.save({ gatewayUrl: url, accessKey: 'replacement' })).toThrow(/^STORAGE_ERROR$/)
     expect(() => credentials.clearKey()).toThrow(/^STORAGE_ERROR$/)
     expect(readFileSync(fixture.file, 'utf8')).toBe(original)
@@ -204,7 +220,7 @@ describe('GatewayCredentials', () => {
     const fixture = setup()
     fixture.create().save({ gatewayUrl: url, accessKey: secret })
     const original = readFileSync(fixture.file, 'utf8')
-    expect(() => new GatewayCredentials({ directory: fixture.dir, safeStorage: storage(), platform: 'win32' })).toThrow(/^STORAGE_ERROR$/)
+    expect(new GatewayCredentials({ directory: fixture.dir, safeStorage: storage(), platform: 'win32' }).getConfig()).toMatchObject({ gatewayUrl: url, hasKey: false, credentialStorage: 'unavailable' })
     expect(readFileSync(fixture.file, 'utf8')).toBe(original)
   })
   test('out-of-band modification and stale instances cannot overwrite the latest file', () => {
