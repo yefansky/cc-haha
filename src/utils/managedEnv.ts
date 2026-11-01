@@ -71,6 +71,20 @@ const HOST_OWNED_ENV_KEYS = new Set([
   'CC_HAHA_LOCAL_ACCESS_TOKEN',
 ])
 
+const HEADLESS_SAFETY_ENV_KEYS = new Set([
+  'CC_HAHA_TRACE_API_CALLS', 'CLAUDE_CODE_DIAGNOSTICS_FILE',
+  'CLAUDE_CODE_DEBUG_LOGS_DIR', 'DEBUG', 'DEBUG_SDK',
+  'CLAUDE_CODE_SKIP_PROMPT_HISTORY', 'DISABLE_TELEMETRY', 'DISABLE_ERROR_REPORTING',
+])
+
+function withoutHeadlessSafetyOverrides(env: Record<string, string> | undefined): Record<string, string> {
+  if (!env) return {}
+  const headless = isEnvTruthy(process.env.CC_HAHA_HEADLESS_HOST)
+  return Object.fromEntries(Object.entries(env).filter(([key]) =>
+    key !== 'CC_HAHA_HEADLESS_HOST' && (!headless || !HEADLESS_SAFETY_ENV_KEYS.has(key)),
+  ))
+}
+
 function withoutHostOwnedEnvVars(
   env: Record<string, string> | undefined,
 ): Record<string, string> {
@@ -112,7 +126,7 @@ function filterSettingsEnv(
 ): Record<string, string> {
   return withoutCcdSpawnEnvKeys(
     withoutHostOwnedEnvVars(
-      withoutHostManagedProviderVars(withoutSSHTunnelVars(env)),
+      withoutHostManagedProviderVars(withoutSSHTunnelVars(withoutHeadlessSafetyOverrides(env))),
     ),
   )
 }

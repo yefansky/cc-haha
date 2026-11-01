@@ -1,8 +1,8 @@
 import path from 'node:path'
 
-export type SidecarMode = 'server' | 'cli' | 'adapters'
+export type SidecarMode = 'server' | 'cli' | 'headless' | 'adapters'
 
-const EXPLICIT_MODES = new Set<SidecarMode>(['server', 'cli', 'adapters'])
+const EXPLICIT_MODES = new Set<SidecarMode>(['server', 'cli', 'headless', 'adapters'])
 const DESKTOP_CLI_NAMES = new Set(['claude-haha', 'claude-haha.exe'])
 
 export function resolveSidecarInvocation(
@@ -24,6 +24,9 @@ export function resolveSidecarInvocation(
   }
 
   const execName = path.basename(execPath).toLowerCase()
+  if (execName === 'cc-haha' || execName === 'cc-haha.exe') {
+    return { mode: 'headless', restArgs: rawArgs, defaultAppRoot: envAppRoot ?? path.dirname(execPath) }
+  }
   if (DESKTOP_CLI_NAMES.has(execName)) {
     return {
       mode: 'cli',

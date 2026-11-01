@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { parseLauncherArgs, resolveSidecarInvocation } from './launcherRouting'
 
 describe('resolveSidecarInvocation', () => {
+  it('routes cc-haha executable and explicit headless mode without changing legacy cli', () => {
+    expect(resolveSidecarInvocation(['-p', 'OK'], '/tmp/cc-haha.exe', null)).toEqual({ mode: 'headless', restArgs: ['-p', 'OK'], defaultAppRoot: '/tmp' })
+    expect(resolveSidecarInvocation(['headless', 'usage'], '/tmp/claude-sidecar', null).mode).toBe('headless')
+  })
   it('keeps explicit sidecar modes unchanged', () => {
     expect(
       resolveSidecarInvocation(

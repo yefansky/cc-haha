@@ -44,6 +44,11 @@ if (mode === 'adapters') {
   process.env.CALLER_DIR ||= process.cwd()
   process.argv = [process.argv[0]!, process.argv[1]!, ...args]
 
+  // The headless entry resolves --cwd before loading the agent/preload tree.
+  if (mode === 'headless') {
+    const { runCcHaha } = await import('../../src/entrypoints/ccHaha.ts')
+    process.exit(await runCcHaha(args))
+  }
   await import('../../preload.ts')
 
   if (mode === 'server') {

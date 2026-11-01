@@ -17,6 +17,11 @@ const originalEnv = {
   CC_HAHA_IMAGE_PROVIDER_KIND: process.env.CC_HAHA_IMAGE_PROVIDER_KIND,
   CC_HAHA_IMAGE_PROVIDER_ID: process.env.CC_HAHA_IMAGE_PROVIDER_ID,
   CC_HAHA_IMAGE_MODEL: process.env.CC_HAHA_IMAGE_MODEL,
+  CC_HAHA_HEADLESS_HOST: process.env.CC_HAHA_HEADLESS_HOST,
+  CC_HAHA_TRACE_API_CALLS: process.env.CC_HAHA_TRACE_API_CALLS,
+  CLAUDE_CODE_DIAGNOSTICS_FILE: process.env.CLAUDE_CODE_DIAGNOSTICS_FILE,
+  DEBUG: process.env.DEBUG,
+  DEBUG_SDK: process.env.DEBUG_SDK,
 }
 
 function restoreEnv(key: keyof typeof originalEnv): void {
@@ -46,6 +51,11 @@ describe('managedEnv', () => {
     delete process.env.CC_HAHA_IMAGE_PROVIDER_KIND
     delete process.env.CC_HAHA_IMAGE_PROVIDER_ID
     delete process.env.CC_HAHA_IMAGE_MODEL
+    delete process.env.CC_HAHA_HEADLESS_HOST
+    delete process.env.CC_HAHA_TRACE_API_CALLS
+    delete process.env.CLAUDE_CODE_DIAGNOSTICS_FILE
+    delete process.env.DEBUG
+    delete process.env.DEBUG_SDK
   })
 
   afterEach(async () => {
@@ -63,6 +73,11 @@ describe('managedEnv', () => {
     restoreEnv('CC_HAHA_IMAGE_PROVIDER_KIND')
     restoreEnv('CC_HAHA_IMAGE_PROVIDER_ID')
     restoreEnv('CC_HAHA_IMAGE_MODEL')
+    restoreEnv('CC_HAHA_HEADLESS_HOST')
+    restoreEnv('CC_HAHA_TRACE_API_CALLS')
+    restoreEnv('CLAUDE_CODE_DIAGNOSTICS_FILE')
+    restoreEnv('DEBUG')
+    restoreEnv('DEBUG_SDK')
   })
 
   test('starts a standalone provider proxy for CLI-only OpenAI-compatible providers', async () => {
@@ -121,5 +136,28 @@ describe('managedEnv', () => {
     expect(process.env.CC_HAHA_IMAGE_PROVIDER_KIND).toBe('grok_oauth')
     expect(process.env.CC_HAHA_IMAGE_PROVIDER_ID).toBe('grok-official')
     expect(process.env.CC_HAHA_IMAGE_MODEL).toBe('grok-imagine-image-quality')
+  })
+
+  test('headless privacy settings cannot re-enable trace/debug or replace its host guard', async () => {
+    await writeJson(path.join(tmpDir, 'cc-haha', 'settings.json'), { env: {
+      CC_HAHA_HEADLESS_HOST: '0', CC_HAHA_TRACE_API_CALLS: '1', DEBUG: '1', DEBUG_SDK: '1',
+      CLAUDE_CODE_DIAGNOSTICS_FILE: path.join(tmpDir, 'unsafe-diagnostics.jsonl'),
+    } })
+    process.env.CC_HAHA_HEADLESS_HOST = '1'
+    process.env.CC_HAHA_TRACE_API_CALLS = '0'
+    process.env.DEBUG = '0'; process.env.DEBUG_SDK = '0'
+    applySafeConfigEnvironmentVariables()
+    expect(process.env.CC_HAHA_HEADLESS_HOST).toBe('1')
+    expect(process.env.CC_HAHA_TRACE_API_CALLS).toBe('0')
+    expect(process.env.DEBUG).toBe('0')
+    expect(process.env.DEBUG_SDK).toBe('0')
+    expect(process.env.CLAUDE_CODE_DIAGNOSTICS_FILE).toBeUndefined()
+  })
+
+  test('ordinary GUI/CLI settings still enable user-selected tracing and debugging without a headless host', async () => {
+    await writeJson(path.join(tmpDir, 'cc-haha', 'settings.json'), { env: { CC_HAHA_TRACE_API_CALLS: '1', DEBUG: '1' } })
+    applySafeConfigEnvironmentVariables()
+    expect(process.env.CC_HAHA_TRACE_API_CALLS).toBe('1')
+    expect(process.env.DEBUG).toBe('1')
   })
 })

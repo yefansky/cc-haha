@@ -183,7 +183,15 @@ export function getNetworkProxyFetchOptions(
   })
 }
 
-export async function loadNetworkSettings(): Promise<NetworkSettings> {
+export async function loadNetworkSettings(options?: { readOnly?: boolean }): Promise<NetworkSettings> {
+  if (options?.readOnly) {
+    const { readFile } = await import('node:fs/promises')
+    const { join } = await import('node:path')
+    const { homedir } = await import('node:os')
+    try {
+      return normalizeNetworkSettings(JSON.parse(await readFile(join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json'), 'utf8')))
+    } catch { return normalizeNetworkSettings({}) }
+  }
   const settings = await new SettingsService().getUserSettings()
   return normalizeNetworkSettings(settings)
 }

@@ -201,7 +201,7 @@ export function withStreamIdleTimeout(
   })
 }
 
-export async function handleProxyRequest(req: Request, url: URL): Promise<Response> {
+export async function handleProxyRequest(req: Request, url: URL, options?: { networkSettings?: NetworkSettings; traceCapture?: boolean }): Promise<Response> {
   const providerMatch = url.pathname.match(/^\/proxy\/providers\/([^/]+)\/v1\/messages$/)
   const scopeMatch = url.pathname.match(/^\/proxy\/scopes\/([^/]+)\/v1\/messages$/)
   const providerId = providerMatch ? decodeURIComponent(providerMatch[1]!) : undefined
@@ -268,8 +268,8 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
 
   const isStream = body.stream === true
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
-  const networkSettings = await loadNetworkSettings()
-  const traceContext = buildProxyTraceContext(req, config, body)
+  const networkSettings = options?.networkSettings ?? await loadNetworkSettings()
+  const traceContext = options?.traceCapture === false ? null : buildProxyTraceContext(req, config, body)
   const promptCacheKey = resolvePromptCacheKey(body, req.headers.get('x-claude-code-session-id'))
 
   try {
