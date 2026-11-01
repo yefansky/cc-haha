@@ -109,6 +109,7 @@ Computer Use still controls Windows desktop apps, so CLI tools inside WSL do not
 
 ## Next steps
 
+- [Headless provider commands](./providers.md): reuse KSCC / Token Hub authorization for coding tasks, model discovery and quota reporting
 - [Command reference](./reference.md): flags, headless mode, and recovery mode
 - [Environment variables](./env.md): the full list of authentication, model, and runtime variables
 - [Architecture overview](../internals/index.md): how the CLI, server, desktop shell, and adapters divide the work

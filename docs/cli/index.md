@@ -109,6 +109,7 @@ Computer Use 控制的仍然是 Windows 桌面应用，WSL 内的命令行工具
 
 ## 下一步
 
+- [无界面调用服务商](./providers.md)：复用 KSCC / Token Hub 授权执行编程任务，查询模型与额度
 - [命令参考](./reference.md)：命令行参数、无头模式与恢复模式
 - [环境变量](./env.md)：认证、模型与本地运行变量的完整清单
 - [架构总览](../internals/index.md)：CLI、Server、桌面壳与 Adapter 的分工
