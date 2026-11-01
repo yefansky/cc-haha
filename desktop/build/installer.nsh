@@ -5,6 +5,41 @@
 Var pid
 Var ccHahaProcessDiagnostic
 
+; The payload wrapper can run directly even if a user-owned bin entry prevents
+; registration. No GUI/server is started by installation or silent updates.
+!macro customInstall
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\manage-cli-path.ps1 "${BUILD_RESOURCES_DIR}\manage-cli-path.ps1"
+  StrCpy $0 "User"
+  ${If} $installMode == "all"
+    StrCpy $0 "Machine"
+  ${EndIf}
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\manage-cli-path.ps1" -Action Install -BinDirectory "$INSTDIR\bin" -PayloadDirectory "$INSTDIR\resources\cli" -Scope "$0"'
+  Pop $0
+  Pop $1
+  DetailPrint "cc-haha CLI registration ($0): $1"
+  FileOpen $2 "$INSTDIR\resources\cli\registration-status.txt" w
+  FileWrite $2 "exit=$0$\r$\n$1$\r$\nFallback: resources\cli\cc-haha.cmd$\r$\n"
+  FileClose $2
+!macroend
+
+!macro customUnInstall
+  ; An updater invokes the old uninstaller first. Preserve PATH ownership for
+  ; the new version, which will replace the payload and rebuild the wrapper.
+  ${IfNot} ${isUpdated}
+    InitPluginsDir
+    File /oname=$PLUGINSDIR\manage-cli-path.ps1 "${BUILD_RESOURCES_DIR}\manage-cli-path.ps1"
+    StrCpy $0 "User"
+    ${If} $installMode == "all"
+      StrCpy $0 "Machine"
+    ${EndIf}
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\manage-cli-path.ps1" -Action Uninstall -BinDirectory "$INSTDIR\bin" -Scope "$0"'
+    Pop $0
+    Pop $1
+    DetailPrint "cc-haha CLI unregister ($0): $1"
+  ${EndIf}
+!macroend
+
 !ifndef BUILD_UNINSTALLER
 Var ccHahaRecoveryDone
 Var ccHahaPerUserInstallLocation

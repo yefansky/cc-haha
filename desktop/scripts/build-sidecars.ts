@@ -1,5 +1,6 @@
 import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { prepareHeadlessCli } from './prepare-headless-cli'
 import {
   getBundledRipgrepName,
   stageRipgrepLicenses,
@@ -16,6 +17,7 @@ const targetTriple =
   (await detectHostTriple())
 
 const bunTarget = mapTargetTripleToBun(targetTriple)
+await prepareHeadlessCli(path.join(desktopRoot, 'build', 'generated-cli'), targetTriple)
 
 // Native Python runtime is bundled; installed desktop users need no Python.
 await import('./build-gateway-tunnel')

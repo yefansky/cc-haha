@@ -34,6 +34,17 @@ function writeFile(rootDir: string, relativePath: string, content = 'ok') {
 
   const fileName = basename(fullPath)
   if (fileName.startsWith('claude-sidecar-')) {
+    if (fileName.endsWith('.exe')) {
+      const installRoot = relativePath.split('/resources/app.asar.unpacked/')[0]!
+      const cliRoot = `${installRoot}/resources/cli`
+      for (const name of ['cc-haha.cmd', 'HELP.md', 'README.md']) writeFile(rootDir, `${cliRoot}/${name}`)
+      writeFile(rootDir, `${cliRoot}/capabilities.json`, JSON.stringify({ program: 'cc-haha', schema_version: 2 }))
+      writeFile(rootDir, `${cliRoot}/cli-manifest.json`, JSON.stringify({
+        schema_version: 1, owner: 'com.claude-code-haha.desktop', command: 'cc-haha', mode: 'headless',
+        sidecar_relative_path: `../resources/app.asar.unpacked/src-tauri/binaries/${fileName}`,
+        config_resolution: 'desktop_app_mode',
+      }))
+    }
     const ripgrepName = fileName.endsWith('.exe') ? 'rg.exe' : 'rg'
     writeFileSync(join(dirname(fullPath), ripgrepName), content)
     writeFileSync(
@@ -81,6 +92,43 @@ describe('package smoke args', () => {
 })
 
 describe('packaged artifact inspection', () => {
+  test('requires every Windows CLI discovery resource and rejects a stale manifest target', async () => {
+    const rootDir = createRepoRoot()
+    tempDirs.push(rootDir)
+    const app = 'desktop/build-artifacts/electron/win-unpacked'
+    writeFile(rootDir, `${app}/resources/app.asar`)
+    writeFile(rootDir, `${app}/resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-x86_64-pc-windows-msvc.exe`)
+    writeFile(rootDir, `${app}/resources/app.asar.unpacked/node_modules/node-pty/package.json`)
+    writeFile(rootDir, `${app}/resources/app.asar.unpacked/node_modules/node-pty/prebuilds/win32-x64/pty.node`)
+    const inspect = () => inspectPackagedArtifacts(rootDir, { platform: 'windows', arch: 'x64', packageKind: 'dir' })
+    expect((await inspect()).passed).toBe(true)
+    for (const name of ['cc-haha.cmd', 'HELP.md', 'README.md', 'capabilities.json', 'cli-manifest.json']) {
+      const target = join(rootDir, app, 'resources', 'cli', name)
+      const original = await Bun.file(target).text()
+      rmSync(target)
+      const report = await inspect()
+      expect(report.passed).toBe(false)
+      expect(report.missingChecks.some(check => check.label === `Windows CLI ${name}`)).toBe(true)
+      writeFileSync(target, original)
+    }
+    writeFile(rootDir, `${app}/resources/cli/cli-manifest.json`, JSON.stringify({
+      schema_version: 1, owner: 'com.claude-code-haha.desktop', command: 'cc-haha', mode: 'headless',
+      sidecar_relative_path: 'G:/external-fixture/cc-haha.exe', config_resolution: 'desktop_app_mode',
+    }))
+    const invalid = await inspect()
+    expect(invalid.passed).toBe(false)
+    expect(invalid.missingChecks.some(check => check.label === 'Windows CLI managed sidecar manifest')).toBe(true)
+    writeFile(rootDir, `${app}/resources/cli/cli-manifest.json`, '{broken')
+    expect((await inspect()).passed).toBe(false)
+    writeFile(rootDir, `${app}/resources/cli/cli-manifest.json`, JSON.stringify({
+      schema_version: 1, owner: 'com.claude-code-haha.desktop', command: 'cc-haha', mode: 'headless',
+      sidecar_relative_path: '../resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-x86_64-pc-windows-msvc.exe',
+      config_resolution: 'desktop_app_mode',
+    }))
+    writeFile(rootDir, `${app}/resources/cli/capabilities.json`, JSON.stringify({ program: 'unrelated', schema_version: 2 }))
+    expect((await inspect()).passed).toBe(false)
+  })
+
   test('passes macOS bundle structure checks and records optional archive artifacts', async () => {
     const rootDir = createRepoRoot()
     tempDirs.push(rootDir)

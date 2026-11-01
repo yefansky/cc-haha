@@ -93,3 +93,4 @@ graphify-out/
 /desktop/public/changelog.json
 /desktop/public/CHANGELOG.md
 /desktop/build/release-notes.md
+/desktop/build/generated-cli/

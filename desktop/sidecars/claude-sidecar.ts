@@ -46,8 +46,11 @@ if (mode === 'adapters') {
 
   // The headless entry resolves --cwd before loading the agent/preload tree.
   if (mode === 'headless') {
+    const { applyDesktopHeadlessConfig } = await import('./desktopHeadlessConfig')
+    const headlessArgs = applyDesktopHeadlessConfig(args, appRoot)
+    process.argv = [process.argv[0]!, process.argv[1]!, ...headlessArgs]
     const { runCcHaha } = await import('../../src/entrypoints/ccHaha.ts')
-    process.exit(await runCcHaha(args))
+    process.exit(await runCcHaha(headlessArgs))
   }
   await import('../../preload.ts')
 

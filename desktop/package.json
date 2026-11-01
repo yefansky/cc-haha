@@ -52,7 +52,8 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "src-tauri/icons/icon.ico"
+      "icon": "src-tauri/icons/icon.ico",
+      "extraFiles": [{ "from": "build/generated-cli", "to": "resources/cli" }]
     },
     "nsis": {
       "oneClick": false,

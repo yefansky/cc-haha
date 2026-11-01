@@ -19,6 +19,7 @@ if ($installers.Count -ne 1) {
 }
 $installer = $installers[0].FullName
 . (Join-Path $PSScriptRoot 'windows-installer-diagnostics.ps1')
+. (Join-Path $PSScriptRoot 'windows-installed-cli-smoke.ps1')
 $installerDiagnostics = New-InstallerDiagnostics -Installer $installer -Directory (Join-Path $resolvedArtifactsDir 'installer-diagnostics\public')
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) "cc-haha-installer-smoke-$([Guid]::NewGuid().ToString('N'))"
@@ -449,6 +450,7 @@ try {
     throw "Fresh install did not create the desktop shortcut: $desktopShortcut"
   }
   $shortcutShell = New-Object -ComObject WScript.Shell
+  Assert-InstalledCli -InstallDirectory $installDir -ConfigDirectory (Join-Path $testRoot 'cli-empty-config') -DiscoverFromPath
   $installedShortcut = $null
   try {
     $installedShortcut = $shortcutShell.CreateShortcut($desktopShortcut)
@@ -477,6 +479,7 @@ try {
   $siblingProcess = Start-Process -FilePath $siblingProbe -ArgumentList @('-t', '127.0.0.1') -PassThru
   Start-Sleep -Milliseconds 500
   Invoke-CheckedProcess -FilePath $installer -Stage 'Sibling-prefix process reinstall' -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
+  Assert-InstalledCli -InstallDirectory $installDir -ConfigDirectory (Join-Path $testRoot 'cli-empty-config') -DiscoverFromPath
   if ($siblingProcess.HasExited) {
     throw 'Sibling-prefix process was mistaken for an install-directory process.'
   }
@@ -497,6 +500,7 @@ try {
       '-InstallerParentPid', [string]$installProcess.Id
     )
   Invoke-CheckedProcess -FilePath $installer -Stage 'Install-directory process reinstall' -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
+  Assert-InstalledCli -InstallDirectory $installDir -ConfigDirectory (Join-Path $testRoot 'cli-empty-config') -DiscoverFromPath
   if (-not $installProcess.HasExited) {
     throw 'Install-directory process was not terminated before reinstall.'
   }
@@ -573,6 +577,8 @@ try {
   if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
     Invoke-CheckedProcess -FilePath $uninstaller -Stage 'Cleanup uninstall' -Arguments @('/S', '/KEEP_APP_DATA', '/currentuser') -TimeoutSeconds 120
     Wait-ForPathRemoval -Path $desktopShortcut -Description 'Cleanup uninstall desktop shortcut'
+    Wait-ForPathRemoval -Path (Join-Path $installDir 'bin\cc-haha.cmd') -Description 'Cleanup uninstall CLI launcher'
+    Assert-CliPathRemoved -BinDirectory (Join-Path $installDir 'bin')
   }
   } catch {
     $installerDiagnostics.Errors += 'installer_cleanup_failed'

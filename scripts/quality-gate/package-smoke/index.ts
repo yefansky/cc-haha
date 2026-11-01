@@ -651,6 +651,30 @@ function inspectWindowsArtifacts(rootDir: string, report: PackageSmokeReport) {
         ? '/win32-x64/'
         : '/win32-'
     addPresenceCheck(report, rootDir, 'Windows app.asar', join(resourcesDir, 'app.asar'))
+    const cliDir = join(resourcesDir, 'cli')
+    for (const name of ['cc-haha.cmd', 'HELP.md', 'README.md', 'capabilities.json', 'cli-manifest.json']) {
+      addPresenceCheck(report, rootDir, `Windows CLI ${name}`, join(cliDir, name))
+    }
+    try {
+      const manifest = JSON.parse(readFileSync(join(cliDir, 'cli-manifest.json'), 'utf8'))
+      const capabilities = JSON.parse(readFileSync(join(cliDir, 'capabilities.json'), 'utf8'))
+      const triples = report.arch === 'arm64' ? ['aarch64-pc-windows-msvc']
+        : report.arch === 'x64' ? ['x86_64-pc-windows-msvc']
+          : ['x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc']
+      const validTarget = triples.some(triple =>
+        manifest.sidecar_relative_path === `../resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-${triple}.exe` &&
+        existsSync(resolve(unpackedDir, 'bin', manifest.sidecar_relative_path)),
+      )
+      if (manifest.schema_version !== 1 || manifest.owner !== 'com.claude-code-haha.desktop' ||
+        manifest.command !== 'cc-haha' || manifest.mode !== 'headless' ||
+        manifest.config_resolution !== 'desktop_app_mode' || !validTarget ||
+        capabilities.program !== 'cc-haha' || !Number.isInteger(capabilities.schema_version) || capabilities.schema_version < 2) {
+        throw new Error('Invalid CLI discovery metadata')
+      }
+      report.passedChecks.push({ label: 'Windows CLI managed sidecar manifest', path: toRelative(rootDir, join(cliDir, 'cli-manifest.json')) })
+    } catch {
+      report.missingChecks.push({ label: 'Windows CLI managed sidecar manifest', path: toRelative(rootDir, join(cliDir, 'cli-manifest.json')) })
+    }
     addInstalledUpdateMetadataCheck(
       report,
       rootDir,
