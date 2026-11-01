@@ -38,7 +38,7 @@ $installProcess = $null
 $bundledHelperProcess = $null
 
 $savedEnvironment = @{}
-foreach ($name in @('APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CC_HAHA_APP_PORTABLE_DIR', 'COMPLUS_Version')) {
+foreach ($name in @('APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CC_HAHA_APP_PORTABLE_DIR', 'COMPLUS_Version', 'CC_HAHA_CLI_SMOKE_PATH')) {
   $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -432,6 +432,7 @@ $cliPathKey = $null
 $cliPathState = $null
 $cliPathRestoreFailure = $null
 try {
+  $env:CC_HAHA_CLI_SMOKE_PATH = Join-Path $testRoot 'literal-path-probe'
   $cliPathKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
   if ($null -eq $cliPathKey) { throw 'CI user environment registry key is unavailable.' }
   $cliPathState = Set-CliPathSentinel -Key $cliPathKey -Sentinel '%CC_HAHA_CLI_SMOKE_PATH%\tools'
