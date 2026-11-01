@@ -462,31 +462,7 @@ async function ensureWindowsUserPathConfigured(
     }
   }
 
-  const script = [
-    `$bin = [Environment]::ExpandEnvironmentVariables('${WINDOWS_USER_BIN_EXPR}')`,
-    `$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')`,
-    `$segments = @()`,
-    `if ($userPath) { $segments = $userPath.Split(';') | Where-Object { $_ -and $_.Trim() -ne '' } }`,
-    `$normalized = $segments | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\\').ToLowerInvariant() }`,
-    `if (-not ($normalized -contains $bin.TrimEnd('\\').ToLowerInvariant())) {`,
-    `  $newPath = if ([string]::IsNullOrWhiteSpace($userPath)) { '${WINDOWS_USER_BIN_EXPR}' } else { '${WINDOWS_USER_BIN_EXPR};' + $userPath }`,
-    `  [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')`,
-    `  $signature = @'`,
-    `using System;`,
-    `using System.Runtime.InteropServices;`,
-    `public static class NativeMethods {`,
-    `  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]`,
-    `  public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);`,
-    `}`,
-    `'@`,
-    `  Add-Type -TypeDefinition $signature -ErrorAction SilentlyContinue | Out-Null`,
-    `  $HWND_BROADCAST = [IntPtr]0xffff`,
-    `  $WM_SETTINGCHANGE = 0x1A`,
-    `  $SMTO_ABORTIFHUNG = 0x2`,
-    `  $result = [IntPtr]::Zero`,
-    `  [void][NativeMethods]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [IntPtr]::Zero, 'Environment', $SMTO_ABORTIFHUNG, 5000, [ref]$result)`,
-    `}`,
-  ].join('\n')
+  const script = buildWindowsUserPathRegistrationScript()
 
   const result = await execFileNoThrow(
     'powershell.exe',
@@ -513,6 +489,40 @@ async function ensureWindowsUserPathConfigured(
   }
 }
 
+export function buildWindowsUserPathRegistrationScript(): string {
+  return [
+    `$bin = [Environment]::ExpandEnvironmentVariables('${WINDOWS_USER_BIN_EXPR}')`,
+    `$key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')`,
+    `try {`,
+    `$userPath = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)`,
+    `$segments = @()`,
+    `if ($userPath) { $segments = $userPath.Split(';') | Where-Object { $_ -and $_.Trim() -ne '' } }`,
+    `$normalized = $segments | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\\').ToLowerInvariant() }`,
+    `if (-not ($normalized -contains $bin.TrimEnd('\\').ToLowerInvariant())) {`,
+    `  $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString`,
+    `  if ($key.GetValueNames() -contains 'Path') { $kind = $key.GetValueKind('Path') }`,
+    `  $entry = if ($kind -eq [Microsoft.Win32.RegistryValueKind]::String) { $bin } else { '${WINDOWS_USER_BIN_EXPR}' }`,
+    `  $newPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $entry } else { $entry + ';' + $userPath }`,
+    `  $key.SetValue('Path', $newPath, $kind)`,
+    `  $signature = @'`,
+    `using System;`,
+    `using System.Runtime.InteropServices;`,
+    `public static class NativeMethods {`,
+    `  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]`,
+    `  public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);`,
+    `}`,
+    `'@`,
+    `  Add-Type -TypeDefinition $signature -ErrorAction SilentlyContinue | Out-Null`,
+    `  $HWND_BROADCAST = [IntPtr]0xffff`,
+    `  $WM_SETTINGCHANGE = 0x1A`,
+    `  $SMTO_ABORTIFHUNG = 0x2`,
+    `  $result = [IntPtr]::Zero`,
+    `  [void][NativeMethods]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [IntPtr]::Zero, 'Environment', $SMTO_ABORTIFHUNG, 5000, [ref]$result)`,
+    `}`,
+    `} finally { $key.Dispose() }`,
+  ].join('\n')
+}
+
 function resolveShellType(): 'zsh' | 'bash' | 'fish' {
   const shellPath = process.env.SHELL || ''
   if (shellPath.includes('fish')) return 'fish'
@@ -528,7 +538,7 @@ async function readWindowsUserPath() {
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      `[Environment]::GetEnvironmentVariable('Path', 'User')`,
+      `$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false); if ($null -ne $key) { try { [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } finally { $key.Dispose() } }`,
     ],
     { useCwd: false },
   )

@@ -478,6 +478,9 @@ try {
     -FilePath $appExe `
     -InstallDirectory $installDir `
     -IsolatedUserProfile $userProfile
+  # GUI startup also installs the legacy claude-haha launcher; attribute any
+  # unrelated PATH mutation before an updater gets a chance to run.
+  Assert-CliPathSentinel -Key $cliPathKey -State $cliPathState
 
   $processProbeSource = Join-Path $env:SystemRoot 'System32\ping.exe'
   $siblingDir = "$installDir Tools"

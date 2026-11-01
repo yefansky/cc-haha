@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -32,6 +32,15 @@ function run(body: string) {
 }
 
 describe.skipIf(process.platform !== 'win32')('installed CLI assertions without installation or registry writes', () => {
+  it('checks raw PATH after GUI startup before running an updater', () => {
+    const script = readFileSync(join(import.meta.dirname, 'windows-installer-smoke.ps1'), 'utf8')
+    const guiEnd = script.indexOf('-IsolatedUserProfile $userProfile')
+    const reinstall = script.indexOf("-Stage 'Sibling-prefix process reinstall'", guiEnd)
+    expect(guiEnd).toBeGreaterThan(0)
+    expect(reinstall).toBeGreaterThan(guiEnd)
+    expect(script.slice(guiEnd, reinstall)).toContain('Assert-CliPathSentinel -Key $cliPathKey -State $cliPathState')
+  })
+
   it('drives a hidden subprocess through a quoted installed wrapper', () => run([
     "$cmd=@'",
     '@echo off',

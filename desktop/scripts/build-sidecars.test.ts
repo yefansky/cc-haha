@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import path, { join as joinPath } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
+import { resolveClaudeCliLauncher } from '../../src/utils/desktopBundledCli'
 import {
   reserveLocalPort,
   resolveHostTriple,
@@ -66,6 +67,10 @@ function controlledSidecarEnvironment(
     ...env,
     HOME: homeDir,
     CLAUDE_CONFIG_DIR: configDir,
+    // This suite validates the compiled server/index, not Windows installation.
+    // A script-kind override makes desktopCliLauncherService return unsupported
+    // before it can register the legacy launcher in the real user's HKCU PATH.
+    CLAUDE_CLI_PATH: path.resolve(import.meta.dirname, '../../src/server/__tests__/fixtures/mock-sdk-cli.ts'),
     CC_HAHA_LOCAL_ACCESS_TOKEN: localAccessToken,
     NODE_ENV: 'test',
     NO_PROXY: '127.0.0.1,localhost,::1',
@@ -424,6 +429,14 @@ async function terminateCompiledSidecar(processHandle: SidecarProcess): Promise<
 }
 
 describe('build-sidecars Windows x64 target mapping', () => {
+  it('keeps compiled smoke away from legacy desktop launcher registration', () => {
+    const executable = path.resolve('claude-sidecar-x86_64-pc-windows-msvc.exe')
+    expect(resolveClaudeCliLauncher({ execPath: executable })?.kind).toBe('sidecar')
+    const environment = controlledSidecarEnvironment('/fixture-home', '/fixture-config', 'fixture-token')
+    expect(resolveClaudeCliLauncher({ execPath: executable, cliPath: environment.CLAUDE_CLI_PATH })?.kind).toBe('script')
+    expect(readFileSync(environment.CLAUDE_CLI_PATH!, 'utf8')).toContain('mock')
+  })
+
   it('uses the Windows x64 Bun runtime available in the supported local Bun release', () => {
     expect(extractWindowsX64BunTarget(readBuildScript())).toBe('bun-windows-x64')
   })
