@@ -11,6 +11,9 @@ export async function createHeadlessProviderRuntime(
   cwd: string,
   inherited: NodeJS.ProcessEnv = process.env,
 ) {
+  if (provider.runtimeKind && provider.runtimeKind !== 'anthropic_compatible') {
+    throw Object.assign(new Error('This provider runtime is not supported by the independent CLI'), { code: 'RUNTIME_UNSUPPORTED' })
+  }
   const snapshot = structuredClone(provider)
   snapshot.models = { ...snapshot.models, main: model }
   const env = { ...inherited }
@@ -58,7 +61,7 @@ export async function createHeadlessProviderRuntime(
     return {
       env,
       // Used only for output redaction, never printed or persisted.
-      secrets: [provider.apiKey, scope ?? ''].filter(Boolean),
+      secrets: [provider.apiKey, provider.imageGeneration?.apiKey ?? '', scope ?? ''].filter(Boolean),
       dispose() {
         server?.stop(true)
         if (scope) providerRuntimeSnapshots.release(scope)

@@ -3,6 +3,8 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseHeadlessArguments, executeNativeHeadless, redactHeadlessText, redactHeadlessValue } from './ccHaha.js'
+import { getHeadlessCapabilities } from './headlessCommandCatalog.js'
+import Ajv from 'ajv'
 
 let sandbox: string
 let mockCli: string
@@ -17,7 +19,7 @@ console.log('diagnostic banner must not enter JSON')
 console.error('Bearer must-not-escape-stderr')
 console.log(JSON.stringify({type:'assistant',message:{id:'m1',model,usage:{input_tokens:3,output_tokens:1}}}))
 console.log(JSON.stringify({type:'assistant',message:{id:'m1',model,usage:{input_tokens:3,output_tokens:2}}}))
-console.log(JSON.stringify({type:'result',subtype:'success',result:process.cwd()+' '+process.env.ANTHROPIC_API_KEY,usage:{input_tokens:3,output_tokens:2},modelUsage:{[model]:{inputTokens:3,outputTokens:2}},duration_ms:12,is_error:args.includes('errorflag')}))
+console.log(JSON.stringify({type:'result',subtype:'success',result:process.cwd()+' '+process.env.ANTHROPIC_API_KEY,usage:{input_tokens:3,output_tokens:2},total_cost_usd:10,modelUsage:{[model]:{inputTokens:3,outputTokens:2,costUSD:10}},duration_ms:12,is_error:args.includes('errorflag')}))
 `)
 })
 afterAll(async () => { await rm(sandbox, { recursive: true, force: true }) })
@@ -28,7 +30,7 @@ test('parses cwd before runtime and preserves native tool allow rules without by
   expect(options.model).toBe('a=b')
   expect(options.nativeArgs).toEqual(['-p', '修复测试', '--allowed-tools', 'Read', 'Edit'])
   expect(options.json).toBe(true)
-  expect(() => parseHeadlessArguments(['-p', 'OK', '--provider', 'bad', '--model', 'a'])).toThrow('服务商')
+  expect(parseHeadlessArguments(['-p', 'OK', '--provider', 'custom-provider-id', '--model', 'a']).provider).toBe('custom-provider-id')
   expect(() => parseHeadlessArguments(['-p', 'OK', '--provider', 'kscc', '--model', 'a', '--output-format', 'stream-json'])).toThrow('输出格式')
 })
 
@@ -94,6 +96,13 @@ test('full entry joins explicit provider selection, subprocess, single JSON and 
   const result = JSON.parse(text)
   expect(result.provider).toBe('kscc')
   expect(result.model).toBe('entry-model')
+  expect(result.schema_version).toBe(2)
+  expect(result.provider_id).toBe('fixture-kscc')
+  expect(result.total_cost_usd).toBeNull()
+  expect(result.modelUsage['entry-model'].costUSD).toBeNull()
+  expect(result.cost.client_estimate).toMatchObject({ billed: false, total_cost_usd: 10 })
+  const validate = new Ajv({ strict: false }).compile(getHeadlessCapabilities().commands.find(command => command.name === 'run')!.output_schema)
+  expect(validate(result), JSON.stringify(validate.errors)).toBe(true)
   expect(result.usage).toEqual({ input_tokens: 3, output_tokens: 2 })
   expect(text).not.toContain('fixture-entry-secret')
   expect(await readFile(indexPath, 'utf8')).toBe(baseline)

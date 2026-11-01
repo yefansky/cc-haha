@@ -1,11 +1,13 @@
+import { isHeadlessModelLabel } from './headlessProviderLabels.js'
 import { createHash, randomUUID } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { usageRecordKey } from '../../utils/usageAccounting.js'
+import { redactHeadlessText, redactHeadlessValue } from '../../utils/headlessRedaction.js'
 import type { SavedProvider } from '../types/provider.js'
 
-type ProviderName = 'kscc' | 'tokenhub'
+type ProviderName = string
 export type HeadlessTokenUsage = {
   input_tokens?: number
   output_tokens?: number
@@ -15,6 +17,7 @@ export type HeadlessTokenUsage = {
 type Tokens = Required<HeadlessTokenUsage> & { total_tokens: number }
 export type HeadlessUsageInput = {
   provider: ProviderName
+  providerId?: string
   model: string
   runId: string
   usage: HeadlessTokenUsage
@@ -22,7 +25,7 @@ export type HeadlessUsageInput = {
   requestId?: string
   messageId?: string
 }
-type UsageEvent = { schema_version: 1; provider: ProviderName; model: string; host_id: string; run_id: string; identity: string; timestamp: string; usage: Tokens }
+type UsageEvent = { schema_version: 1; provider: ProviderName; provider_id?: string; model: string; host_id: string; run_id: string; identity: string; timestamp: string; usage: Tokens }
 type QuotaWindow = { kind: string; enabled: boolean; limit: number | null; used: number | null; remaining: number | null; violated: boolean | null; period_start: string | null; period_end: string | null }
 type ServerQuota = { status: 'supported' | 'unsupported' | 'auth_required' | 'permission_denied' | 'temporarily_unavailable'; scope: 'account'; message: string; currency: string | null; windows: QuotaWindow[] }
 type QuotaSample = { schema_version: 1; provider: ProviderName; provider_hash: string; observed_at: string; quota: ServerQuota }
@@ -36,6 +39,7 @@ const storageDirectory = () => path.join(process.env.CLAUDE_CONFIG_DIR || path.j
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER
 const date = (value: unknown): string | null => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+const validReference = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/.test(value)
 
 function tokens(value: HeadlessTokenUsage): Tokens {
   const result: Tokens = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, total_tokens: 0 }
@@ -59,15 +63,16 @@ async function writeRecord(directory: string, prefix: string, value: unknown) {
 }
 
 /** Only measurements and hashed identities are persisted, never prompts, responses or credentials. */
-export async function recordHeadlessUsage(input: HeadlessUsageInput, options: Pick<Options, 'directory'> = {}): Promise<void> {
-  if (!['kscc', 'tokenhub'].includes(input.provider) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,199}$/.test(input.model) || !input.runId) throw new Error('INVALID_USAGE_RECORD')
+export async function recordHeadlessUsage(input: HeadlessUsageInput, options: Pick<Options, 'directory'> & { secretValues?: string[] } = {}): Promise<void> {
+  if (!validReference(input.provider) || (input.providerId !== undefined && !validReference(input.providerId)) || !isHeadlessModelLabel(input.model) || !input.runId) throw new Error('INVALID_USAGE_RECORD')
+  if ([input.provider, input.providerId, input.model].some(value => value !== undefined && redactHeadlessText(value, options.secretValues ?? []) !== value)) throw new Error('UNSAFE_USAGE_IDENTITY')
   if (!tokenKeys.some(key => input.usage[key] !== undefined)) throw new Error('USAGE_MEASUREMENT_MISSING')
   const timestamp = date(input.timestamp ?? new Date().toISOString())
   if (!timestamp) throw new Error('INVALID_USAGE_RECORD')
   // Real upstream identity survives replay/resume across runs. A run is a fallback only
   // when neither a message nor request identity was supplied by the runtime.
   const identity = usageRecordKey({ messageId: input.messageId || (input.requestId ? `request:${input.requestId}` : `run:${input.runId}`), requestId: input.requestId ?? '' })!
-  const event: UsageEvent = { schema_version: 1, provider: input.provider, model: input.model, host_id: hostId(), run_id: hash(input.runId), identity: hash(identity), timestamp, usage: tokens(input.usage) }
+  const event: UsageEvent = { schema_version: 1, provider: input.provider, ...(input.providerId !== undefined ? { provider_id: input.providerId } : {}), model: input.model, host_id: hostId(), run_id: hash(input.runId), identity: hash(identity), timestamp, usage: tokens(input.usage) }
   await writeRecord(options.directory ?? storageDirectory(), 'event', event)
 }
 
@@ -102,12 +107,12 @@ async function readRecords(directory: string): Promise<{ events: UsageEvent[]; s
       const item = JSON.parse(await fs.readFile(path.join(directory, name), 'utf8'))
       if (item.schema_version !== 1) throw new Error('invalid')
       if (name.startsWith('event-')) {
-        if (!['kscc', 'tokenhub'].includes(item.provider) || typeof item.identity !== 'string' || !/^[a-f0-9]{64}$/.test(item.identity) ||
-          !/^[a-f0-9]{64}$/.test(item.run_id) || !/^[a-f0-9]{16}$/.test(item.host_id) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,199}$/.test(item.model) || !date(item.timestamp)) throw new Error('invalid')
+        if (!validReference(item.provider) || (item.provider_id !== undefined && !validReference(item.provider_id)) || typeof item.identity !== 'string' || !/^[a-f0-9]{64}$/.test(item.identity) ||
+          !/^[a-f0-9]{64}$/.test(item.run_id) || !/^[a-f0-9]{16}$/.test(item.host_id) || !isHeadlessModelLabel(item.model) || !date(item.timestamp)) throw new Error('invalid')
         item.usage = tokens(object(item.usage))
         result.events.push(item)
       } else {
-        if (!date(item.observed_at) || !/^[a-f0-9]{64}$/.test(item.provider_hash) || !['kscc', 'tokenhub'].includes(item.provider)) throw new Error('invalid')
+        if (!date(item.observed_at) || !/^[a-f0-9]{64}$/.test(item.provider_hash) || !validReference(item.provider)) throw new Error('invalid')
         const savedQuota = object(item.quota)
         if (savedQuota.status !== 'supported' || !Array.isArray(savedQuota.windows)) throw new Error('invalid')
         // Re-parse persisted measurements with the same whitelist used at the network boundary.
@@ -127,11 +132,12 @@ function add(total: Tokens, value: Tokens) {
   total.total_tokens += value.total_tokens
 }
 
-function localUsage(events: UsageEvent[], provider: ProviderName, now: number, partial: boolean) {
+function localUsage(events: UsageEvent[], providerId: string | null, now: number, partial: boolean, legacyAlias?: string) {
   const unique = new Map<string, { event: UsageEvent; consumedAt: number }>()
   for (const event of events) {
-    if (event.provider !== provider || event.host_id !== hostId()) continue
-    const key = `${event.provider}\0${event.host_id}\0${event.identity}`
+    if (event.host_id !== hostId()) continue
+    if (legacyAlias !== undefined ? (event.provider_id !== undefined || event.provider !== legacyAlias) : (!providerId || event.provider_id !== providerId)) continue
+    const key = `${event.provider_id ?? event.provider}\0${event.host_id}\0${event.identity}`
     // A later complete lifecycle measurement supersedes an earlier measurement.
     const previous = unique.get(key)
     const consumedAt = Math.min(previous?.consumedAt ?? Number.POSITIVE_INFINITY, Date.parse(event.timestamp))
@@ -142,7 +148,7 @@ function localUsage(events: UsageEvent[], provider: ProviderName, now: number, p
   }
   const windows = Object.fromEntries(Object.entries(durations).map(([name, duration]) => {
     const total = tokens({})
-    const byModel: Record<string, Tokens> = {}
+    const byModel: Record<string, Tokens> = Object.create(null)
     let requests = 0
     for (const { event, consumedAt } of unique.values()) {
       const age = now - consumedAt
@@ -157,7 +163,8 @@ function localUsage(events: UsageEvent[], provider: ProviderName, now: number, p
   }))
   const starts = [...unique.values()].map(value => value.consumedAt).filter(value => value <= now)
   const startedAt = starts.reduce((earliest, value) => Math.min(earliest, value), Number.POSITIVE_INFINITY)
-  return { scope: 'local_cli' as const, coverage: '仅此机新命令行记录；不含历史桌面、其他客户端或其他机器，历史不能回溯',
+  return { scope: 'local_cli' as const, attribution: legacyAlias !== undefined ? 'legacy_unattributed' as const : 'provider_id' as const,
+    coverage: legacyAlias !== undefined ? '旧版本无稳定服务商ID记录；身份无法追认，不并入当前服务商统计' : '仅此机当前稳定服务商ID的新命令行记录；不含旧版本无ID记录、旧桌面或其他机器，历史不能回溯',
     coverage_started_at: starts.length ? new Date(startedAt).toISOString() : null, completeness: partial ? 'partial' : starts.length ? 'recorded_events' : 'no_records', windows }
 }
 
@@ -187,7 +194,7 @@ function forecast(quota: ServerQuota, samples: QuotaSample[], providerHash: stri
 }
 
 export async function getHeadlessProviderUsage(name: ProviderName, options: Options = {}) {
-  if (!['kscc', 'tokenhub'].includes(name)) throw new Error('INVALID_PROVIDER')
+  if (!validReference(name)) throw new Error('INVALID_PROVIDER')
   options.signal?.throwIfAborted()
   const now = options.now ?? Date.now()
   const directory = options.directory ?? storageDirectory()
@@ -195,11 +202,20 @@ export async function getHeadlessProviderUsage(name: ProviderName, options: Opti
   let server: ServerQuota = { status: 'unsupported', scope: 'account', message: '服务端不提供剩余数值；模型超限状态见 models 命令', currency: null, windows: [] }
   const warnings: string[] = []
   let providerHash = ''
-  if (name === 'tokenhub' && options.noNetwork) server = { ...server, status: 'temporarily_unavailable', message: '未联网；未查询服务端额度' }
-  if (name === 'tokenhub' && !options.noNetwork) {
+  let provider: SavedProvider | undefined
+  try {
+    const select = options.selectProvider ?? (await import('./headlessProviderAuth.js')).selectHeadlessProvider
+    provider = await select(name)
+  } catch (error) {
+    options.signal?.throwIfAborted()
+    if (object(error).code !== 'LOGIN_REQUIRED') throw error
+    server = { ...server, status: 'auth_required', message: '本机尚未保存该服务商身份；旧版计量单列且不追认账户' }
+  }
+  const legacyAlias = provider ? provider.presetId === 'kscc' ? 'kscc' : provider.presetId === 'seasun' ? 'tokenhub' : undefined : ['kscc', 'tokenhub'].includes(name) ? name : undefined
+  if (provider && provider.presetId !== 'kscc' && provider.presetId !== 'seasun') server.message = '未接入此服务商的服务端额度接口；仅提供此机当前服务商ID的计量，不猜测查询端点'
+  if (provider?.presetId === 'seasun' && options.noNetwork) server = { ...server, status: 'temporarily_unavailable', message: '未联网；未查询服务端额度' }
+  if (provider?.presetId === 'seasun' && !options.noNetwork) {
     try {
-      const select = options.selectProvider ?? (await import('./headlessProviderAuth.js')).selectHeadlessProvider
-      const provider = await select(name)
       providerHash = hash(`${provider.id}\0${provider.apiKey}`)
       const query = options.fetchQuota ?? (await import('../providerIntegrations/seasun/credentials.js')).fetchSeasunQuota
       server = projectHeadlessQuota(await query(provider, { signal: options.signal }))
@@ -216,6 +232,9 @@ export async function getHeadlessProviderUsage(name: ProviderName, options: Opti
     }
   }
   if (records.partial) warnings.push('部分本地计量记录损坏或版本不支持，统计不完整')
-  return { schema_version: 1, provider: name, host_id: hostId(), observed_at: new Date(now).toISOString(), server_quota: server,
-    local_usage: localUsage(records.events, name, now, records.partial), forecast: forecast(server, records.samples, providerHash, now), warnings }
+  const legacy = legacyAlias !== undefined ? localUsage(records.events, null, now, records.partial, legacyAlias) : null
+  if (legacy?.coverage_started_at) warnings.push('存在旧版无服务商ID记录，已单列legacy_usage，不归入当前账户且不得相加')
+  const result = { schema_version: 2, provider: name, provider_id: provider?.id ?? null, provider_preset: provider?.presetId ?? null, host_id: hostId(), observed_at: new Date(now).toISOString(), server_quota: server,
+    local_usage: localUsage(records.events, provider?.id ?? null, now, records.partial), legacy_usage: legacy, forecast: forecast(server, records.samples, providerHash, now), warnings }
+  return redactHeadlessValue(result, [provider?.apiKey, provider?.imageGeneration?.apiKey].filter((value): value is string => !!value)) as typeof result
 }

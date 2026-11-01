@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { ProviderService } from './providerService.js'
-import { listHeadlessModels, loginHeadlessProvider, selectHeadlessProvider } from './headlessProviderAuth.js'
+import { listHeadlessModels, listHeadlessProviders, loginHeadlessProvider, redactHeadlessProviderMetadata, selectHeadlessProvider } from './headlessProviderAuth.js'
 import { fetchSeasunQuota, saveSeasunCredentials } from '../providerIntegrations/seasun/credentials.js'
 
 let directory: string
@@ -101,7 +101,7 @@ test('KSCC first login uses existing exchange without activating GUI defaults or
     return Response.json({ code: 200, data: [{ model: 'glm-test' }] })
   }) as typeof fetch
   const result = await loginHeadlessProvider('kscc', { onAuthorizeUrl: url => { authorizeUrl = url }, timeoutMs: 1000, pollIntervalMs: 1 })
-  expect(result).toEqual({ provider: 'kscc', logged_in: true })
+  expect(result).toEqual({ schema_version: 2, provider: 'kscc', provider_id: (await selectHeadlessProvider('kscc')).id, logged_in: true })
   expect(authorizeUrl).toEndWith('/l/fake-login-id')
   expect((await new ProviderService().listProviders()).activeId).toBeNull()
   expect((await selectHeadlessProvider('kscc')).apiKey).toBe('fake-secret-new-key')
@@ -114,6 +114,99 @@ test('TokenHub without saved identity fails safely without starting interactive 
   globalThis.fetch = (async () => { calls++; throw new Error('fake-secret-network-error') }) as typeof fetch
   await expect(loginHeadlessProvider('tokenhub')).rejects.toMatchObject({ code: 'LOGIN_REQUIRED' })
   expect(calls).toBe(0)
+})
+
+test('provider discovery projects every saved configuration without endpoints, credentials or migration', async () => {
+  const first = await seedKscc()
+  const second = await new ProviderService().addProvider({ presetId: 'custom', name: 'Local fake-discovery-secret', apiKey: 'fake-discovery-secret',
+    baseUrl: 'https://example.invalid/?token=fake-endpoint-secret', apiFormat: 'openai_chat',
+    models: { main: 'local-main', haiku: '', sonnet: '', opus: '' } })
+  const indexPath = path.join(directory, 'cc-haha/providers.json')
+  const before = await fs.readFile(indexPath, 'utf8')
+  globalThis.fetch = (async () => { throw new Error('discovery must not query network') }) as typeof fetch
+  const report = await listHeadlessProviders()
+  expect(report.schema_version).toBe(2)
+  expect(report.providers.map(provider => provider.id)).toEqual([first.id, second.id])
+  expect(report.providers[0]?.alias).toBe('kscc')
+  expect(report.providers[1]?.capabilities.models).toBe('local')
+  expect(JSON.stringify(report)).not.toMatch(/fake-discovery-secret|fake-endpoint-secret|apiKey|baseUrl|example.invalid/)
+  expect(await fs.readFile(indexPath, 'utf8')).toBe(before)
+})
+
+test('exact IDs distinguish same-preset providers while ambiguous aliases and arbitrary names fail safely', async () => {
+  const first = await seedKscc()
+  const second = await new ProviderService().addProvider({ presetId: 'kscc', name: 'Second account', apiKey: 'second-fake-key', baseUrl: 'http://kscc-second.test',
+    apiFormat: 'anthropic', models: { main: 'other-model', haiku: '', sonnet: '', opus: '' } })
+  expect((await selectHeadlessProvider(first.id)).id).toBe(first.id)
+  expect((await selectHeadlessProvider(second.id)).id).toBe(second.id)
+  await expect(selectHeadlessProvider('kscc')).rejects.toMatchObject({ code: 'AMBIGUOUS_PROVIDER' })
+  await expect(selectHeadlessProvider('Second account')).rejects.toMatchObject({ code: 'INVALID_PROVIDER' })
+  await expect(loginHeadlessProvider('kscc')).rejects.toMatchObject({ code: 'AMBIGUOUS_PROVIDER' })
+})
+
+test('saved specialized OAuth runtimes are discoverable without claiming standalone execution support', async () => {
+  const service = new ProviderService()
+  for (const runtimeKind of ['openai_oauth', 'grok_oauth'] as const) {
+    await service.addProvider({ presetId: runtimeKind, name: runtimeKind, runtimeKind, apiKey: '', baseUrl: 'https://not-requested.invalid', apiFormat: 'openai_responses',
+      models: { main: 'configured-model', haiku: '', sonnet: '', opus: '' } })
+  }
+  globalThis.fetch = (async () => { throw new Error('discovery must not read remote OAuth state') }) as typeof fetch
+  const report = await listHeadlessProviders()
+  expect(report.providers).toHaveLength(2)
+  for (const item of report.providers) {
+    expect(item.capabilities).toMatchObject({ run: false, run_status: 'unsupported', models: 'local', login: 'manual' })
+    expect((await listHeadlessModels(item.id)).models[0]?.freshness).toBe('configured')
+  }
+})
+
+test('local catalogs and configured mappings expose protocol and evidence without guessed network discovery', async () => {
+  const service = new ProviderService()
+  const provider = await service.addProvider({ presetId: 'custom', name: 'Configured provider', apiKey: '', baseUrl: 'http://local.test', apiFormat: 'openai_chat',
+    models: { main: 'configured-model', haiku: '', sonnet: '', opus: '' }, modelContextWindows: { 'configured-model': 64000 },
+    modelCatalog: [{ id: 'configured-model', capabilities: ['thinking'], transport: { apiFormat: 'openai_responses', endpoint: 'http://private.test/?secret=not-public' } }] })
+  let calls = 0
+  globalThis.fetch = (async () => { calls++; throw new Error('no guessed endpoints') }) as typeof fetch
+  const catalog = await listHeadlessModels(provider.id)
+  expect(catalog).toMatchObject({ schema_version: 2, provider: provider.id, provider_id: provider.id, status: 'ok' })
+  expect(catalog.models[0]).toMatchObject({ protocol: 'openai_responses', capabilities: ['thinking'], context_window_tokens: 64000, context_source: 'configured',
+    freshness: 'configured', catalog_access: 'unknown', source: 'configured_catalog', permission: { status: 'unknown', source: 'not_probed', checked_at: null } })
+  expect(JSON.stringify(catalog)).not.toContain('private.test')
+  await expect(loginHeadlessProvider(provider.id)).rejects.toMatchObject({ code: 'LOGIN_UNSUPPORTED' })
+  const mapped = await service.addProvider({ presetId: 'mapping-only', name: 'Mapping only', apiKey: '', baseUrl: 'http://local.test', apiFormat: 'anthropic',
+    models: { main: 'role-main', haiku: 'role-small', sonnet: '', opus: '' } })
+  expect((await listHeadlessModels(mapped.id)).models.map(model => [model.id, model.source])).toEqual([['role-main', 'model_mapping'], ['role-small', 'model_mapping']])
+  expect(calls).toBe(0)
+})
+
+test('live enterprise queries by exact ID retain permissions and offline reads keep cached evidence distinct', async () => {
+  const provider = await seedKscc()
+  globalThis.fetch = (async () => Response.json({ code: 200, data: [{ model: 'live-model', quotaLimited: false }] })) as typeof fetch
+  const live = await listHeadlessModels(provider.id)
+  expect(live.provider_id).toBe(provider.id)
+  expect(live.models[0]).toMatchObject({ id: 'live-model', protocol: 'anthropic', freshness: 'live', catalog_access: 'unknown', quota_limited: false,
+    permission: { status: 'unknown' }, context_window_tokens: null })
+  globalThis.fetch = (async () => { throw new Error('offline must not fetch') }) as typeof fetch
+  const local = await listHeadlessModels('kscc', { noNetwork: true })
+  expect(local.provider).toBe('kscc')
+  expect(local.provider_id).toBe(provider.id)
+  expect(local.models[0]).toMatchObject({ id: 'glm-test', freshness: 'configured', quota_limited: null })
+})
+
+test('live IDs never promote configured transport evidence, and metadata values use the shared secret guard', async () => {
+  const provider = await seedKscc()
+  await new ProviderService().updateProvider(provider.id, { name: 'Provider fake-secret-model-key',
+    modelCatalog: [{ id: 'live-model', capabilities: ['thinking'], transport: { apiFormat: 'openai_chat', endpoint: 'http://configured.test/v1/chat/completions' } }],
+    imageGeneration: { model: 'image-model', apiKey: 'fake-image-only-key' } })
+  globalThis.fetch = (async () => Response.json({ code: 200, data: [
+    { model: 'live-model' }, { model: 'echo-fake-secret-model-key' }, { model: 'echo-fake-image-only-key' },
+  ] })) as typeof fetch
+  const models = await listHeadlessModels(provider.id)
+  expect(models.models[0]).toMatchObject({ freshness: 'live', protocol: 'openai_chat', protocol_source: 'configured', capabilities_source: 'configured', call_access: 'unknown' })
+  expect(models.models[1]?.id).toBe('echo-[已打码]')
+  expect(models.models[2]?.id).toBe('echo-[已打码]')
+  const aggregate = await redactHeadlessProviderMetadata({ providers: (await listHeadlessProviders()).providers, models,
+    error: { message: 'fake-secret-model-key fake-image-only-key' } })
+  expect(JSON.stringify(aggregate)).not.toMatch(/fake-secret-model-key|fake-image-only-key/)
 })
 
 test('quota and model management share refresh rotation and retain top-level quota payload', async () => {

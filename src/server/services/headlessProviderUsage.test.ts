@@ -1,21 +1,24 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { getHeadlessProviderUsage, projectHeadlessQuota, recordHeadlessUsage } from './headlessProviderUsage.js'
+import { getHeadlessProviderUsage as queryUsage, projectHeadlessQuota, recordHeadlessUsage } from './headlessProviderUsage.js'
 import type { SavedProvider } from '../types/provider.js'
 
 let directory: string
 const now = Date.parse('2026-11-01T10:00:00Z')
-const provider = { id: 'test-provider', apiKey: 'fake-only-key' } as SavedProvider
+const provider = { id: 'test-provider', presetId: 'seasun', apiKey: 'fake-only-key' } as SavedProvider
 const selectProvider = async () => provider
+function getHeadlessProviderUsage(ref: string, options: NonNullable<Parameters<typeof queryUsage>[1]> = {}) {
+  return queryUsage(ref, { selectProvider: async name => name === 'kscc' ? { ...provider, id: 'kscc-provider', presetId: 'kscc' } : provider, ...options })
+}
 beforeEach(async () => {
-  const root = path.resolve('.runtime/cli-provider-task/usage-tests')
+  const root = path.resolve('.runtime/cli-discovery-task/usage')
   await fs.mkdir(root, { recursive: true })
   directory = await fs.mkdtemp(path.join(root, 'run-'))
 })
 afterEach(async () => {
   // mkdtemp is fixed beneath the task's non-system-drive test root.
-  if (!directory.startsWith(path.resolve('.runtime/cli-provider-task/usage-tests') + path.sep)) throw new Error('invalid cleanup path')
+  if (!directory.startsWith(path.resolve('.runtime/cli-discovery-task/usage') + path.sep)) throw new Error('invalid cleanup path')
   await fs.rm(directory, { recursive: true, force: true })
 })
 const quota = (used: number, extra = {}) => ({ code: 0, data: { currency: 'USD', windows: [
@@ -23,12 +26,12 @@ const quota = (used: number, extra = {}) => ({ code: 0, data: { currency: 'USD',
 ], ...extra } })
 
 test('concurrent runs, duplicate content blocks and providers stay separate across exact rolling windows', async () => {
-  const common = { provider: 'kscc' as const, model: 'same-model', runId: 'run-a', messageId: 'msg-a', requestId: 'req-a', timestamp: new Date(now - 1000).toISOString(), usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 20, cache_creation_input_tokens: 3 } }
+  const common = { provider: 'kscc', providerId: 'kscc-provider' as const, model: 'same-model', runId: 'run-a', messageId: 'msg-a', requestId: 'req-a', timestamp: new Date(now - 1000).toISOString(), usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 20, cache_creation_input_tokens: 3 } }
   await Promise.all([
     recordHeadlessUsage(common, { directory }), recordHeadlessUsage(common, { directory }),
     recordHeadlessUsage({ ...common, runId: 'run-b', requestId: 'req-b' }, { directory }),
     recordHeadlessUsage({ ...common, runId: 'run-replayed' }, { directory }),
-    recordHeadlessUsage({ ...common, provider: 'tokenhub' }, { directory }),
+    recordHeadlessUsage({ ...common, provider: 'tokenhub', providerId: 'test-provider' }, { directory }),
     recordHeadlessUsage({ ...common, runId: 'at-one-hour', requestId: 'req-hour', timestamp: new Date(now - 3600000).toISOString() }, { directory }),
     recordHeadlessUsage({ ...common, runId: 'at-one-day', requestId: 'req-day', timestamp: new Date(now - 24 * 3600000).toISOString() }, { directory }),
     recordHeadlessUsage({ ...common, runId: 'at-one-week', requestId: 'req-week', timestamp: new Date(now - 7 * 24 * 3600000).toISOString() }, { directory }),
@@ -43,7 +46,7 @@ test('concurrent runs, duplicate content blocks and providers stay separate acro
 })
 
 test('only numeric counters and hashed identities are saved, incomplete records are visible', async () => {
-  await recordHeadlessUsage({ provider: 'kscc', model: 'glm-5.1', runId: 'private-run-id', requestId: 'private-request-id', messageId: 'private-message-id', usage: { input_tokens: 4 } }, { directory })
+  await recordHeadlessUsage({ provider: 'kscc', providerId: 'kscc-provider', model: 'glm-5.1', runId: 'private-run-id', requestId: 'private-request-id', messageId: 'private-message-id', usage: { input_tokens: 4 } }, { directory })
   const filename = (await fs.readdir(directory))[0]!
   const raw = await fs.readFile(path.join(directory, filename), 'utf8')
   expect(raw).not.toContain('private-')
@@ -51,7 +54,7 @@ test('only numeric counters and hashed identities are saved, incomplete records 
   const report = await getHeadlessProviderUsage('kscc', { directory, now })
   expect(report.local_usage.completeness).toBe('partial')
   expect(report.warnings).toHaveLength(1)
-  await expect(recordHeadlessUsage({ provider: 'kscc', model: 'glm-5.1', runId: 'x', usage: { input_tokens: -1 } }, { directory })).rejects.toThrow('INVALID_USAGE_RECORD')
+  await expect(recordHeadlessUsage({ provider: 'kscc', providerId: 'kscc-provider', model: 'glm-5.1', runId: 'x', usage: { input_tokens: -1 } }, { directory })).rejects.toThrow('INVALID_USAGE_RECORD')
 })
 
 test('quota whitelist excludes all server messages and unknown fields, unknown limits do not become zero', () => {
@@ -88,13 +91,13 @@ test('unknown, zero and auth errors return bounded safe statuses while local usa
 })
 
 test('no records, offline mode, login codes and malformed snapshots remain explicit and safe', async () => {
-  const empty = await getHeadlessProviderUsage('tokenhub', { directory, now, noNetwork: true, selectProvider: async () => { throw new Error('network must not run') } })
+  const empty = await getHeadlessProviderUsage('tokenhub', { directory, now, noNetwork: true, fetchQuota: async () => { throw new Error('network must not run') } })
   expect(empty.local_usage.completeness).toBe('no_records')
   expect(empty.local_usage.coverage_started_at).toBeNull()
   expect(empty.server_quota.message).toContain('未联网')
   const missing = await getHeadlessProviderUsage('tokenhub', { directory, now, selectProvider: async () => { throw Object.assign(new Error('private'), { code: 'LOGIN_REQUIRED' }) } })
   expect(missing.server_quota.status).toBe('auth_required')
-  await fs.writeFile(path.join(directory, 'quota-aaaa.json'), JSON.stringify({ schema_version: 1, provider: 'tokenhub', provider_hash: 'a'.repeat(64), observed_at: new Date(now).toISOString(), quota: { windows: {} } }))
+  await fs.writeFile(path.join(directory, 'quota-aaaa.json'), JSON.stringify({ schema_version: 1, provider: 'tokenhub', providerId: 'test-provider', provider_hash: 'a'.repeat(64), observed_at: new Date(now).toISOString(), quota: { windows: {} } }))
   const corrupt = await getHeadlessProviderUsage('tokenhub', { directory, now, selectProvider, fetchQuota: async () => quota(10) })
   expect(corrupt.local_usage.completeness).toBe('partial')
 })
@@ -115,7 +118,7 @@ test('a forecast that crosses reset does not invent a date in the next quota per
 test('two independent CLI processes can persist concurrently without lost updates', async () => {
   const modulePath = new URL('./headlessProviderUsage.ts', import.meta.url).href
   const processes = ['first', 'second'].map(runId => Bun.spawn([process.execPath, '--eval',
-    `const { recordHeadlessUsage } = await import(${JSON.stringify(modulePath)}); await recordHeadlessUsage(${JSON.stringify({ provider: 'kscc', model: 'glm-5.1', runId, usage: { input_tokens: 11 }, timestamp: new Date(now - 100).toISOString() })}, { directory: ${JSON.stringify(directory)} });`],
+    `const { recordHeadlessUsage } = await import(${JSON.stringify(modulePath)}); await recordHeadlessUsage(${JSON.stringify({ provider: 'kscc', providerId: 'kscc-provider', model: 'glm-5.1', runId, usage: { input_tokens: 11 }, timestamp: new Date(now - 100).toISOString() })}, { directory: ${JSON.stringify(directory)} });`],
   { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(directory, 'config') } }))
   for (const process of processes) expect(await process.exited).toBe(0)
   const report = await getHeadlessProviderUsage('kscc', { directory, now })
@@ -150,8 +153,8 @@ test('query cancellation reaches the credential query and prevents a late snapsh
 })
 
 test('missing measurements are rejected but an explicit measured zero remains valid', async () => {
-  await expect(recordHeadlessUsage({ provider: 'kscc', model: 'glm-5.1', runId: 'missing', usage: {} }, { directory })).rejects.toThrow('USAGE_MEASUREMENT_MISSING')
-  await recordHeadlessUsage({ provider: 'kscc', model: 'glm-5.1', runId: 'zero', timestamp: new Date(now).toISOString(), usage: { input_tokens: 0 } }, { directory })
+  await expect(recordHeadlessUsage({ provider: 'kscc', providerId: 'kscc-provider', model: 'glm-5.1', runId: 'missing', usage: {} }, { directory })).rejects.toThrow('USAGE_MEASUREMENT_MISSING')
+  await recordHeadlessUsage({ provider: 'kscc', providerId: 'kscc-provider', model: 'glm-5.1', runId: 'zero', timestamp: new Date(now).toISOString(), usage: { input_tokens: 0 } }, { directory })
   const report = await getHeadlessProviderUsage('kscc', { directory, now })
   expect(report.local_usage.completeness).toBe('recorded_events')
   expect(report.local_usage.windows['1h'].requests).toBe(1)
@@ -159,7 +162,7 @@ test('missing measurements are rejected but an explicit measured zero remains va
 })
 
 test('replaying an old request updates its measurement without moving consumption into the current hour', async () => {
-  const event = { provider: 'kscc' as const, model: 'glm-5.1', runId: 'old-run', messageId: 'old-message', requestId: 'old-request', usage: { input_tokens: 10 }, timestamp: new Date(now - 7200000).toISOString() }
+  const event = { provider: 'kscc', providerId: 'kscc-provider' as const, model: 'glm-5.1', runId: 'old-run', messageId: 'old-message', requestId: 'old-request', usage: { input_tokens: 10 }, timestamp: new Date(now - 7200000).toISOString() }
   await recordHeadlessUsage(event, { directory })
   await recordHeadlessUsage({ ...event, runId: 'replay-run', usage: { input_tokens: 12 }, timestamp: new Date(now).toISOString() }, { directory })
   const report = await getHeadlessProviderUsage('kscc', { directory, now })
@@ -167,4 +170,87 @@ test('replaying an old request updates its measurement without moving consumptio
   expect(report.local_usage.windows['24h'].requests).toBe(1)
   expect(report.local_usage.windows['24h'].total_tokens).toBe(12)
   expect(report.local_usage.coverage_started_at).toBe(event.timestamp)
+})
+
+test('v1 alias history is preserved but never assigned to either of two saved accounts of the same preset', async () => {
+  const common = { provider: 'kscc', model: 'glm-5.1', runId: 'shared-run', requestId: 'shared-request', messageId: 'shared-message', timestamp: new Date(now - 1000).toISOString() }
+  await recordHeadlessUsage({ ...common, usage: { input_tokens: 100 } }, { directory })
+  const oldFile = (await fs.readdir(directory))[0]!
+  const oldBytes = await fs.readFile(path.join(directory, oldFile), 'utf8')
+  expect(JSON.parse(oldBytes).schema_version).toBe(1)
+  expect(JSON.parse(oldBytes).provider_id).toBeUndefined()
+  await recordHeadlessUsage({ ...common, providerId: 'account-a', usage: { input_tokens: 10 } }, { directory })
+  await recordHeadlessUsage({ ...common, providerId: 'account-b', usage: { input_tokens: 20 } }, { directory })
+  const account = (id: string) => ({ ...provider, id, presetId: 'kscc' })
+  const first = await queryUsage('account-a', { directory, now, selectProvider: async () => account('account-a') })
+  const second = await queryUsage('account-b', { directory, now, selectProvider: async () => account('account-b') })
+  expect(first).toMatchObject({ schema_version: 2, provider: 'account-a', provider_id: 'account-a' })
+  expect(first.local_usage.windows['1h'].input_tokens).toBe(10)
+  expect(second.local_usage.windows['1h'].input_tokens).toBe(20)
+  expect(first.legacy_usage?.windows['1h'].input_tokens).toBe(100)
+  expect(first.legacy_usage?.attribution).toBe('legacy_unattributed')
+  expect(second.legacy_usage?.windows['1h'].input_tokens).toBe(100)
+  expect(await fs.readFile(path.join(directory, oldFile), 'utf8')).toBe(oldBytes)
+  const alias = await queryUsage('kscc', { directory, now, selectProvider: async () => account('account-a') })
+  expect(alias.local_usage.windows['1h'].input_tokens).toBe(10)
+})
+
+test('generic provider IDs collect only their own new usage without guessing a quota endpoint', async () => {
+  await recordHeadlessUsage({ provider: 'custom-provider', providerId: 'custom-provider', model: 'gpt-5.1', runId: 'generic', timestamp: new Date(now).toISOString(), usage: { output_tokens: 7 } }, { directory })
+  const result = await queryUsage('custom-provider', { directory, now, selectProvider: async () => ({ ...provider, id: 'custom-provider', presetId: 'custom', baseUrl: 'https://must-not-be-guessed.invalid' }), fetchQuota: async () => { throw new Error('No generic network calls') } })
+  expect(result.provider_id).toBe('custom-provider')
+  expect(result.server_quota.status).toBe('unsupported')
+  expect(result.local_usage.windows['1h'].output_tokens).toBe(7)
+  expect(result.forecast).toEqual([])
+  expect(JSON.stringify(result)).not.toContain('must-not-be-guessed')
+})
+
+test('an ambiguous alias stays an error and missing saved identity cannot claim legacy consumption', async () => {
+  await expect(queryUsage('kscc', { directory, now, selectProvider: async () => { throw Object.assign(new Error('ambiguous'), { code: 'AMBIGUOUS_PROVIDER' }) } })).rejects.toThrow('ambiguous')
+  await recordHeadlessUsage({ provider: 'kscc', model: 'glm-5.1', runId: 'old', timestamp: new Date(now).toISOString(), usage: { input_tokens: 9 } }, { directory })
+  const result = await queryUsage('kscc', { directory, now, selectProvider: async () => { throw Object.assign(new Error('missing'), { code: 'LOGIN_REQUIRED' }) } })
+  expect(result.provider_id).toBeNull()
+  expect(result.server_quota.status).toBe('auth_required')
+  expect(result.local_usage.windows['1h'].requests).toBe(0)
+  expect(result.legacy_usage?.windows['1h'].input_tokens).toBe(9)
+})
+
+test('known keys echoed as metadata never enter a new ledger and old metadata is safe to display', async () => {
+  const secret = 'fake-private-usage-key'
+  await expect(recordHeadlessUsage({ provider: 'custom', providerId: 'custom', model: secret, runId: 'unsafe', usage: { input_tokens: 1 } }, { directory, secretValues: [secret] })).rejects.toThrow('UNSAFE_USAGE_IDENTITY')
+  expect(await fs.readdir(directory)).toEqual([])
+  // An old readable record may predate the metadata guard. Display must still redact values.
+  await recordHeadlessUsage({ provider: 'custom', providerId: 'custom', model: secret, runId: 'old-metadata', timestamp: new Date(now).toISOString(), usage: { input_tokens: 1 } }, { directory })
+  const result = await queryUsage('custom', { directory, now, selectProvider: async () => ({ ...provider, id: 'custom', presetId: 'custom', apiKey: secret }) })
+  expect(JSON.stringify(result)).not.toContain(secret)
+})
+
+test('model names matching object prototypes are ordinary own counters', async () => {
+  const names = ['constructor', '__proto__', 'toString', '中文模型[1m]']
+  for (const model of names) await recordHeadlessUsage({ provider: 'custom', providerId: 'custom', model, runId: `prototype-name-${model}`, timestamp: new Date(now).toISOString(), usage: { output_tokens: 4 } }, { directory })
+  const result = await queryUsage('custom', { directory, now, selectProvider: async () => ({ ...provider, id: 'custom', presetId: 'custom' }) })
+  const counts = result.local_usage.windows['1h'].by_model
+  for (const model of names) {
+    expect(Object.hasOwn(counts, model)).toBe(true)
+    expect(counts[model]).toMatchObject({ output_tokens: 4, total_tokens: 4 })
+  }
+  expect(result.local_usage.windows['1h'].total_tokens).toBe(16)
+  expect(Object.prototype).not.toHaveProperty('output_tokens')
+})
+
+test('runtime suffix labels survive persistence and control-character labels are rejected', async () => {
+  await recordHeadlessUsage({ provider: 'custom', providerId: 'custom', model: 'claude-sonnet-5[1m]', runId: 'suffix', timestamp: new Date(now).toISOString(), usage: { output_tokens: 4 } }, { directory })
+  const result = await queryUsage('custom', { directory, now, selectProvider: async () => ({ ...provider, id: 'custom', presetId: 'custom' }) })
+  expect(result.local_usage.windows['1h'].by_model['claude-sonnet-5[1m]']).toMatchObject({ output_tokens: 4 })
+  await expect(recordHeadlessUsage({ provider: 'custom', providerId: 'custom', model: 'model\nunsafe', runId: 'bad', usage: { output_tokens: 1 } }, { directory })).rejects.toThrow('INVALID_USAGE_RECORD')
+})
+
+test('an exact custom provider ID named kscc does not inherit the old gateway alias history', async () => {
+  await recordHeadlessUsage({ provider: 'kscc', model: 'glm-5.1', runId: 'old-gateway', timestamp: new Date(now).toISOString(), usage: { input_tokens: 99 } }, { directory })
+  await recordHeadlessUsage({ provider: 'kscc', providerId: 'kscc', model: 'custom-model', runId: 'exact-id', timestamp: new Date(now).toISOString(), usage: { input_tokens: 4 } }, { directory })
+  const report = await queryUsage('kscc', { directory, now, selectProvider: async () => ({ ...provider, id: 'kscc', presetId: 'custom' }) })
+  expect(report.provider_id).toBe('kscc')
+  expect(report.provider_preset).toBe('custom')
+  expect(report.local_usage.windows['1h'].input_tokens).toBe(4)
+  expect(report.legacy_usage).toBeNull()
 })

@@ -24,6 +24,14 @@ const provider = (id: string, baseUrl: string, apiFormat = 'anthropic'): SavedPr
   models: { main: 'old', haiku: 'old', sonnet: 'old', opus: 'old' },
 } as SavedProvider)
 
+test('special official OAuth runtimes fail explicitly before creating proxy or consulting identity', async () => {
+  const before = await readFile(join(configDir, 'cc-haha/providers.json'), 'utf8')
+  for (const runtimeKind of ['openai_oauth', 'grok_oauth'] as const) {
+    await expect(createHeadlessProviderRuntime({ ...provider('official', 'http://127.0.0.1:1', 'openai_responses'), runtimeKind }, 'm', configDir)).rejects.toMatchObject({ code: 'RUNTIME_UNSUPPORTED' })
+  }
+  expect(await readFile(join(configDir, 'cc-haha/providers.json'), 'utf8')).toBe(before)
+})
+
 test('host-managed explicit env defeats inherited routing without mutating GUI selection or provider', async () => {
   const source = provider('one', 'http://127.0.0.1:1')
   const baseline = await readFile(join(configDir, 'cc-haha/providers.json'), 'utf8')
