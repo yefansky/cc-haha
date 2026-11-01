@@ -9,7 +9,7 @@ order: 0
 
 CLI 是 Claude Code Haha 的内核，桌面端每个会话背后跑的都是它。如果你只想用图形界面，装桌面端就够了，见 [下载与安装](../start/install.md)；下面这些步骤是给需要终端交互、`--print` 脚本自动化，或者准备读源码、提 PR 的人看的。
 
-本页介绍源码中的 `claude-haha` 交互入口。统一服务商的 `cc-haha` 另有独立编译入口及 Windows 包装安装脚本，见 [服务商命令行](./providers.md)；本页不提供独立下载包。已有命令时先运行 `cc-haha help`，其他 codeagent 可先读 `cc-haha capabilities --json`，无需先读源码。
+本页介绍源码中的 `claude-haha` 交互入口。包含此功能的新版 Windows 桌面安装/更新包自带统一服务商命令 `cc-haha`，无需下面的源码步骤；先按[安装版命令行](../start/install.md#windows-安装版命令行)用 `where.exe cc-haha` / `Get-Command cc-haha -All` 核对入口，再运行 `cc-haha help`、`cc-haha capabilities --json`。服务商发现、模型、定价证据与用量见[服务商命令行](./providers.md)。源码与手工独立部署仍可使用，不要求已有安装版。
 
 ## 获取源码
 

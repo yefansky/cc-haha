@@ -118,6 +118,25 @@ Claude Code Haha 是一个**桌面端 Claude Code 工作台**：多会话与全�
 
 发布可信度与隐私：[Code signing policy](docs/start/code-signing.md) · [隐私与联网说明](docs/start/privacy.md)
 
+## Windows 安装版自带命令行
+
+包含此功能的新版 Windows 安装包在安装或更新时一并提供 `cc-haha`，无需源码、Bun 或额外 CLI 下载。新开 PowerShell 后先检查入口，再让程序介绍自己：
+
+```powershell
+where.exe cc-haha
+Get-Command cc-haha -All
+cc-haha help
+cc-haha capabilities --json
+cc-haha providers --json
+cc-haha models --all --no-network --json
+cc-haha pricing --all --no-network --json
+cc-haha usage --all --no-network --json
+```
+
+稳定入口位于实际安装目录的 `bin\cc-haha.cmd`，同目录提供离线 `README.md`、`HELP.md` 和 `capabilities.json`。已打开的终端或 codeagent 宿主可能仍继承旧 PATH；新开终端或重启该宿主，或直接调用此绝对入口。出现多个同名命令时，用上面两条定位命令核对来源，不删除或覆盖安装目录外的用户手工入口。应用安装树由应用管理，升级或卸载可能整体替换/移除，不要在其中放需要永久保留的自定义脚本；`bin` 注册冲突时可直调安装目录的 `resources\cli\cc-haha.cmd`。详见[安装与发现](docs/start/install.md#windows-安装版命令行)和[服务商命令行](docs/cli/providers.md)。
+
+PATH 可发现不代表任意 codeagent 会主动知道工具。可以给它一句提示：“请先读取 `cc-haha capabilities --json`，再通过 providers 与 models/pricing/usage 的 `--all --no-network --json` 查询了解本机能力；未知价格/额度不是零，调用模型前选择准确 ID 和必要工具权限。”
+
 ## 从源码启动 CLI
 
 适合想调试底层 CLI、服务端或自行开发的用户：

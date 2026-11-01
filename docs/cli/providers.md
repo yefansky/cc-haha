@@ -18,13 +18,15 @@ cc-haha models --help
 cc-haha capabilities --json
 ```
 
-`help` 提供中文教学和可复制示例，`help <命令>` 与 `<命令> --help` 等价。`capabilities` 提供机器可读的命令参数、互斥条件、模式、支持状态、成功与失败输出结构和错误恢复方法。它们不读取授权、不联网、不要求桌面端或源码目录；独立 EXE 中已编入说明。完整离线说明用 `cc-haha help --manual`，更新后的安装器还会在命令目录生成同源 `HELP.md`、`README.md` 和 `capabilities.json`。仅运行旧包装器不会自动得到这些文件，需要用新版 EXE 和安装脚本重新安装。
+`help` 提供中文教学和可复制示例，`help <命令>` 与 `<命令> --help` 等价。`capabilities` 提供机器可读的命令参数、互斥条件、模式、支持状态、成功与失败输出结构和错误恢复方法。它们不读取授权、不联网、不要求桌面端或源码目录；独立 EXE 中已编入说明。完整离线说明用 `cc-haha help --manual`，更新后的手工 `install-headless-cli.ps1` 还会在命令目录生成同源 `HELP.md`、`README.md` 和 `capabilities.json`。仅运行旧包装器不会自动得到这些文件，需要用新版 EXE 和安装脚本重新安装。
 
 推荐其他 codeagent 的顺序是：读 `capabilities` → 读 `providers` 并选择精确 ID → 读该 ID 的 `models`、`pricing`、`usage` → 明确模型和权限后执行任务。下文的 `saved-provider-id`、`model-id` 都是占位值，必须替换为查询得到的实际 ID。
 
 ## 安装与配置目录
 
-目前从源码使用，需要 Git 和 Bun。获取自己的 cc-haha 仓库后，在仓库根目录安装锁定依赖，再使用 `bin\cc-haha.cmd`。这里以 `G:\tools\cc-haha` 为例：
+包含此功能的新版 Windows 桌面安装/更新包已自带 `cc-haha`，不需要先获取源码。先按[安装版命令行](../start/install.md#windows-安装版命令行)检查 PATH 与实际入口；稳定入口在实际安装目录的 `bin\cc-haha.cmd`，同目录有离线说明。旧终端或 agent 宿主需重新启动才能继承更新后的 PATH；发现同名旧 CLI 时列出来源并显式选择，不删除安装目录外的用户手工入口。安装树属于应用管理，升级/卸载可能整体替换或移除，请勿存放需永久保留的自定义脚本；同目录入口冲突可使用安装目录的 `resources\cli\cc-haha.cmd` 备用入口，安装诊断见同目录 `registration-status.txt`。安装包装入口遵循显式 `CLAUDE_CONFIG_DIR`，否则跟随当前用户桌面 app-mode 的自定义/便携目录，默认使用 `~/.claude`。
+
+下面是仍可独立使用的**源码与手工部署**路线，需要 Git 和 Bun。获取自己的 cc-haha 仓库后，在仓库根目录安装锁定依赖，再使用 `bin\cc-haha.cmd`。这里以 `G:\tools\cc-haha` 为例：
 
 ```powershell
 Set-Location G:\tools\cc-haha
@@ -49,7 +51,7 @@ Copy-Item -LiteralPath 'G:\build\cc-haha.exe' -Destination 'G:\tools\cc-haha-cli
 
 把示例配置目录换成自己桌面端实际使用的目录。`-InstallDirectory` 本身就是包装入口和说明文件所在目录；`-AddToUserPath` 将它直接加入用户 PATH，不会再添加一层 `bin`。不要把同名 `cc-haha.exe` 放到命令目录，以免优先执行 EXE 而绕过配置包装器。重开终端后使用短命令；已运行的 GUI 继承旧 PATH，可先使用固定绝对入口 `G:\tools\cc-haha-cli\bin\cc-haha.cmd`，无需中断会话。显式 `-ConfigDirectory` 是包装器回退值，调用方已有的 `CLAUDE_CONFIG_DIR` 优先。源码包装和裸 EXE 仍沿用标准默认目录。
 
-**配置目录必须与自己已登录的桌面端一致。** 命令沿用当前进程的 `CLAUDE_CONFIG_DIR`；未设置时使用本机用户目录下 `.claude`。如果桌面启动脚本用了另外的数据目录，先将 `CLAUDE_CONFIG_DIR` 设为那个已存在目录。不要新建一个空目录后期待自动找到桌面授权，也不要复制其他用户或其他机器的令牌。配置目录应位于本人用户目录并受本机权限保护；对既有自定义桌面目录，沿用其位置和权限。
+**源码/手工独立入口的配置目录必须与自己已登录的桌面端一致。** 它们沿用当前进程的 `CLAUDE_CONFIG_DIR`；未设置时使用本机用户目录下 `.claude`。如果桌面启动脚本用了另外的数据目录，先将 `CLAUDE_CONFIG_DIR` 设为那个已存在目录。不要新建一个空目录后期待自动找到桌面授权，也不要复制其他用户或其他机器的令牌。配置目录应位于本人用户目录并受本机权限保护；对既有自定义桌面目录，沿用其位置和权限。
 
 ## 登录
 
@@ -123,6 +125,6 @@ KSCC 和其他没有余额接口的自定义服务商明确写“服务端不提
 
 ## 第二台 Windows 机器
 
-在第二台机器检出同一提交、安装同一锁定依赖，把上述 `G:\tools\cc-haha` 换为该机实际路径，例如 `F:\tools\cc-haha`。缓存和临时目录也一起换到 F 盘。配置目录使用第二台机器本人用户目录，分别完成本人授权，不从第一台复制令牌。
+第二台 Windows 机器可安装包含此功能的同一桌面版本，再按安装版发现步骤检查；使用源码路线时，检出同一提交、安装同一锁定依赖，把上述 `G:\tools\cc-haha` 换为该机实际路径，例如 `F:\tools\cc-haha`。缓存和临时目录也一起换到 F 盘。配置目录使用第二台机器本人用户目录，分别完成本人授权，不从第一台复制令牌。
 
 部署后依次运行 KSCC 的 `回复 OK` JSON 命令、Token Hub 列表中的获准模型、两个 `models` 和两个 `usage`。再在临时工作目录验证“读文件 → 修改文件 → 执行校验命令”完整链路。第一台机器的成功结果不等于第二台已验收。

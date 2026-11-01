@@ -118,6 +118,25 @@ This project is maintained in the author's spare time. Corporate or individual s
 
 Release trust and privacy: [Code signing policy](docs/en/start/code-signing.md) · [Privacy and network access](docs/en/start/privacy.md)
 
+## Command line included with the Windows installer
+
+New Windows installers that include this feature install or update `cc-haha` with the desktop app. No source checkout, Bun, or separate CLI download is needed. Open a new PowerShell and discover the command:
+
+```powershell
+where.exe cc-haha
+Get-Command cc-haha -All
+cc-haha help
+cc-haha capabilities --json
+cc-haha providers --json
+cc-haha models --all --no-network --json
+cc-haha pricing --all --no-network --json
+cc-haha usage --all --no-network --json
+```
+
+The stable entry is `bin\cc-haha.cmd` under the actual application installation directory. Offline `README.md`, `HELP.md` and `capabilities.json` sit beside it. Existing terminals and coding-agent hosts may retain their old PATH: open a new terminal or restart that host, or call the absolute entry directly. If multiple commands match, inspect their locations without deleting or overwriting user-managed entries outside this installation. The application manages its installation tree and may replace/remove it on upgrade/uninstall; keep permanent custom scripts elsewhere. If bin registration conflicts, call `resources\cli\cc-haha.cmd` under the installation directory directly. See [Installation and discovery](docs/en/start/install.md#windows-command-line) and [Headless provider commands](docs/en/cli/providers.md).
+
+PATH availability does not guarantee that another coding agent will think to use the tool. A prompt you can copy: “Read `cc-haha capabilities --json`, then discover local providers and models/pricing/usage using `--all --no-network --json`. Unknown prices or quotas are not zero; select an exact provider ID, model and necessary tool permissions before invoking a model.”
+
 ## Run the CLI from Source
 
 For users who want to debug the underlying CLI, server, or local development flow:

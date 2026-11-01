@@ -18,13 +18,15 @@ cc-haha models --help
 cc-haha capabilities --json
 ```
 
-Help provides teaching examples; `help <command>` and `<command> --help` are equivalent. `capabilities` describes parameters, selection constraints, modes, support status, success/error schemas and recovery actions as machine-readable data. These commands do not read credentials or require network access, the desktop app or a source checkout. The executable embeds the manual. Use `help --manual` for the complete reference. The updated installer also generates `HELP.md`, `README.md` and `capabilities.json` beside the wrapper from the same executable. Old installed wrappers do not gain these files automatically; rerun the updated installer with an updated executable.
+Help provides teaching examples; `help <command>` and `<command> --help` are equivalent. `capabilities` describes parameters, selection constraints, modes, support status, success/error schemas and recovery actions as machine-readable data. These commands do not read credentials or require network access, the desktop app or a source checkout. The executable embeds the manual. Use `help --manual` for the complete reference. The updated manual `install-headless-cli.ps1` also generates `HELP.md`, `README.md` and `capabilities.json` beside the wrapper from the same executable. Old installed wrappers do not gain these files automatically; rerun the updated installer with an updated executable.
 
 A coding agent should read capabilities, list providers and choose an exact ID, inspect that ID's models/pricing/usage, then select a model and minimum tool permissions. `saved-provider-id` and `model-id` in examples are placeholders to replace with actual discovered IDs.
 
 ## Installation and configuration
 
-Install Git and Bun, obtain your cc-haha source checkout, then install locked dependencies. For a checkout at `G:\tools\cc-haha`:
+New Windows desktop installation/update packages that include this feature already provide `cc-haha`; no source checkout is required. Follow [Windows command line](../start/install.md#windows-command-line) to check PATH and the actual entry. The stable wrapper is `bin\cc-haha.cmd` under the installation directory, beside offline documents. Restart old terminals or agent hosts to inherit the updated PATH. If another CLI has the same name, inspect all matches and select an explicit entry without deleting user-managed commands outside this installation. The application manages its installation tree and may replace/remove it on upgrade/uninstall; keep permanent custom scripts elsewhere. For same-directory entry conflicts, use `resources\cli\cc-haha.cmd` under the installation directory as the fallback; installation diagnostics are in `registration-status.txt` beside it. The installed wrapper honors explicit `CLAUDE_CONFIG_DIR`, otherwise follows the current user's desktop app-mode custom/portable directory, with `~/.claude` as the default.
+
+The following **source and manual deployment** route remains independently available. Install Git and Bun, obtain your cc-haha source checkout, then install locked dependencies. For a checkout at `G:\tools\cc-haha`:
 
 ```powershell
 Set-Location G:\tools\cc-haha
@@ -49,7 +51,7 @@ Copy-Item -LiteralPath 'G:\build\cc-haha.exe' -Destination 'G:\tools\cc-haha-cli
 
 Replace the configuration directory with the one your desktop app actually uses. `-InstallDirectory` itself contains the wrapper and documents; `-AddToUserPath` adds it directly without another `bin` level. Keep the same-named EXE out of the command directory so it cannot bypass the configuration wrapper. Open a new terminal afterwards. An already running GUI inherits the old PATH; use `G:\tools\cc-haha-cli\bin\cc-haha.cmd` without interrupting it. Explicit configuration is a wrapper fallback; an existing `CLAUDE_CONFIG_DIR` takes priority. Source wrappers and a bare EXE keep the standard default below.
 
-Use the same configuration directory as your logged-in desktop application. The command honors `CLAUDE_CONFIG_DIR`; otherwise it uses `.claude` in your local user directory. When the desktop launcher uses another directory, set this variable to that existing directory first. Do not copy tokens across users or machines. Keep new configuration directories in your own protected user directory; existing custom desktop directories retain their location and permissions.
+For source/manual standalone entries, use the same configuration directory as your logged-in desktop application. The command honors `CLAUDE_CONFIG_DIR`; otherwise it uses `.claude` in your local user directory. When the desktop launcher uses another directory, set this variable to that existing directory first. Do not copy tokens across users or machines. Keep new configuration directories in your own protected user directory; existing custom desktop directories retain their location and permissions.
 
 ## Login
 
@@ -123,6 +125,6 @@ Concurrent processes have separate run identities, providers, models and working
 
 ## A second Windows machine
 
-Check out the same commit and install the same locked dependencies. Replace the example G-drive path with the actual second-machine path, such as `F:\tools\cc-haha`, including cache and temporary directories. Authorize locally as the user; do not copy the first machine's tokens.
+On a second Windows machine, install the same desktop version that includes this feature and repeat the installed-command discovery steps. For source deployments, check out the same commit and install the same locked dependencies. Replace the example G-drive path with the actual second-machine path, such as `F:\tools\cc-haha`, including cache and temporary directories. Authorize locally as the user; do not copy the first machine's tokens.
 
 Repeat a KSCC JSON reply, an authorized Token Hub model, both model lists and both usage commands. Then verify reading a fixture, editing it and executing a validation command in a temporary workspace. Success on one machine does not verify the second machine.

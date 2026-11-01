@@ -67,6 +67,33 @@ Unsigned packages trigger a SmartScreen warning. Once you've confirmed the file 
 
 When upgrading in place, the installer inspects user data in the old install directory. If it reports that the program is still running, quit the main window and the tray icon, give the background sidecar, terminal, and IM adapter processes a few seconds to exit, then run the installer again. Don't delete the old install directory by hand first.
 
+### Windows command line
+
+New installers that include this feature deploy `cc-haha` during installation and in-place upgrades. Git, Bun, Node.js and KSCC/Token Hub clients are not required. It reuses the bundled coding agent and local authorization; the desktop app does not need to remain running.
+
+The installer registers the actual installation directory's `bin` on the PATH for the corresponding user or machine installation scope. Open a new PowerShell and run:
+
+```powershell
+where.exe cc-haha
+Get-Command cc-haha -All
+cc-haha help
+cc-haha capabilities --json
+cc-haha providers --json
+cc-haha models --all --no-network --json
+cc-haha pricing --all --no-network --json
+cc-haha usage --all --no-network --json
+```
+
+The last four commands discover local metadata without model calls or network requests. Unknown/null pricing means there is no verified price; unsupported/auth_required quota is not a zero balance. Read help before dropping `--no-network` for current remote catalog or management quota data. See [Headless provider commands](../cli/providers.md) for model execution.
+
+The stable entry is `bin\cc-haha.cmd` under the actual installation directory, beside `README.md`, `HELP.md`, `capabilities.json` and `cli-manifest.json`. They update with the installed application. The wrapper calls the sidecar from the same installation and needs no developer source path. If PATH is unavailable, use its absolute path, such as `& 'actual install directory\bin\cc-haha.cmd' help`; replace the placeholder directory.
+
+Existing terminals, editors and coding-agent hosts keep the environment they inherited at startup. Open a new terminal or restart the agent's host; a child process launched from an old terminal may still inherit its old PATH. If `where.exe` or `Get-Command -All` finds multiple entries, inspect which one resolves first and explicitly call this installation's entry when necessary. The CLI registration helper does not overwrite unknown entries, remove other PATH entries or delete manually installed CLIs outside this installation. It leaves unknown files on a same-directory conflict; use `resources\cli\cc-haha.cmd` under the installation directory as the fallback, beside offline documents; diagnostics are in `resources\cli\registration-status.txt`. This is not a promise that the full NSIS upgrade/uninstaller preserves custom files inside the installation tree: the application manages that tree and may replace or remove it. Keep permanent custom scripts elsewhere. PATH cleanup removes only entries added by the helper; an old `claude-haha` outside this installation is unaffected.
+
+Configuration selection: explicit `CLAUDE_CONFIG_DIR` takes precedence. Otherwise the installed wrapper reads the current user's desktop `app-mode.json` to follow its custom/portable directory; default mode uses user `~/.claude`. The installation directory is not the data directory. Do not copy or print credentials. Installation does not read logins, modify GUI settings or launch the GUI.
+
+PATH makes the command discoverable; it cannot ensure that every agent thinks to call it. A prompt you can copy: “cc-haha is installed. Learn from help and capabilities, then discover providers and models/pricing/usage with --all --no-network --json. Explain unknown/null, and choose an exact provider ID, model and minimum tool permissions before model execution.”
+
 ## Linux
 
 **AppImage** (no installation, just run it):
@@ -108,7 +135,7 @@ Before updating, stop any running sessions and save uncommitted work.
 
 If the download stalls, you probably can't reach GitHub. The same panel has an "Advanced update proxy" setting where you can switch to the system proxy or enter a local HTTP proxy address (`http://127.0.0.1:7890`, for instance). This proxy only affects the app's own update downloads — it has no effect on model requests.
 
-**Manual replacement.** Download the new installer from Releases and repeat the steps for your platform. Sessions, provider configuration, skills, agents, and memory live under `~/.claude`, not in the application directory, so installing over the top doesn't touch them.
+**Manual replacement.** Download the new installer from Releases and repeat the steps for your platform. In default mode, sessions, provider configuration, skills, agents and memory live under `~/.claude`; custom/portable mode uses the data directory selected in desktop settings. Updating does not move these data into the command directory.
 
 :::warning
 The installer's data protection is not a backup. Keep your own copy of anything you can't afford to lose.

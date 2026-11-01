@@ -67,6 +67,33 @@ xattr -dr com.apple.quarantine "/Applications/Claude Code Haha.app"
 
 覆盖升级时安装器会检查旧安装目录里的用户数据。如果它提示「程序仍在运行」，退出主窗口和托盘图标，等几秒让后台的 sidecar、终端和 IM adapter 退干净，再重新运行安装器。别先手动删掉旧安装目录。
 
+### Windows 安装版命令行
+
+包含此功能的新版安装包在首次安装和覆盖升级时同步部署 `cc-haha`，无需另装 Git、Bun、Node.js 或 KSCC/Token Hub 客户端。它复用随包的编程代理和本机授权，执行命令时无需桌面端常驻。
+
+安装器将实际安装目录的 `bin` 注册到对应安装范围的用户或系统 PATH。新开 PowerShell 后执行：
+
+```powershell
+where.exe cc-haha
+Get-Command cc-haha -All
+cc-haha help
+cc-haha capabilities --json
+cc-haha providers --json
+cc-haha models --all --no-network --json
+cc-haha pricing --all --no-network --json
+cc-haha usage --all --no-network --json
+```
+
+最后四项只读发现，不调用模型、不访问网络；`pricing` 返回 unknown/null 时表示没有已验证价格，`usage` 的 unsupported/auth_required 也不等于额度为零。需要最新远端目录或管理额度时，阅读 help 后再去掉 `--no-network`；模型执行另见[服务商命令行](../cli/providers.md)。
+
+实际安装目录下的 `bin\cc-haha.cmd` 是稳定入口，旁边有 `README.md`、`HELP.md`、`capabilities.json` 与 `cli-manifest.json`。它们随安装版本更新；包装器调用同安装内的 sidecar，不依赖开发者源码路径。PATH 未生效时可先用完整路径，例如 `& '实际安装目录\bin\cc-haha.cmd' help`，请把占位目录换成自己的路径。
+
+已运行的终端、编辑器或 codeagent 宿主会保留启动时的环境。新开终端或重启承载 agent 的宿主后再试；仅在旧终端内启动子进程仍可能继承旧 PATH。`where.exe` 或 `Get-Command -All` 列出多个来源时，检查当前选中的是哪一个，必要时显式调用本安装入口。CLI 注册辅助程序不覆盖未知入口、不删除其他 PATH 项或安装目录外的手工 CLI；同目录冲突时保留未知文件，使用安装目录的 `resources\cli\cc-haha.cmd` 备用入口（旁有同源离线说明；诊断见 `resources\cli\registration-status.txt`）。但这不保证整个 NSIS 升级/卸载会保留安装树内自定义文件：应用安装目录由应用管理，可能整体替换或移除，需永久保留的脚本应放在安装目录外。卸载的 PATH 清理只撤销辅助程序自己新增的项；安装目录外的旧 `claude-haha` 不受影响。
+
+配置选择：显式 `CLAUDE_CONFIG_DIR` 优先；安装版包装入口否则只读复用当前用户桌面的 `app-mode.json`，跟随其中自定义/便携目录；默认模式使用用户 `~/.claude`。不要以为安装目录就是数据目录，不要复制或打印凭据。安装时不读取登录、不修改 GUI 配置，也不启动 GUI。
+
+PATH 使程序可查找，无法保证任意 agent 主动调用。可以复制：“本机已安装 cc-haha，请先用 help 和 capabilities 自学，再用 providers 及 models/pricing/usage 的 --all --no-network --json 做只读发现；解释 unknown/null，执行模型前选择准确 Provider ID、模型及最小工具权限。”
+
 ## Linux
 
 **AppImage**（免安装，下载即用）：
@@ -108,7 +135,7 @@ cp .env.example .env
 
 下载卡住不动，多半是网络到不了 GitHub。同一个面板里有「高级更新代理」，可以切成系统代理或填一个本地 HTTP 代理地址（例如 `http://127.0.0.1:7890`）。这个代理只管应用自己的更新下载，不影响模型请求。
 
-**手动换包。** 从 Releases 下新版安装包，按上面各平台的步骤重装一遍即可。会话、服务商配置、技能、Agent、记忆都存在 `~/.claude` 下，不在应用目录里，覆盖安装不会动它们。
+**手动换包。** 从 Releases 下新版安装包，按上面各平台的步骤重装一遍即可。默认模式下，会话、服务商配置、技能、Agent 和记忆存在 `~/.claude`；自定义/便携模式使用桌面设置中的数据目录。覆盖更新不将这些数据迁入命令目录。
 
 :::warning
 安装器的数据保护不等于备份。真正重要的东西请自己另存一份。
