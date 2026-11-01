@@ -73,4 +73,27 @@ describe.skipIf(process.platform !== 'win32')('installed CLI assertions without 
     "try { Assert-InstalledCli -InstallDirectory $install -ConfigDirectory $config } catch { $failed=$_.Exception.Message -eq 'Installed CLI manual differs from its runtime.' }",
     "Assert $failed 'stale manual was accepted'",
   ].join('\n')))
+
+  it('seeds, detects expansion or kind loss, and restores raw PATH using only an in-memory key', () => run([
+    "$key=[pscustomobject]@{Raw='G:\\original;%USERPROFILE%\\tools';Kind=[Microsoft.Win32.RegistryValueKind]::String;Exists=$true}",
+    "$key | Add-Member ScriptMethod GetValue { param($name,$fallback,$options) Assert ($options -eq [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) 'PATH read expanded variables'; if($this.Exists){return $this.Raw};return $null }",
+    "$key | Add-Member ScriptMethod GetValueKind { param($name) return $this.Kind }",
+    "$key | Add-Member ScriptMethod SetValue { param($name,$value,$kind) $this.Raw=$value;$this.Kind=$kind;$this.Exists=$true }",
+    "$key | Add-Member ScriptMethod DeleteValue { param($name,$throw) $this.Exists=$false }",
+    "foreach($kind in @([Microsoft.Win32.RegistryValueKind]::String,[Microsoft.Win32.RegistryValueKind]::ExpandString)) {",
+    " $key.Kind=$kind;$key.Raw='G:\\original;%USERPROFILE%\\tools';$key.Exists=$true",
+    " $state=Set-CliPathSentinel -Key $key -Sentinel '%CC_HAHA_CLI_SMOKE_PATH%\\tools'",
+    ' Assert-CliPathSentinel -Key $key -State $state',
+    " $key.Raw=$key.Raw.Replace('%CC_HAHA_CLI_SMOKE_PATH%','G:\\expanded');$failed=$false",
+    ' try { Assert-CliPathSentinel -Key $key -State $state } catch { $failed=$true }',
+    " Assert $failed 'expanded sentinel was accepted'",
+    ' Restore-CliPathSentinel -Key $key -State $state',
+    " Assert ($key.Raw -eq 'G:\\original;%USERPROFILE%\\tools' -and $key.Kind -eq $kind) 'original raw value or kind not restored'",
+    " $state=Set-CliPathSentinel -Key $key -Sentinel '%CC_HAHA_CLI_SMOKE_PATH%\\tools';$key.Kind=[Microsoft.Win32.RegistryValueKind]::String;$failed=$false",
+    ' try { Assert-CliPathSentinel -Key $key -State $state } catch { $failed=$true }',
+    " Assert $failed 'lost registry kind was accepted'; Restore-CliPathSentinel -Key $key -State $state",
+    '}',
+    "$key.Exists=$false;$state=Set-CliPathSentinel -Key $key -Sentinel '%CC_HAHA_CLI_SMOKE_PATH%\\tools';Restore-CliPathSentinel -Key $key -State $state",
+    "Assert (-not $key.Exists) 'restore created an originally absent PATH value'",
+  ].join('\n')))
 })

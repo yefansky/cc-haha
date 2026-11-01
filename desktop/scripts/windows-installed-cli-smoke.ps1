@@ -1,6 +1,34 @@
 # Read-only assertions shared by the ephemeral installer smoke and offline fixtures.
 Set-StrictMode -Version Latest
 
+# The caller opens a writable key only after the installer's ephemeral-CI guard.
+# Fixtures pass an in-memory key; importing this file never accesses the registry.
+function Set-CliPathSentinel {
+  param($Key, [string]$Sentinel)
+  $raw = $Key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+  $state = @{ Exists = $null -ne $raw; Value = $raw; Kind = $null; Sentinel = $Sentinel }
+  if ($state.Exists) { $state.Kind = $Key.GetValueKind('Path') }
+  $parts = @()
+  if ($null -ne $raw -and [string]$raw -ne '') { $parts += [string]$raw }
+  $parts += $Sentinel
+  $Key.SetValue('Path', ($parts -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+  return $state
+}
+
+function Assert-CliPathSentinel {
+  param($Key, $State)
+  $raw = [string]$Key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+  if ($State.Sentinel -notin @($raw -split ';') -or $Key.GetValueKind('Path') -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+    throw 'Installer changed an unrelated raw PATH variable or registry value kind.'
+  }
+}
+
+function Restore-CliPathSentinel {
+  param($Key, $State)
+  if ($State.Exists) { $Key.SetValue('Path', $State.Value, $State.Kind) }
+  else { $Key.DeleteValue('Path', $false) }
+}
+
 function Invoke-InstalledCliQuery {
   param([string]$Launcher, [string[]]$Arguments, [string]$ConfigDirectory, [switch]$DiscoverFromPath)
   $quote = { param($value) "'" + $value.Replace("'", "''") + "'" }

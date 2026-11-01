@@ -18,8 +18,29 @@ function Get-CliFileHash([string]$File) {
 
 # These small OS seams also let fixture tests exercise the real transition
 # without touching the developer's registry or PATH.
-function Get-CliScopePath([string]$Target) { [Environment]::GetEnvironmentVariable('Path', $Target) }
-function Set-CliScopePath([string]$Target, [string]$Value) { [Environment]::SetEnvironmentVariable('Path', $Value, $Target) }
+function Get-CliEnvironmentKey([string]$Target, [bool]$Writable) {
+  $root = if ($Target -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
+  $subkey = if ($Target -eq 'Machine') { 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment' } else { 'Environment' }
+  if ($Writable) { return $root.CreateSubKey($subkey) }
+  return $root.OpenSubKey($subkey, $false)
+}
+function Get-CliScopePath([string]$Target) {
+  $key = Get-CliEnvironmentKey $Target $false
+  if ($null -eq $key) { return '' }
+  try {
+    # Environment.GetEnvironmentVariable expands REG_EXPAND_SZ; retain the
+    # original %VARIABLE% spelling so an unrelated entry is never rewritten.
+    return [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+  } finally { $key.Dispose() }
+}
+function Set-CliScopePath([string]$Target, [string]$Value) {
+  $key = Get-CliEnvironmentKey $Target $true
+  try {
+    $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    if ($key.GetValueNames() -contains 'Path') { $kind = $key.GetValueKind('Path') }
+    $key.SetValue('Path', $Value, $kind)
+  } finally { if ($null -ne $key) { $key.Dispose() } }
+}
 function Get-CliOwnerKey([string]$Target) {
   $root = if ($Target -eq 'Machine') { 'HKLM:' } else { 'HKCU:' }
   return "$root\Software\Claude Code Haha\HeadlessCli"

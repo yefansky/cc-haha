@@ -428,7 +428,13 @@ function Invoke-LegacyRecoveryDiagnostic {
 }
 
 $primaryFailure = $null
+$cliPathKey = $null
+$cliPathState = $null
+$cliPathRestoreFailure = $null
 try {
+  $cliPathKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+  if ($null -eq $cliPathKey) { throw 'CI user environment registry key is unavailable.' }
+  $cliPathState = Set-CliPathSentinel -Key $cliPathKey -Sentinel '%CC_HAHA_CLI_SMOKE_PATH%\tools'
   try { Enable-InstallerCrashDumps -Context $installerDiagnostics } catch { $installerDiagnostics.Errors += 'dump_setup_failed' }
   New-Item -ItemType Directory -Path $appData, $localAppData, $userProfile, $desktopDirectory -Force | Out-Null
   $env:APPDATA = $appData
@@ -451,6 +457,7 @@ try {
   }
   $shortcutShell = New-Object -ComObject WScript.Shell
   Assert-InstalledCli -InstallDirectory $installDir -ConfigDirectory (Join-Path $testRoot 'cli-empty-config') -DiscoverFromPath
+  Assert-CliPathSentinel -Key $cliPathKey -State $cliPathState
   $installedShortcut = $null
   try {
     $installedShortcut = $shortcutShell.CreateShortcut($desktopShortcut)
@@ -479,6 +486,7 @@ try {
   $siblingProcess = Start-Process -FilePath $siblingProbe -ArgumentList @('-t', '127.0.0.1') -PassThru
   Start-Sleep -Milliseconds 500
   Invoke-CheckedProcess -FilePath $installer -Stage 'Sibling-prefix process reinstall' -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
+  Assert-CliPathSentinel -Key $cliPathKey -State $cliPathState
   Assert-InstalledCli -InstallDirectory $installDir -ConfigDirectory (Join-Path $testRoot 'cli-empty-config') -DiscoverFromPath
   if ($siblingProcess.HasExited) {
     throw 'Sibling-prefix process was mistaken for an install-directory process.'
@@ -500,6 +508,7 @@ try {
       '-InstallerParentPid', [string]$installProcess.Id
     )
   Invoke-CheckedProcess -FilePath $installer -Stage 'Install-directory process reinstall' -Arguments @('--updated', '/S', '/currentuser', "/D=$installDir")
+  Assert-CliPathSentinel -Key $cliPathKey -State $cliPathState
   Assert-InstalledCli -InstallDirectory $installDir -ConfigDirectory (Join-Path $testRoot 'cli-empty-config') -DiscoverFromPath
   if (-not $installProcess.HasExited) {
     throw 'Install-directory process was not terminated before reinstall.'
@@ -561,6 +570,7 @@ try {
   }
 
   [Console]::Out.WriteLine('Windows installer Unicode-path launch, fresh-install, no-CLR default reinstall, and fail-closed portable reinstall smoke passed.')
+  Assert-CliPathSentinel -Key $cliPathKey -State $cliPathState
 } catch {
   $primaryFailure = $_
   throw
@@ -579,12 +589,22 @@ try {
     Wait-ForPathRemoval -Path $desktopShortcut -Description 'Cleanup uninstall desktop shortcut'
     Wait-ForPathRemoval -Path (Join-Path $installDir 'bin\cc-haha.cmd') -Description 'Cleanup uninstall CLI launcher'
     Assert-CliPathRemoved -BinDirectory (Join-Path $installDir 'bin')
+    Assert-CliPathSentinel -Key $cliPathKey -State $cliPathState
   }
   } catch {
     $installerDiagnostics.Errors += 'installer_cleanup_failed'
     if ($null -eq $primaryFailure) { throw }
     [Console]::Error.WriteLine('Installer cleanup failed after the original smoke failure; preserving the original failure.')
   } finally {
+  try {
+    if ($null -ne $cliPathState) { Restore-CliPathSentinel -Key $cliPathKey -State $cliPathState }
+  } catch {
+    $installerDiagnostics.Errors += 'cli_path_restore_failed'
+    if ($null -eq $primaryFailure) { $cliPathRestoreFailure = $_ }
+    [Console]::Error.WriteLine('CI raw PATH restoration failed.')
+  } finally {
+    if ($null -ne $cliPathKey) { $cliPathKey.Dispose() }
+  }
   try { Complete-InstallerDiagnostics -Context $installerDiagnostics } catch { [Console]::Error.WriteLine('Installer diagnostics finalization failed; continuing original cleanup.') }
   foreach ($name in $savedEnvironment.Keys) {
     $value = $savedEnvironment[$name]
@@ -595,5 +615,6 @@ try {
     }
   }
   Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+  if ($null -ne $cliPathRestoreFailure) { throw $cliPathRestoreFailure }
   }
 }
