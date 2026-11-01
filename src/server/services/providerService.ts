@@ -9,6 +9,7 @@
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
+import * as lockfile from '../../utils/lockfile.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import { readRecoverableJsonFile } from './recoverableJsonFile.js'
 import { ManagedSettingsService } from './managedSettingsService.js'
@@ -170,7 +171,19 @@ export class ProviderService {
   private mutateIndex<T>(operation: () => Promise<T>): Promise<T> {
     const key = this.getIndexPath()
     const previous = ProviderService.indexWrites.get(key) ?? Promise.resolve()
-    const pending = previous.catch(() => {}).then(operation)
+    const pending = previous.catch(() => {}).then(async () => {
+      await fs.mkdir(path.dirname(key), { recursive: true })
+      let compromised = false
+      const release = await lockfile.lock(key, { realpath: false, stale: 60_000, update: 5_000,
+        retries: { retries: 100, minTimeout: 100, maxTimeout: 100, factor: 1 },
+        onCompromised: () => { compromised = true },
+      })
+      try {
+        const result = await operation()
+        if (compromised) throw ApiError.conflict('Provider storage changed; try again')
+        return result
+      } finally { await release().catch(() => {}) }
+    })
     ProviderService.indexWrites.set(key, pending)
     void pending.finally(() => {
       if (ProviderService.indexWrites.get(key) === pending) ProviderService.indexWrites.delete(key)
@@ -254,6 +267,17 @@ export class ProviderService {
     })
   }
 
+  private async readIndexSnapshot(): Promise<ProvidersIndex> {
+    try {
+      const index = normalizeProvidersIndex(JSON.parse(await fs.readFile(this.getIndexPath(), 'utf8')))
+      if (!index) throw ApiError.badRequest('Invalid provider index')
+      return index
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_INDEX, providers: [], providerOrder: [] }
+      throw ApiError.badRequest('Provider index cannot be read')
+    }
+  }
+
   private async writeIndex(index: ProvidersIndex): Promise<void> {
     const filePath = this.getIndexPath()
     const dir = path.dirname(filePath)
@@ -286,8 +310,8 @@ export class ProviderService {
 
   // --- CRUD ---
 
-  async listProviders(): Promise<{ providers: SavedProvider[]; activeId: string | null; providerOrder: string[] }> {
-    const index = await this.readIndex()
+  async listProviders(options?: { readOnly?: boolean }): Promise<{ providers: SavedProvider[]; activeId: string | null; providerOrder: string[] }> {
+    const index = options?.readOnly ? await this.readIndexSnapshot() : await this.readIndex()
     return {
       providers: index.providers,
       activeId: index.activeId,
@@ -352,14 +376,15 @@ export class ProviderService {
     return imported
   }
 
-  upsertIntegratedProvider(integrationId: string, authorization: ProviderAuthorization): Promise<SavedProvider> {
-    return this.mutateIndex(() => this.upsertIntegratedProviderInTransaction(integrationId, authorization))
+  upsertIntegratedProvider(integrationId: string, authorization: ProviderAuthorization, options?: { activate?: boolean; signal?: AbortSignal }): Promise<SavedProvider> {
+    return this.mutateIndex(() => this.upsertIntegratedProviderInTransaction(integrationId, authorization, options))
   }
 
-  private async upsertIntegratedProviderInTransaction(integrationId: string, authorization: ProviderAuthorization): Promise<SavedProvider> {
+  private async upsertIntegratedProviderInTransaction(integrationId: string, authorization: ProviderAuthorization, options?: { activate?: boolean; signal?: AbortSignal }): Promise<SavedProvider> {
+    options?.signal?.throwIfAborted()
     const integration = this.integrations.get(integrationId)
     if (!integration?.buildAuthorizedProvider) throw ApiError.badRequest('Provider integration does not accept authorization')
-    const index = await this.readIndex()
+    const index = options?.activate === false ? await this.readIndexSnapshot() : await this.readIndex()
     const existingIndex = index.providers.findIndex(provider => provider.presetId === integration.presetId)
     const existing = existingIndex === -1 ? undefined : index.providers[existingIndex]
     const provider: SavedProvider = {
@@ -374,9 +399,10 @@ export class ProviderService {
     } else {
       index.providers[existingIndex] = provider
     }
-    if (integration.activateOnAuthorization) index.activeId = provider.id
+    if (options?.activate !== false && integration.activateOnAuthorization) index.activeId = provider.id
+    options?.signal?.throwIfAborted()
     await this.writeIndex(index)
-    if (index.activeId === provider.id && !integration.saveOnlyOnAuthorization) await this.syncToSettings(provider)
+    if (options?.activate !== false && index.activeId === provider.id && !integration.saveOnlyOnAuthorization) await this.syncToSettings(provider)
     return provider
   }
 

@@ -3,7 +3,9 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import type { SavedProvider } from '../../types/provider.js'
-import { fetchSeasunModels, seasunReconnectRequired, validToken, type SeasunManagerCredentials } from './protocol.js'
+import { fetchSeasunManagement, fetchSeasunModels, seasunReconnectRequired, validToken, type SeasunManagerCredentials } from './protocol.js'
+import * as lockfile from '../../../utils/lockfile.js'
+import { ApiError } from '../../middleware/errorHandler.js'
 
 type CredentialsFile = SeasunManagerCredentials & { version: 1; providerId: string; apiKeyHash: string }
 const operations = new Map<string, Promise<unknown>>()
@@ -13,7 +15,23 @@ function credentialsPath() {
 }
 function withCredentials<T>(operation: (file: string) => Promise<T>): Promise<T> {
   const file = credentialsPath()
-  const pending = (operations.get(file) ?? Promise.resolve()).catch(() => {}).then(() => operation(file))
+  const pending = (operations.get(file) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    let compromised = false
+    let release: (() => Promise<void>) | undefined
+    try {
+      release = await lockfile.lock(file, { realpath: false, stale: 60_000, update: 5_000,
+        retries: { retries: 100, minTimeout: 100, maxTimeout: 100, factor: 1 },
+        onCompromised: () => { compromised = true },
+      })
+      const result = await operation(file)
+      if (compromised) throw new Error('lock_compromised')
+      return result
+    } catch (error) {
+      if (error instanceof ApiError) throw error
+      throw new ApiError(503, 'Seasun credentials are busy or unavailable; try again', 'PROVIDER_CREDENTIALS_UNAVAILABLE')
+    } finally { await release?.().catch(() => {}) }
+  })
   operations.set(file, pending)
   void pending.finally(() => { if (operations.get(file) === pending) operations.delete(file) }).catch(() => {})
   return pending
@@ -36,15 +54,30 @@ export function clearSeasunCredentials() {
   return withCredentials(file => fs.rm(file, { force: true }))
 }
 
-export function refreshSeasunModelCatalog(provider: SavedProvider) {
+function withSavedCredentials<T>(provider: SavedProvider, operation: (saved: CredentialsFile, persist: (credentials: SeasunManagerCredentials) => Promise<void>) => Promise<T>, signal?: AbortSignal) {
   return withCredentials(async file => {
+    signal?.throwIfAborted()
     const saved: CredentialsFile | undefined = await fs.readFile(file, 'utf8').then(text => JSON.parse(text)).catch(() => undefined)
     // Old installations have no manager credentials. Keep their provider intact;
     // one explicit reconnect upgrades them without guessing an identity/token.
     if (!saved || saved.version !== 1 || saved.providerId !== provider.id || saved.apiKeyHash !== fingerprint(provider.apiKey) ||
       !validToken(saved.accessToken) || (saved.refreshToken !== undefined && !validToken(saved.refreshToken))) throw seasunReconnectRequired()
-    const result = await fetchSeasunModels(saved, credentials => writeCredentials(file, { ...saved, ...credentials }))
+    return operation(saved, credentials => {
+      signal?.throwIfAborted()
+      return writeCredentials(file, { ...saved, ...credentials })
+    })
+  })
+}
+
+export function refreshSeasunModelCatalog(provider: SavedProvider, options?: { signal?: AbortSignal }) {
+  return withSavedCredentials(provider, async (saved, persist) => {
+    const result = await fetchSeasunModels(saved, persist, fetch, options?.signal)
     if (result.apiKey !== provider.apiKey) throw seasunReconnectRequired()
     return result.modelCatalog
-  })
+  }, options?.signal)
+}
+
+/** Internal raw payload: callers must project only documented quota fields. */
+export function fetchSeasunQuota(provider: SavedProvider, options?: { signal?: AbortSignal }): Promise<unknown> {
+  return withSavedCredentials(provider, (saved, persist) => fetchSeasunManagement(saved, persist, 'quota-usage', fetch, options?.signal), options?.signal)
 }

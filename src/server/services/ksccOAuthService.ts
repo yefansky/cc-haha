@@ -3,6 +3,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { ProviderService } from './providerService.js'
 import type { ProviderModelCatalogEntry } from '../types/provider.js'
+import { ApiError } from '../middleware/errorHandler.js'
 
 const DEFAULT_KSCC_BASE_URL = 'http://120.92.138.34'
 const LOGIN_TTL_MS = 5 * 60 * 1000
@@ -16,7 +17,7 @@ type LoginSession = {
 
 type KsccModelResponse = {
   code?: number
-  data?: Array<{ model?: string; modelType?: string }>
+  data?: Array<{ model?: string; modelType?: string; quotaLimited?: boolean }>
   msg?: string
 }
 
@@ -36,6 +37,9 @@ export type KsccLoginStatus = {
 
 export type KsccOAuthServiceOptions = {
   requestTimeoutMs?: number
+  activateOnAuthorization?: boolean
+  persistPendingLogin?: boolean
+  signal?: AbortSignal
 }
 
 export class KsccRequestTimeoutError extends Error {
@@ -50,7 +54,7 @@ export class KsccOAuthService {
   private providerService = new ProviderService()
   private readonly requestTimeoutMs: number
 
-  constructor(options: KsccOAuthServiceOptions = {}) {
+  constructor(private readonly options: KsccOAuthServiceOptions = {}) {
     this.requestTimeoutMs = Math.max(1, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
   }
 
@@ -69,8 +73,10 @@ export class KsccOAuthService {
     try {
       const response = await fetch(url, {
         ...init,
-        signal: controller.signal,
+        signal: this.options.signal ? AbortSignal.any([controller.signal, this.options.signal]) : controller.signal,
       })
+      if (response.status === 401) throw new ApiError(401, 'KSCC authorization expired', 'PROVIDER_RECONNECT_REQUIRED')
+      if (response.status === 403) throw new ApiError(403, 'KSCC permission denied', 'PROVIDER_PERMISSION_DENIED')
       if (!response.ok) throw new Error(`${failedMessage} (${response.status})`)
       return await response.json() as T
     } catch (error) {
@@ -99,6 +105,7 @@ export class KsccOAuthService {
   }
 
   private async savePendingLogin(session: LoginSession | null): Promise<void> {
+    if (this.options.persistPendingLogin === false) return
     const filePath = this.pendingLoginPath()
     if (!session) {
       await fs.rm(filePath, { force: true })
@@ -110,6 +117,7 @@ export class KsccOAuthService {
 
   private async pendingLogin(): Promise<LoginSession | null> {
     if (this.session) return this.session
+    if (this.options.persistPendingLogin === false) return null
     try {
       const parsed = JSON.parse(await fs.readFile(this.pendingLoginPath(), 'utf8')) as Partial<LoginSession>
       if (
@@ -148,7 +156,7 @@ export class KsccOAuthService {
     }
   }
 
-  async fetchModels(token: string, baseUrl: string): Promise<ProviderModelCatalogEntry[]> {
+  async fetchModelEntries(token: string, baseUrl: string): Promise<NonNullable<KsccModelResponse['data']>> {
     const payload = await this.requestJson<KsccModelResponse>(
       `${baseUrl}/cli/models`,
       'model lookup',
@@ -161,12 +169,18 @@ export class KsccOAuthService {
       },
       },
     )
-    if (payload.code === 401) throw new Error('KSCC authorization expired')
+    if (payload.code === 401) throw new ApiError(401, 'KSCC authorization expired', 'PROVIDER_RECONNECT_REQUIRED')
+    if (payload.code === 403) throw new ApiError(403, 'KSCC permission denied', 'PROVIDER_PERMISSION_DENIED')
     if ((payload.code !== undefined && payload.code !== 200) || !Array.isArray(payload.data)) {
       throw new Error('KSCC model lookup returned an invalid response')
     }
+    return payload.data
+  }
+
+  async fetchModels(token: string, baseUrl: string): Promise<ProviderModelCatalogEntry[]> {
+    const entries = await this.fetchModelEntries(token, baseUrl)
     const seen = new Set<string>()
-    const models = (payload.data ?? []).flatMap((item) => {
+    const models = entries.flatMap((item) => {
       if (!item || typeof item.model !== 'string' || !item.model.trim()) {
         throw new Error('KSCC model lookup returned an invalid model')
       }
@@ -180,13 +194,14 @@ export class KsccOAuthService {
         capabilities: [...KSCC_MODEL_CAPABILITIES],
       }]
     })
-    if (models.length === 0) throw new Error(payload.msg || 'KSCC returned no available models')
+    if (models.length === 0) throw new Error('KSCC returned no available models')
     return models
   }
 
   private async activate(token: string, baseUrl: string): Promise<void> {
     const models = await this.fetchModels(token, baseUrl)
-    await this.providerService.upsertIntegratedProvider('kscc', { apiKey: token, baseUrl, modelCatalog: models })
+    this.options.signal?.throwIfAborted()
+    await this.providerService.upsertIntegratedProvider('kscc', { apiKey: token, baseUrl, modelCatalog: models }, { activate: this.options.activateOnAuthorization, signal: this.options.signal })
     this.session = null
     await this.savePendingLogin(null)
   }
@@ -225,9 +240,9 @@ export class KsccOAuthService {
   }
 
   async status(): Promise<KsccLoginStatus> {
-    const { providers, activeId } = await this.providerService.listProviders()
+    const { providers, activeId } = await this.providerService.listProviders({ readOnly: this.options.activateOnAuthorization === false })
     const provider = providers.find((item) => item.presetId === 'kscc')
-    if (provider) return { loggedIn: true, pending: false, active: activeId === provider.id }
+    if (provider && !this.session) return { loggedIn: true, pending: false, active: activeId === provider.id }
 
     const session = await this.pendingLogin()
     if (!session || Date.now() - session.createdAt > LOGIN_TTL_MS) {
@@ -244,7 +259,7 @@ export class KsccOAuthService {
     })
     if (payload.data?.status === 'success' && payload.data.sk) {
       await this.activate(payload.data.sk, session.baseUrl)
-      return { loggedIn: true, pending: false, active: true }
+      return { loggedIn: true, pending: false, active: this.options.activateOnAuthorization !== false }
     }
     if (payload.data?.statusDesc) {
       this.session = null

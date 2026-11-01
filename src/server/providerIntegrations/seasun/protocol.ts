@@ -99,16 +99,41 @@ export async function fetchSeasunModels(
   credentials: SeasunManagerCredentials,
   persist: (credentials: SeasunManagerCredentials) => Promise<void>,
   request: typeof fetch = fetch,
+  signal?: AbortSignal,
+) {
+  const payload = await fetchSeasunManagement(credentials, persist, 'api-key', request, signal)
+  if (!payload?.data || !validToken(payload.data.apiKey)) throw modelRefreshFailed()
+  const raw = payload.data.models
+  if (!Array.isArray(raw) || raw.some(value => !value || typeof value.public_model !== 'string' || !value.public_model.trim() ||
+    typeof value.enabled !== 'boolean' || typeof value.available !== 'boolean' || typeof value.status !== 'string' ||
+    !Array.isArray(value.clients) || !value.clients.every((v: unknown) => typeof v === 'string') ||
+    !Array.isArray(value.capabilities) || !value.capabilities.every((v: unknown) => typeof v === 'string'))) throw modelRefreshFailed()
+  const modelCatalog = parseSeasunModels(raw)
+  if (!modelCatalog.length) throw modelRefreshFailed()
+  return { apiKey: payload.data.apiKey as string, modelCatalog }
+}
+
+/** Only fixed manager resources may receive the management identity. */
+export async function fetchSeasunManagement(
+  credentials: SeasunManagerCredentials,
+  persist: (credentials: SeasunManagerCredentials) => Promise<void>,
+  resource: 'api-key' | 'quota-usage',
+  request: typeof fetch = fetch,
+  callerSignal?: AbortSignal,
 ) {
   // One total deadline covers bodies, renewal and the single retry.
-  const signal = AbortSignal.timeout(20000)
+  const timeout = AbortSignal.timeout(20000)
+  const signal = callerSignal ? AbortSignal.any([timeout, callerSignal]) : timeout
   try {
     let current = credentials
     for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await request(`${SEASUN_MANAGER}/api/v1/auth/me/api-key`, {
+      const response = await request(`${SEASUN_MANAGER}/api/v1/auth/me/${resource}`, {
         headers: { Authorization: `Bearer ${current.accessToken}` }, redirect: 'error', signal,
       })
-      const payload = await boundedJson(response).catch(error => { if (response.status === 401) return {}; throw error })
+      const payload = await boundedJson(response).catch(error => {
+        if ([401, 403, 404, 405].includes(response.status)) return {}
+        throw error
+      })
       signal.throwIfAborted()
       if (response.status === 401) {
         if (attempt || payload?.reason === 'IT_SSO_RELOGIN_REQUIRED' || !current.refreshToken) throw seasunReconnectRequired()
@@ -126,20 +151,14 @@ export async function fetchSeasunModels(
         if (renewed?.code !== 0 || !validToken(renewed?.data?.access_token) || !validToken(renewed?.data?.refresh_token)) throw seasunReconnectRequired()
         current = { accessToken: renewed.data.access_token, refreshToken: renewed.data.refresh_token }
         // Persist rotation before retrying: the old refresh token may already be invalid.
+        signal.throwIfAborted()
         await persist(current)
         continue
       }
-      if (!response.ok || payload?.code !== 0 || !payload?.data || !validToken(payload.data.apiKey)) throw modelRefreshFailed()
-      const raw = payload.data.models
-      // Reject malformed entries before filtering disabled/non-coding models, so
-      // a partial contract failure cannot silently remove existing choices.
-      if (!Array.isArray(raw) || raw.some(value => !value || typeof value.public_model !== 'string' || !value.public_model.trim() ||
-        typeof value.enabled !== 'boolean' || typeof value.available !== 'boolean' || typeof value.status !== 'string' ||
-        !Array.isArray(value.clients) || !value.clients.every((v: unknown) => typeof v === 'string') ||
-        !Array.isArray(value.capabilities) || !value.capabilities.every((v: unknown) => typeof v === 'string'))) throw modelRefreshFailed()
-      const modelCatalog = parseSeasunModels(raw)
-      if (!modelCatalog.length) throw modelRefreshFailed()
-      return { apiKey: payload.data.apiKey as string, modelCatalog }
+      if (response.status === 403) throw new ApiError(403, 'Seasun management permission denied', 'PROVIDER_PERMISSION_DENIED')
+      if (resource === 'quota-usage' && (response.status === 404 || response.status === 405)) throw new ApiError(501, 'Seasun does not provide quota information', 'PROVIDER_QUOTA_UNSUPPORTED')
+      if (!response.ok || payload?.code !== 0 || !payload?.data) throw modelRefreshFailed()
+      return payload
     }
     throw seasunReconnectRequired()
   } catch (error) {
