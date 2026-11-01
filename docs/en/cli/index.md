@@ -9,7 +9,7 @@ order: 0
 
 The CLI is the core of Claude Code Haha — every desktop session runs one underneath. If you only want the graphical app, installing that is enough; see [Download and install](../start/install.md). The steps below are for people who want a terminal workflow, `--print` automation, or a source checkout to read and contribute to.
 
-The CLI runs from source only. There is no separate installer for it.
+This page explains the source-based interactive `claude-haha` entry. The provider-oriented `cc-haha` also has an independently compiled entry and Windows wrapper installer; see [Headless provider commands](./providers.md). This page does not distribute a standalone download. If the command is installed, start with `cc-haha help`; coding agents can read `cc-haha capabilities --json` without first reading source code.
 
 ## Get the source
 

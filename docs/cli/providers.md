@@ -1,13 +1,26 @@
 ---
 title: 无界面调用服务商
 nav_title: 服务商命令行
-description: 在 Windows 命令行复用 KSCC 和 Token Hub 授权，执行编程任务并查询模型与额度。
+description: 让人和代码代理离线发现命令，按已保存服务商查询模型、价格证据和额度，执行编程任务。
 order: 4
 ---
 
 # 无界面调用服务商
 
-`cc-haha` 命令行复用现有编程代理、工具和服务商授权。可以直接读写文件、执行命令，也能列模型、查询额度；不需要安装 KSCC 或 Token Hub 的客户端。命令行本身不会打开窗口或对话框。
+`cc-haha` 命令行复用现有编程代理、工具和服务商配置。可以直接读写文件、执行命令，也能发现本机服务商、模型、定价证据和用量。KSCC 与 Token Hub 沿用现有本人授权，无需安装它们的客户端。命令行本身不会打开窗口或对话框。
+
+## 先让人和代码代理发现命令
+
+```powershell
+cc-haha help
+cc-haha help models
+cc-haha models --help
+cc-haha capabilities --json
+```
+
+`help` 提供中文教学和可复制示例，`help <命令>` 与 `<命令> --help` 等价。`capabilities` 提供机器可读的命令参数、互斥条件、模式、支持状态、成功与失败输出结构和错误恢复方法。它们不读取授权、不联网、不要求桌面端或源码目录；独立 EXE 中已编入说明。完整离线说明用 `cc-haha help --manual`，更新后的安装器还会在命令目录生成同源 `HELP.md`、`README.md` 和 `capabilities.json`。仅运行旧包装器不会自动得到这些文件，需要用新版 EXE 和安装脚本重新安装。
+
+推荐其他 codeagent 的顺序是：读 `capabilities` → 读 `providers` 并选择精确 ID → 读该 ID 的 `models`、`pricing`、`usage` → 明确模型和权限后执行任务。下文的 `saved-provider-id`、`model-id` 都是占位值，必须替换为查询得到的实际 ID。
 
 ## 安装与配置目录
 
@@ -26,13 +39,15 @@ $cc = 'G:\tools\cc-haha\bin\cc-haha.cmd'
 
 无需运行桌面端、前端开发服务器或网关。也可把仓库 `bin` 目录加入当前终端的 PATH：`$env:PATH = 'G:\tools\cc-haha\bin;' + $env:PATH`，然后直接输入 `cc-haha`。这不会修改系统 PATH。
 
-需要长期使用已编译程序时，可用仓库附带的安装脚本，把已验证的 `cc-haha.exe` 复制到固定目录，并生成命令包装入口：
+需要长期使用已编译程序时，先自行把已验证的 `cc-haha.exe` 放到稳定路径，再用安装脚本生成包装入口和离线说明。**脚本引用 `-Executable` 指定的文件，不复制或搬迁 EXE；安装后不能删除或移动该文件。** 例如：
 
 ```powershell
-& .\scripts\install-headless-cli.ps1 -Executable 'G:\build\cc-haha.exe' -InstallDirectory 'G:\tools\cc-haha-cli' -ConfigDirectory "$env:USERPROFILE\.claude" -AddToUserPath
+New-Item -ItemType Directory -Force 'G:\tools\cc-haha-cli\runtime' | Out-Null
+Copy-Item -LiteralPath 'G:\build\cc-haha.exe' -Destination 'G:\tools\cc-haha-cli\runtime\cc-haha.exe'
+& .\scripts\install-headless-cli.ps1 -Executable 'G:\tools\cc-haha-cli\runtime\cc-haha.exe' -InstallDirectory 'G:\tools\cc-haha-cli\bin' -ConfigDirectory "$env:USERPROFILE\.claude" -AddToUserPath
 ```
 
-把示例配置目录换成自己桌面端实际使用的目录。脚本的 `-AddToUserPath` 会将固定安装目录的 `bin` 加入用户 PATH；重开终端后使用。已运行的 GUI 程序继承旧 PATH，可以先使用固定绝对入口 `G:\tools\cc-haha-cli\bin\cc-haha.cmd`，无需为了更新 PATH 中断会话。安装生成的包装入口以显式 `-ConfigDirectory` 为回退值，调用方已经设置的 `CLAUDE_CONFIG_DIR` 优先。源码包装和直接运行裸 EXE 仍沿用下面的标准默认目录。
+把示例配置目录换成自己桌面端实际使用的目录。`-InstallDirectory` 本身就是包装入口和说明文件所在目录；`-AddToUserPath` 将它直接加入用户 PATH，不会再添加一层 `bin`。不要把同名 `cc-haha.exe` 放到命令目录，以免优先执行 EXE 而绕过配置包装器。重开终端后使用短命令；已运行的 GUI 继承旧 PATH，可先使用固定绝对入口 `G:\tools\cc-haha-cli\bin\cc-haha.cmd`，无需中断会话。显式 `-ConfigDirectory` 是包装器回退值，调用方已有的 `CLAUDE_CONFIG_DIR` 优先。源码包装和裸 EXE 仍沿用标准默认目录。
 
 **配置目录必须与自己已登录的桌面端一致。** 命令沿用当前进程的 `CLAUDE_CONFIG_DIR`；未设置时使用本机用户目录下 `.claude`。如果桌面启动脚本用了另外的数据目录，先将 `CLAUDE_CONFIG_DIR` 设为那个已存在目录。不要新建一个空目录后期待自动找到桌面授权，也不要复制其他用户或其他机器的令牌。配置目录应位于本人用户目录并受本机权限保护；对既有自定义桌面目录，沿用其位置和权限。
 
@@ -43,7 +58,7 @@ $cc = 'G:\tools\cc-haha\bin\cc-haha.cmd'
 & $cc login --provider tokenhub
 ```
 
-已有授权时直接复用。KSCC 缺少授权时在终端显示本人授权地址，手动在浏览器完成，命令不会自动启动浏览器。Token Hub 当前支持复用及刷新已保存授权；首次 KOA 登录、旧版本没有保存管理端刷新凭据或服务端要求重新登录时，会明确提示先在 cc-haha 桌面端完成本人授权，再运行命令。它不会在后台弹登录窗口，也不会绕过本人登录。
+已有授权时直接复用。KSCC 别名缺少授权时在终端显示本人授权地址，手动在浏览器完成，命令不会自动启动浏览器。Token Hub 当前支持复用及刷新已保存授权；首次 KOA 登录、旧版本没有保存管理端刷新凭据或服务端要求重新登录时，先在桌面端由本人完成授权。其他自定义服务商返回 `LOGIN_UNSUPPORTED`，请在桌面端配置；不会假装登录成功。明确 ID 的失效企业身份需在桌面端精确重连，避免重新授权覆盖同类其他配置。
 
 在线 Token Hub 模型与额度查询遇到授权过期时，会由同一套凭据机制尝试一次刷新并保存轮换结果；必须重新登录时终止并提示。`usage --no-network` 只读本机计量，不触发服务端查询或刷新。不要把令牌写进命令参数、提示词、脚本或日志。
 
@@ -61,19 +76,34 @@ Token Hub 的管理端授权与模型调用密钥独立。目录或额度查询�
 
 `--output-format text` 返回结果文本，`json` 返回一个 JSON 对象，包括结果、实际模型、普通输入与输出 token、缓存 token、耗时、运行标识和退出状态。`tool_usage` 仅列工具名称与尝试次数，不含参数；次数不能独立证明执行成功，权限拒绝另见 `permission_denials`。机器读取 stdout；诊断写 stderr。超时、缺授权、模型受限、工具权限失败和执行失败均应检查退出码及结果状态，不能只搜索输出中是否有 “OK”。上游没有返回 usage 时，不把未知消费当作实际零消费。
 
+**JSON v2 迁移：** 检查 `schema_version=2`。旧字段保留，但没有服务商真实计价证据时 `total_cost_usd` 和 `modelUsage.<模型>.costUSD` 为 `null`，不再把客户端内部估价当账单。原估价只放在 `cost.client_estimate`，标记 `billed=false`；客户端须先看 `cost.status`，不能假定成本字段一定是数字。预检失败的 `provider_id`、`model` 可以是 `null`，失败结构见 `capabilities.output_schemas.error`，不能用成功结构解析所有结果。
+
 ## 模型和额度
 
 ```powershell
+& $cc providers --json
 & $cc models --provider kscc
 & $cc models --provider tokenhub
+& $cc models --provider saved-provider-id --json --no-network
+& $cc pricing --all --json
 & $cc usage --provider tokenhub --json
 ```
 
-模型目录中的列出、可用声明、额度超限和真实调用许可是不同证据。KSCC 的 `quota_limited=false` 只说明没有被标记超限，不保证当前账号有模型调用权限；实际遇到 403“模型限制”时换获准模型或联系管理员。普通模型列表不会逐模型发计费探测请求。
+`providers` 列出全部本机已保存配置，输出稳定 `id/provider_id`、名称、预设、是否当前默认及各查询的支持状态；不枚举互联网所有厂商，也不输出密钥或携带身份的接口地址。`--provider` 精确 ID 优先；`kscc`、`tokenhub` 是兼容别名，同类有多个配置时返回 `AMBIGUOUS_PROVIDER`，按 `providers` 中的 ID 选择。一个配置的 ID 即使叫 `all` 也按 ID 解释。
 
-`usage` 查询近 1 小时、24 小时、7 天此机新命令行的 token 消耗，按服务商和模型分列、同一请求去重，缓存独立显示。它不回溯旧桌面日志，也不包含其他客户端或其他机器；首次没有记录表示“尚无记录”，不能据此断言账号历史消费为零。
+独立编程调用支持普通 `anthropic_compatible` 运行时，沿原机制适配 Anthropic、OpenAI Chat 和 Responses 协议。已有 `openai_oauth`、`grok_oauth` 专用官方身份运行时本轮不扩展：仍可列出配置/目录/定价状态/本机用量，但 `providers` 会标出运行不支持，执行返回 `RUNTIME_UNSUPPORTED`，不会暗中依赖桌面端或默认端口。
 
-KSCC 未提供剩余数值时明确写“服务端不提供”；超限状态在模型目录查看。Token Hub 查询账户级三窗口额度，查询失败区分未授权、不支持和暂不可用，不用旧缓存假装实时余额。两台机器同账号余额不能相加。
+`models`、`pricing`、`usage` 必须且只能选择 `--provider <ID或别名>` 或 `--all` 之一。聚合逐项保留成功和安全错误，`status=partial/error` 时退出码非零；不能因一项失败丢掉其他结果。查询命令不支持的筛选参数会明确拒绝，不会静默忽略。
+
+模型目录现在包含协议与来源、能力及来源、上下文窗口及来源、是否实时/配置快照，以及权限证据。`--no-network` 只读本机保存目录或模型映射，`freshness=configured` 不是实时目录。未知能力以来源 `unknown` 标记，未知上下文为 `null`。列出、可用声明、额度超限和真实调用许可是不同证据；`call_access` 和 `permission.status` 未探测时为 `unknown`，不会逐模型发计费探测请求。KSCC 的 `quota_limited=false` 不保证有调用权限，403“模型限制”仍需换获准模型或联系管理员。
+
+`pricing` 当前没有取得已核实的账户单价，明确输出 `status=unknown`，币种、输入/输出/缓存单价为 `null`，附 `source` 和检查时间。规范单位为每百万 token；这不表示已经知道对应价格。模型逐项也保留未知状态。不会猜价格接口、套用 Claude 单价、把未知解释成免费，或把余额查询当作定价查询。
+
+`usage` 查询近 1 小时、24 小时、7 天此机新命令行的 token 消耗，按稳定 `provider_id` 与模型分列、同一请求去重，缓存独立显示。同预设多个账户不会混算。旧 v1 没有 Provider ID 的记录只列入 `legacy_usage`，不猜归属，也不能与新记录相加。它不回溯旧桌面日志，不包含其他客户端或其他机器；没有记录不是账号历史消费为零。
+
+`provider_preset` 标明已选配置的实际预设，未选中已保存配置时为 `null`。汇总脚本应据此校验服务商角色，不能因为自定义配置 ID 恰好叫 `kscc` 就把它算作企业 KSCC 或带入旧 KSCC 记录；角色未知或不匹配时应明确保留无数值状态。
+
+KSCC 和其他没有余额接口的自定义服务商明确写“服务端不提供”；超限状态在模型目录查看。Token Hub 查询账户级三窗口额度，查询失败区分未授权、不支持和暂不可用，不用旧缓存假装实时余额。模型调用密钥、模型单价和账户余额是三种独立事实。两台机器同账号余额不能相加。
 
 预计耗尽时间使用同一账号、币种、额度窗口内至少相隔一分钟的两次服务端快照：剩余金额除以观测消费速度。没有余额、未知或无限额度、样本不足、没有正向消费时不给日期；预计晚于周期重置时只说明本周期内不会耗尽。变化速度和其他客户端消费会影响预测，不保证未来结果。可在不联网时查看本机计量：
 
