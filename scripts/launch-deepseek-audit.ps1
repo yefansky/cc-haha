@@ -67,6 +67,17 @@ try {
   } | Select-Object -First 1
   if ($runningDesktop) {
     Write-Host "Claude Code Haha is already running (PID: $($runningDesktop.ProcessId))." -ForegroundColor Yellow
+    # Reuse Electron's existing single-instance handler to restore and focus its
+    # main window. Returning here alone leaves a minimized or hidden app unseen.
+    $electronExe = Join-Path $desktopRoot 'node_modules\electron\dist\electron.exe'
+    $mainEntry = Join-Path $desktopRoot 'electron-dist\main.cjs'
+    if ($env:CC_HAHA_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK -eq '1') {
+      throw 'Cannot activate the running desktop while its single-instance lock is disabled.'
+    }
+    if (-not (Test-Path -LiteralPath $electronExe) -or -not (Test-Path -LiteralPath $mainEntry)) {
+      throw 'The running source desktop cannot be activated because its Electron entry is missing.'
+    }
+    Start-Process -FilePath $electronExe -ArgumentList './electron-dist/main.cjs' -WorkingDirectory $desktopRoot -WindowStyle Hidden
     return
   }
 
