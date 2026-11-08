@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { buildExternalSubagentArgs, classifySubagentFailure, executeRoutedSubagentProcess, resolveExternalSubagentCommand, runRoutedSubagent } from './subagentRouting.js'
+import { buildExternalSubagentArgs, buildExternalSubagentEnv, classifySubagentFailure, executeRoutedSubagentProcess, resolveExternalSubagentCommand, runRoutedSubagent } from './subagentRouting.js'
 
 let directory: string
 const saved = { ...process.env }
@@ -48,6 +48,13 @@ afterAll(async () => {
   await rm(directory, { recursive: true, force: true })
 })
 const options = () => ({ model: 'target', effort: 'high' as const, parentModel: 'parent', cwd: directory, prompt: 'hello', signal: new AbortController().signal, allowedTools: ['Read'] })
+
+test('KSCC CLI keeps its own identity instead of inheriting the host provider snapshot', () => {
+  const inherited = { PATH: 'keep', ANTHROPIC_API_KEY: 'host-key', ANTHROPIC_BASE_URL: 'http://host-proxy', CLAUDE_CONFIG_DIR: 'host-config', CC_HAHA_SUBAGENT_PROVIDER_ID: 'host-id', MAX_THINKING_TOKENS: '2048' }
+  expect(buildExternalSubagentEnv('kscc', inherited)).toEqual({ PATH: 'keep' })
+  expect(inherited.ANTHROPIC_API_KEY).toBe('host-key')
+  expect(buildExternalSubagentEnv('codex', inherited).MAX_THINKING_TOKENS).toBeUndefined()
+})
 
 test('inherits actual process route, constrains tools and applies explicit model/effort without shared mutation', async () => {
   const before = await readFile(join(directory, 'cc-haha/providers.json'), 'utf8')
@@ -290,4 +297,8 @@ test('Windows app installations are discoverable without PATH and npm wrappers n
   expect(resolveExternalSubagentCommand('codex', env)).toEqual([codex])
   expect(resolveExternalSubagentCommand('cursor-agent', env)).toEqual(['powershell.exe', '-NoProfile', '-NonInteractive', '-File', cursor])
   expect(resolveExternalSubagentCommand('kscc', env)).toEqual([kscc])
+  // npm also installs a POSIX shell script without an extension. Windows
+  // CreateProcess cannot execute that file; it must reach the native binary.
+  await writeFile(join(app, 'npm', 'kscc'), '#!/bin/sh\n')
+  expect(resolveExternalSubagentCommand('kscc', { ...env, PATH: join(app, 'npm') })).toEqual([kscc])
 })

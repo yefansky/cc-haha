@@ -11,6 +11,7 @@ import { createHeadlessProviderRuntime } from '../../server/services/headlessPro
 import { ProviderService } from '../../server/services/providerService.js'
 import type { SavedProvider } from '../../server/types/provider.js'
 import { getProviderModelCapability } from '../../utils/model/providerModelCapabilities.js'
+import { getManagedEnvKeys } from '../../server/services/providerRuntimeEnv.js'
 
 export type RoutedSubagentOptions = {
   model: string
@@ -149,7 +150,7 @@ export function resolveExternalSubagentCommand(name: string, env: NodeJS.Process
       } catch { /* App installation is optional; continue with normal discovery. */ }
     }
   }
-  const names = process.platform === 'win32' ? [`${name}.exe`, name] : [name]
+  const names = process.platform === 'win32' ? [`${name}.exe`] : [name]
   for (const directory of directories) {
     for (const candidate of names) {
       const path = join(directory, candidate)
@@ -183,6 +184,18 @@ function supports(provider: SavedProvider, model: string): boolean {
     (!!provider.modelCatalog?.some(entry => entry.id === model) || Object.values(provider.models).includes(model))
 }
 
+export function buildExternalSubagentEnv(cli: string, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...inherited }
+  delete env.MAX_THINKING_TOKENS
+  if (cli === 'kscc') {
+    // KSCC shares Anthropic variable names but owns a separate login/config.
+    // A cc-haha scoped proxy or config directory is not the KSCC CLI's identity.
+    for (const key of [...getManagedEnvKeys(), 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_EFFORT_LEVEL', 'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST']) delete env[key]
+    for (const key of Object.keys(env)) if (key.startsWith('CC_HAHA_')) delete env[key]
+  }
+  return env
+}
+
 export async function runRoutedSubagent(options: RoutedSubagentOptions): Promise<string> {
   const cli = options.cli?.trim().toLowerCase() ?? 'native'
   if (!options.model.trim()) throw routeError('INVALID_MODEL', '必须提供有效模型')
@@ -195,8 +208,7 @@ export async function runRoutedSubagent(options: RoutedSubagentOptions): Promise
       if (cli !== 'kscc') throw routeError('LIMIT_UNSUPPORTED', '此命令行没有已验证的轮数限制参数')
       args.push('--max-turns', String(options.maxTurns))
     }
-    const externalEnv = { ...process.env }
-    delete externalEnv.MAX_THINKING_TOKENS
+    const externalEnv = buildExternalSubagentEnv(cli, process.env)
     const result = await executeRoutedSubagentProcess([...resolveExternalSubagentCommand(cli === 'cursor' ? 'cursor-agent' : cli), ...args, ...(cli === 'cursor' ? [options.prompt] : [])], {
       ...options, prompt: cli === 'cursor' ? '' : options.prompt, env: externalEnv, protocol: cli === 'codex' ? 'codex' : cli === 'cursor' ? 'cursor' : 'native',
     })
