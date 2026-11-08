@@ -47,6 +47,12 @@ describe('getAgentModel', () => {
     ).toBe('provider-owned-model')
   })
 
+  test('explicit per-call model wins over a process-wide subagent default', () => {
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'other-provider-model'
+    expect(getAgentModel('haiku', 'parent-model', 'grok-4.7', 'default')).toBe('grok-4.7')
+    expect(getAgentModel('inherit', 'parent-model', 'parent-model', 'default')).toBe('parent-model')
+  })
+
   test('uses normal agent resolution for an empty environment override', () => {
     process.env.CLAUDE_CODE_SUBAGENT_MODEL = ''
 

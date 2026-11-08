@@ -3,6 +3,17 @@ import type { TranslationKey } from './en'
 import { contextAuditZh } from '../contextAuditTranslations'
 
 export const zh: Record<TranslationKey, string> = {
+  'tool.agentRoute.actual': '实际路由',
+  'tool.agentRoute.requested': '请求路由',
+  'tool.agentRoute.method': '调用方式',
+  'tool.agentRoute.external': '外部命令行',
+  'tool.agentRoute.native': '原生子代理',
+  'tool.agentRoute.cli': '命令行',
+  'tool.agentRoute.model': '模型',
+  'tool.agentRoute.effort': '思考深度',
+  'tool.agentRoute.provider': '服务商',
+  'tool.agentRoute.inherit': '继承主代理',
+  'tool.agentRoute.preferParent': '优先主代理，可回退',
   ...contextBreakdownZh,
   "chat.subagentProgress.waiting": "正在等待子代理",
   "chat.subagentProgress.running": "子代理",

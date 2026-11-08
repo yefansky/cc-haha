@@ -25,6 +25,7 @@ import type { CacheSafeParams } from '../../utils/forkedAgent.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { createUserMessage, extractTextContent, isSyntheticMessage, normalizeMessages } from '../../utils/messages.js';
 import { getAgentModel } from '../../utils/model/agent.js';
+import { EFFORT_LEVELS, resolveAppliedEffort, type EffortValue } from '../../utils/effort.js';
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
 import { filterDeniedAgents, getDenyRuleForAgent } from '../../utils/permissions/permissions.js';
@@ -84,7 +85,10 @@ const baseInputSchema = lazySchema(() => z.object({
   description: z.string().describe('A short (3-5 word) description of the task'),
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
-  model: z.enum(['fable', 'sonnet', 'opus', 'haiku']).optional().describe("Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent."),
+  model: z.string().trim().min(1).optional().describe('Exact model ID or supported alias for this agent. If omitted, inherits the parent model. Discover available IDs rather than guessing.'),
+  effort: z.union([z.enum([...EFFORT_LEVELS, 'middle']), z.number().int()]).optional().describe('Reasoning effort for this agent. middle means medium. If omitted, inherits the parent effort.'),
+  provider: z.string().trim().min(1).optional().describe('Saved provider ID or unique alias. Explicit selection locks this provider: report failure rather than switching. If omitted, prefer the parent provider and allow fallback.'),
+  cli: z.enum(['cc-haha', 'kscc', 'cursor', 'grok', 'codex']).optional().describe('Optional CLI backend. Omit to use the native agent mechanism. External CLI availability and model/effort support are checked; failures are returned for replanning.'),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
 }));
 
@@ -242,6 +246,9 @@ export const AgentTool = buildTool({
     subagent_type,
     description,
     model: modelParam,
+    effort: effortParam,
+    provider,
+    cli,
     run_in_background,
     name,
     team_name,
@@ -250,10 +257,11 @@ export const AgentTool = buildTool({
     cwd
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
     const startTime = Date.now();
-    const model = isCoordinatorMode() ? undefined : modelParam;
+    const model = modelParam ?? toolUseContext.options.mainLoopModel;
 
     // Get app state for permission mode and agent filtering
     const appState = toolUseContext.getAppState();
+    const effort = resolveAgentToolEffort(toolUseContext.options.mainLoopModel, appState.effortValue, toolUseContext.options, effortParam);
     const permissionMode = appState.toolPermissionContext.mode;
     // In-process teammates get a no-op setAppState; setAppStateForTasks
     // reaches the root store so task registration/progress/kill stay visible.
@@ -283,6 +291,9 @@ export const AgentTool = buildTool({
     // Check if this is a multi-agent spawn request
     // Spawn is triggered when team_name is set (from param or context) and name is provided
     if (teamName && name) {
+      if (effortParam !== undefined || provider !== undefined || cli !== undefined) {
+        throw new Error('Per-call effort, provider and CLI routing are available for ordinary subagents. Omit name/team_name to use them.');
+      }
       assertAgentTeamExists(teamName, readTeamFile(teamName));
       // Set agent definition color for grouped UI display before spawning
       const agentDef = subagent_type ? toolUseContext.options.agentDefinitions.activeAgents.find(a => a.agentType === subagent_type) : undefined;
@@ -296,7 +307,7 @@ export const AgentTool = buildTool({
         team_name: teamName,
         use_splitpane: true,
         plan_mode_required: spawnMode === 'plan',
-        model: model ?? agentDef?.model,
+        model: (isCoordinatorMode() ? undefined : modelParam) ?? agentDef?.model,
         agent_type: subagent_type,
         invokingRequestId: assistantMessage?.requestId
       }, toolUseContext);
@@ -417,7 +428,7 @@ export const AgentTool = buildTool({
     }
 
     // Resolve agent params for logging (these are already resolved in runAgent)
-    const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode);
+    const resolvedAgentModel = getAgentModel('inherit', toolUseContext.options.mainLoopModel, model, permissionMode);
     logEvent('tengu_agent_tool_selected', {
       agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       model: resolvedAgentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -603,13 +614,17 @@ export const AgentTool = buildTool({
       }));
     }
     const runAgentParams: Parameters<typeof runAgent>[0] = {
-      agentDefinition: selectedAgent,
+      agentDefinition: { ...selectedAgent, model: 'inherit', effort: effort ?? appState.effortValue },
       promptMessages,
       toolUseContext,
       canUseTool,
       isAsync: shouldRunAsync,
       querySource: toolUseContext.options.querySource ?? getQuerySourceForAgent(selectedAgent.agentType, isBuiltInAgent(selectedAgent)),
-      model: isForkPath ? undefined : model,
+      model,
+      effort,
+      provider,
+      cli,
+      forceIsolatedRuntime: effortParam !== undefined,
       // Fork path: pass parent's system prompt AND parent's exact tool
       // array (cache-identical prefix). workerTools is rebuilt under
       // permissionMode 'bubble' which differs from the parent's mode, so
@@ -1392,6 +1407,15 @@ duration_ms: ${data.totalDurationMs}</usage>`
   renderToolUseErrorMessage,
   renderGroupedToolUse: renderGroupedAgentToolUse
 } satisfies ToolDef<InputSchema, Output, Progress>);
+export function resolveAgentToolEffort(
+  parentModel: string,
+  parentEffort: EffortValue | undefined,
+  options: { effortValueOverridesEnv?: boolean },
+  requested?: EffortValue | 'middle',
+): EffortValue | undefined {
+  return requested === 'middle' ? 'medium' : requested ?? resolveAppliedEffort(parentModel, parentEffort, options);
+}
+
 function resolveTeamName(input: {
   team_name?: string;
 }, appState: {

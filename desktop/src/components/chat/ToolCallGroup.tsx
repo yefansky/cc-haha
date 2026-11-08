@@ -1,6 +1,6 @@
 import { memo, useCallback, useState } from 'react'
 import { BookMarked, ChevronDown, ChevronRight, CircleCheck, Settings } from 'lucide-react'
-import { ToolCallBlock } from './ToolCallBlock'
+import { AgentRouteDetails, ToolCallBlock } from './ToolCallBlock'
 import { ToolCallSessionContext } from './toolCallSessionContext'
 import { ImageGenerationGroup, type ImageGenerationItem } from './ImageGenerationBlock'
 import { isImageGenerationToolName } from './imageGenerationTools'
@@ -718,6 +718,8 @@ function AgentCallCard({
           )}
         />
       </div>
+
+      <AgentRouteDetails input={input} resultContent={taskResult || result?.content} />
 
       {expanded && (
         <div className="border-t border-[var(--color-border)] px-3 py-3">

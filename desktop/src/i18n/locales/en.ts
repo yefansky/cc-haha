@@ -2,6 +2,17 @@ import { contextBreakdownEn } from '../contextBreakdownTranslations'
 import { contextAuditEn } from '../contextAuditTranslations'
 
 export const en = {
+  'tool.agentRoute.actual': 'Actual route',
+  'tool.agentRoute.requested': 'Requested route',
+  'tool.agentRoute.method': 'Method',
+  'tool.agentRoute.external': 'External CLI',
+  'tool.agentRoute.native': 'Native agent',
+  'tool.agentRoute.cli': 'CLI',
+  'tool.agentRoute.model': 'Model',
+  'tool.agentRoute.effort': 'Effort',
+  'tool.agentRoute.provider': 'Provider',
+  'tool.agentRoute.inherit': 'Inherit parent',
+  'tool.agentRoute.preferParent': 'Parent first; fallback allowed',
   ...contextBreakdownEn,
   "chat.subagentProgress.waiting": "Waiting for subagent",
   "chat.subagentProgress.running": "Subagent",

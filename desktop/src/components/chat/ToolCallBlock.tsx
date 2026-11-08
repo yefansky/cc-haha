@@ -317,6 +317,8 @@ export const ToolCallBlock = memo(function ToolCallBlock({ sessionId, toolName, 
       )}
       </div>
 
+      {(toolName === 'Agent' || toolName === 'Task') && <AgentRouteDetails input={obj} resultContent={result?.content} />}
+
       {expandable && expanded && (
         <div className="space-y-2.5 border-t border-[var(--color-border)] px-4 py-3.5">
           {toolName === 'Read' && (
@@ -1199,6 +1201,53 @@ function getToolSummary(toolName: string, obj: Record<string, unknown>, t?: (key
     default:
       return ''
   }
+}
+
+export function AgentRouteDetails({ input, resultContent }: { input: unknown; resultContent?: unknown }) {
+  const t = useTranslation()
+  const obj = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  const actualAgentRoute = extractAgentRoute(resultContent)
+  return <>
+      {(
+        <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-[var(--color-border)] px-4 py-2 text-[11px] text-[var(--color-text-tertiary)]" data-testid="agent-requested-route">
+          <span>{t('tool.agentRoute.requested')}</span>
+          <span>{t('tool.agentRoute.method')}: {t(obj.cli ? 'tool.agentRoute.external' : 'tool.agentRoute.native')}</span>
+          <span>{t('tool.agentRoute.cli')}: {typeof obj.cli === 'string' ? obj.cli : 'cc-haha'}</span>
+          <span>{t('tool.agentRoute.model')}: {typeof obj.model === 'string' ? obj.model : t('tool.agentRoute.inherit')}</span>
+          <span>{t('tool.agentRoute.effort')}: {typeof obj.effort === 'string' || typeof obj.effort === 'number' ? String(obj.effort === 'middle' ? 'medium' : obj.effort) : t('tool.agentRoute.inherit')}</span>
+          <span>{t('tool.agentRoute.provider')}: {typeof obj.provider === 'string' ? obj.provider : t('tool.agentRoute.preferParent')}</span>
+        </div>
+      )}
+
+      {actualAgentRoute && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-[var(--color-border)] px-4 py-2 text-[11px] text-[var(--color-text-secondary)]" data-testid="agent-actual-route">
+          <span>{t('tool.agentRoute.actual')}</span>
+          <span>{t('tool.agentRoute.method')}: {t(actualAgentRoute.method === 'cli' ? 'tool.agentRoute.external' : 'tool.agentRoute.native')}</span>
+          <span>{t('tool.agentRoute.cli')}: {actualAgentRoute.cli}</span>
+          <span>{t('tool.agentRoute.model')}: {actualAgentRoute.model}</span>
+          <span>{t('tool.agentRoute.effort')}: {actualAgentRoute.effort}</span>
+          <span>{t('tool.agentRoute.provider')}: {actualAgentRoute.provider}</span>
+        </div>
+      )}
+
+  </>
+}
+
+function extractAgentRoute(content: unknown): Record<string, string> | undefined {
+  const text = extractTextContent(content)
+  if (!text) return undefined
+  for (const match of text.matchAll(/^\[route (\{.*\})\]$/gm)) {
+    try {
+      const value = JSON.parse(match[1]!)
+      if (!value || typeof value !== 'object' || !['native', 'cli'].includes(value.method)) continue
+      if (!['cli', 'model', 'provider'].every(key => typeof value[key] === 'string')) continue
+      if (typeof value.effort !== 'string' && typeof value.effort !== 'number') continue
+      return { method: value.method, cli: value.cli, model: value.model, provider: value.provider, effort: String(value.effort) }
+    } catch {
+      // Older results and failed starts need not contain a route record.
+    }
+  }
+  return undefined
 }
 
 function extractTextContent(content: unknown): string | null {

@@ -57,9 +57,10 @@ import {
 import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterHooks.js'
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
-import { createUserMessage } from '../../utils/messages.js'
+import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
+import type { EffortValue } from '../../utils/effort.js'
+import { getCwd } from '../../utils/cwd.js'
 import { getAgentModel } from '../../utils/model/agent.js'
-import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
   clearAgentTranscriptSubdir,
   recordSidechainTranscript,
@@ -271,6 +272,10 @@ export async function* runAgent({
   querySource,
   override,
   model,
+  effort,
+  provider,
+  cli,
+  forceIsolatedRuntime,
   maxTurns,
   preserveToolUseResults,
   availableTools,
@@ -301,7 +306,11 @@ export async function* runAgent({
     abortController?: AbortController
     agentId?: AgentId
   }
-  model?: ModelAlias
+  model?: string
+  effort?: EffortValue
+  provider?: string
+  cli?: string
+  forceIsolatedRuntime?: boolean
   maxTurns?: number
   /** Preserve toolUseResult on messages for subagents with viewable transcripts */
   preserveToolUseResults?: boolean
@@ -509,7 +518,7 @@ export async function* runAgent({
 
     // Override effort level if agent defines one
     const effortValue = resolveSubagentEffortValue(
-      agentDefinition.effort,
+      effort ?? agentDefinition.effort,
       state.effortValue,
     )
 
@@ -715,7 +724,7 @@ export async function* runAgent({
       toolUseContext.options.thinkingConfig,
     ),
     effortValueOverridesEnv:
-      agentDefinition.effort !== undefined ||
+      effort !== undefined || agentDefinition.effort !== undefined ||
       toolUseContext.options.effortValueOverridesEnv === true,
     mcpClients: mergedMcpClients,
     mcpResources: toolUseContext.options.mcpResources,
@@ -788,7 +797,37 @@ export async function* runAgent({
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
 
   try {
-    for await (const message of query({
+    // Provider configuration is process-scoped. Explicit routes use the existing
+    // headless runtime in a child process rather than mutating the parent's env.
+    const routed = forceIsolatedRuntime || provider !== undefined || cli !== undefined ||
+      (model !== undefined && resolvedAgentModel !== toolUseContext.options.mainLoopModel)
+    const messages = routed ? (async function* () {
+      const { runRoutedSubagent } = await import('./subagentRouting.js')
+      const content = await runRoutedSubagent({
+        model: resolvedAgentModel,
+        parentModel: toolUseContext.options.mainLoopModel,
+        effort: agentGetAppState().effortValue,
+        thinkingConfig: agentOptions.thinkingConfig,
+        provider,
+        cli,
+        prompt: JSON.stringify({
+          system: agentSystemPrompt,
+          userContext: resolvedUserContext,
+          systemContext: resolvedSystemContext,
+          messages: initialMessages,
+        }),
+        cwd: worktreePath ?? getCwd(),
+        signal: agentAbortController.signal,
+        allowedTools: allTools.map(tool => tool.name),
+        maxTurns: maxTurns ?? agentDefinition.maxTurns,
+        permissions: {
+          deny: Object.values(agentGetAppState().toolPermissionContext.alwaysDenyRules).flat(),
+          ask: Object.values(agentGetAppState().toolPermissionContext.alwaysAskRules).flat(),
+          planMode: agentGetAppState().toolPermissionContext.mode === 'plan',
+        },
+      })
+      yield createAssistantMessage({ content })
+    })() : query({
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,
       userContext: resolvedUserContext,
@@ -797,7 +836,8 @@ export async function* runAgent({
       toolUseContext: agentToolUseContext,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
-    })) {
+    })
+    for await (const message of messages) {
       onQueryProgress?.()
       streamProgress?.observe(message)
       // Forward subagent API request starts to parent's metrics display

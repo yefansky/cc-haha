@@ -3,6 +3,17 @@ import type { TranslationKey } from './en'
 import { contextAuditKr } from '../contextAuditTranslations'
 
 export const kr: Record<TranslationKey, string> = {
+  'tool.agentRoute.actual': '실제 경로',
+  'tool.agentRoute.requested': '요청 경로',
+  'tool.agentRoute.method': '호출 방식',
+  'tool.agentRoute.external': '외부 CLI',
+  'tool.agentRoute.native': '기본 에이전트',
+  'tool.agentRoute.cli': 'CLI',
+  'tool.agentRoute.model': '모델',
+  'tool.agentRoute.effort': '추론 수준',
+  'tool.agentRoute.provider': '공급자',
+  'tool.agentRoute.inherit': '상위에서 상속',
+  'tool.agentRoute.preferParent': '상위 우선, 대체 가능',
   ...contextBreakdownEn,
   "chat.subagentProgress.waiting": "하위 에이전트 대기 중",
   "chat.subagentProgress.running": "하위 에이전트",

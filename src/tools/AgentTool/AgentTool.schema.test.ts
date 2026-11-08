@@ -9,7 +9,7 @@ import {
   readTeamFile,
   type TeamFile,
 } from '../../utils/swarm/teamHelpers.js'
-import { assertAgentTeamExists, inputSchema } from './AgentTool.js'
+import { assertAgentTeamExists, inputSchema, resolveAgentToolEffort } from './AgentTool.js'
 
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 let configDir = ''
@@ -39,14 +39,31 @@ describe('AgentTool model schema', () => {
     ).toBe(true)
   })
 
-  test('continues to reject unsupported per-call model values', () => {
+  test('accepts arbitrary provider model IDs', () => {
     expect(
       inputSchema().safeParse({
         description: 'Review model routing',
         prompt: 'Inspect the agent model selection path.',
-        model: 'mythos',
+        model: 'grok-4.7',
+        effort: 'middle',
+        provider: 'tokenhub',
+        cli: 'cc-haha',
       }).success,
-    ).toBe(false)
+    ).toBe(true)
+  })
+
+  test('rejects empty routing IDs and unsupported CLI/effort values', () => {
+    for (const invalid of [{ model: ' ' }, { provider: '' }, { effort: 'deep' }, { cli: 'unknown' }]) {
+      expect(inputSchema().safeParse({ description: 'Check routing', prompt: 'Run task', ...invalid }).success).toBe(false)
+    }
+  })
+
+  test('keeps routing optional for existing callers', () => {
+    const parsed = inputSchema().parse({ description: 'Use parent', prompt: 'Run task' })
+    expect(parsed.model).toBeUndefined()
+    expect(parsed.effort).toBeUndefined()
+    expect(parsed.provider).toBeUndefined()
+    expect(parsed.cli).toBeUndefined()
   })
 
   test('rejects a missing team before spawning any teammate', () => {
@@ -114,5 +131,21 @@ describe('AgentTool team spawn preflight', () => {
     expect(JSON.parse(await readFile(teamFilePath, 'utf-8')).description).toBe(
       'updated',
     )
+  })
+})
+
+describe('AgentTool effort inheritance', () => {
+  test('inherits effective parent effort while explicit per-call effort wins', () => {
+    const previous = process.env.CLAUDE_CODE_EFFORT_LEVEL
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'high'
+    try {
+      expect(resolveAgentToolEffort('grok-4.7', 'medium', {})).toBe('high')
+      expect(resolveAgentToolEffort('grok-4.7', 'medium', {}, 'low')).toBe('low')
+      expect(resolveAgentToolEffort('grok-4.7', 'medium', {}, 'middle')).toBe('medium')
+      expect(resolveAgentToolEffort('grok-4.7', 'low', { effortValueOverridesEnv: true })).toBe('low')
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+      else process.env.CLAUDE_CODE_EFFORT_LEVEL = previous
+    }
   })
 })

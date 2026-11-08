@@ -3,6 +3,17 @@ import type { TranslationKey } from './en'
 import { contextAuditJp } from '../contextAuditTranslations'
 
 export const jp: Record<TranslationKey, string> = {
+  'tool.agentRoute.actual': '実際のルート',
+  'tool.agentRoute.requested': '要求ルート',
+  'tool.agentRoute.method': '呼び出し方式',
+  'tool.agentRoute.external': '外部 CLI',
+  'tool.agentRoute.native': 'ネイティブエージェント',
+  'tool.agentRoute.cli': 'CLI',
+  'tool.agentRoute.model': 'モデル',
+  'tool.agentRoute.effort': '推論レベル',
+  'tool.agentRoute.provider': 'プロバイダー',
+  'tool.agentRoute.inherit': '親から継承',
+  'tool.agentRoute.preferParent': '親を優先、代替可能',
   ...contextBreakdownEn,
   "chat.subagentProgress.waiting": "サブエージェントを待機中",
   "chat.subagentProgress.running": "サブエージェント",
