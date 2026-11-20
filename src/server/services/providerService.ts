@@ -794,7 +794,22 @@ export class ProviderService {
         const response = await handleProxyRequest(new Request(url, { method: 'POST', body: JSON.stringify({ model: modelId, max_tokens: 64, messages: [{ role: 'user', content: 'Say ok.' }] }) }), url)
         const body = await response.json().catch(() => null)
         const success = response.ok && Array.isArray(body?.content) && body.content.some((part: { type?: string; text?: string }) => part.type === 'text' && !!part.text)
-        return { connectivity: { success, latencyMs: Date.now() - started, modelUsed: modelId, httpStatus: response.status, ...(!success ? { error: 'Provider returned no completed text response' } : {}) } }
+        let error = 'Provider returned no completed text response'
+        if (!response.ok) {
+          // Only expose the status and explicitly recognised codes, never arbitrary upstream text.
+          error = `Provider returned HTTP ${response.status}`
+          const message = body?.error?.message
+          if (typeof message === 'string') {
+            const prefix = `Upstream returned HTTP ${response.status}: `
+            if (message.startsWith(prefix)) {
+              try {
+                const upstream = JSON.parse(message.slice(prefix.length))
+                if (upstream?.error?.code === 'no_available_channel') error += ' (no_available_channel)'
+              } catch { /* An unparseable response still reports its HTTP status. */ }
+            }
+          }
+        }
+        return { connectivity: { success, latencyMs: Date.now() - started, modelUsed: modelId, httpStatus: response.status, ...(!success ? { error } : {}) } }
       } catch {
         return { connectivity: { success: false, latencyMs: Date.now() - started, error: 'Provider connectivity check failed', modelUsed: modelId } }
       } finally { providerRuntimeSnapshots.release(scope) }

@@ -23,6 +23,21 @@ const catalog = () => parseSeasunModels([
 ])
 const stream = (text: string) => new Response(text).body!
 
+test('integrated provider connectivity reports upstream status and known channel failure without leaking response text', async () => {
+  const service = new ProviderService()
+  const provider = await service.upsertIntegratedProvider('seasun', { apiKey: 'secret-key', baseUrl: '', modelCatalog: catalog() })
+  globalThis.fetch = (async () => Response.json({ error: { code: 'no_available_channel', message: 'secret-key private-token' } }, { status: 503 })) as typeof fetch
+  const unavailable = await service.testProvider(provider.id, { modelId: 'c' })
+  expect(unavailable.connectivity).toMatchObject({ success: false, httpStatus: 503, error: 'Provider returned HTTP 503 (no_available_channel)' })
+  expect(JSON.stringify(unavailable)).not.toContain('secret-key')
+  expect(JSON.stringify(unavailable)).not.toContain('private-token')
+
+  globalThis.fetch = (async () => Response.json({ error: { code: 'private-token', message: 'private-token' } }, { status: 401 })) as typeof fetch
+  const rejected = await service.testProvider(provider.id, { modelId: 'c' })
+  expect(rejected.connectivity.error).toBe('Provider returned HTTP 401')
+  expect(JSON.stringify(rejected)).not.toContain('private-token')
+})
+
 test('one immutable provider snapshot dispatches three protocols; reauthorization and release do not mutate inflight requests', async () => {
   const service = new ProviderService()
   const provider = await service.upsertIntegratedProvider('seasun', { apiKey: 'first-key', baseUrl: '', modelCatalog: catalog() })
