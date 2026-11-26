@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { providersApi } from '@/api/providers'
+import type { ProviderTestResult } from '@/types/provider'
 import { Button } from '@/components/ui/Button'
 import { useTranslation } from '@/i18n'
 import { getDesktopHost } from '@/lib/desktopHost'
@@ -9,6 +11,11 @@ export function SeasunLoginPanel() {
   const t = useTranslation()
   const { status, busy, cancelling, error, refresh, login, cancel } = useSeasunStore()
   const { providers, activeId, activateProvider, refreshModelCatalog, modelRefreshStatus } = useProviderStore()
+  const [candidate, setCandidate] = useState('')
+  const [testing, setTesting] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [testResult, setTestResult] = useState<ProviderTestResult | null>(null)
+  const [saveFailed, setSaveFailed] = useState(false)
   const [switching, setSwitching] = useState(false)
   const [switchFailed, setSwitchFailed] = useState(false)
   const desktopLogin = !!getDesktopHost().providerBusinesses?.seasun
@@ -17,6 +24,37 @@ export function SeasunLoginPanel() {
   const refreshStatus = provider ? modelRefreshStatus[provider.id] : undefined
   const active = !!provider && activeId === provider.id
   useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => { setCandidate(provider?.models.main ?? ''); setTestResult(null) }, [provider?.id, provider?.models.main])
+
+  async function testCandidate() {
+    if (!provider || !candidate) return
+    setTesting(true); setTestResult(null)
+    try { setTestResult(await useProviderStore.getState().testProvider(provider.id, { modelId: candidate })) }
+    catch { setTestResult({ connectivity: { success: false, latencyMs: 0 } }) }
+    finally { setTesting(false) }
+  }
+
+  async function saveCandidate() {
+    if (!provider || !candidate) return
+    setSaving(true); setTestResult(null); setSaveFailed(false)
+    try {
+      // Test this exact model before saving it; a catalog entry alone is not proof of access.
+      let result: ProviderTestResult
+      try { result = await useProviderStore.getState().testProvider(provider.id, { modelId: candidate }) }
+      catch { result = { connectivity: { success: false, latencyMs: 0 } } }
+      setTestResult(result)
+      if (!result.connectivity.success) return
+      const latest = useProviderStore.getState().providers.find(item => item.id === provider.id)
+      if (!latest?.modelCatalog?.some(model => model.id === candidate) || latest.models.main !== provider.models.main) {
+        setSaveFailed(true)
+        return
+      }
+      // Change the default for future work, without switching live session models.
+      await providersApi.update(provider.id, { models: { main: candidate, haiku: candidate, sonnet: candidate, opus: candidate } })
+      await useProviderStore.getState().fetchProviders()
+    } catch { setSaveFailed(true) }
+    finally { setSaving(false) }
+  }
 
   async function activate() {
     if (!provider) return
@@ -47,7 +85,7 @@ export function SeasunLoginPanel() {
       {provider && <Button size="sm" variant="secondary" disabled={busy || refreshStatus?.pending} onClick={() => void refreshModelCatalog(provider.id)}>
         {t(refreshStatus?.pending ? 'settings.seasun.refreshingModels' : 'settings.seasun.refreshModels')}
       </Button>}
-      {provider && !active && <Button size="sm" variant="secondary" disabled={busy || switching || !models.length || status?.modelAccess === 'unassigned'} onClick={() => void activate()}>
+      {provider && !active && <Button size="sm" variant="secondary" disabled={busy || switching || !provider.models.main.trim() || !models.some(model => model.id === provider.models.main) || status?.modelAccess === 'unassigned'} onClick={() => void activate()}>
         {t('settings.seasun.setDefault')}
       </Button>}
     </div>
@@ -58,10 +96,24 @@ export function SeasunLoginPanel() {
             : t('settings.seasun.modelRefreshOnStartup')}
       {refreshStatus?.defaultChanged && <p>{t('settings.seasun.modelDefaultChanged')}</p>}
     </div>}
-    {models.length > 0 && <details className="rounded-[var(--radius-md)] border border-[var(--color-border-separator)] p-3">
-      <summary className="cursor-pointer focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]">{t('settings.seasun.models', { count: models.length })}</summary>
-      <ul className="mt-2 flex flex-col gap-1 text-[var(--color-text-secondary)]">{models.map(model => <li key={model.id}>{model.name || model.id}</li>)}</ul>
-    </details>}
+    {provider && <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-[var(--color-border-separator)] p-3">
+      <label htmlFor="seasun-default-model">{t('settings.seasun.chooseModel')}</label>
+      {(!provider.models.main || !models.some(model => model.id === provider.models.main)) &&
+        <p role="status">{t('settings.seasun.chooseModelHint')}</p>}
+      <select id="seasun-default-model" disabled={testing || saving} value={models.some(model => model.id === candidate) ? candidate : ''}
+        onChange={event => { setCandidate(event.target.value); setTestResult(null) }}>
+        <option value="">{t('settings.seasun.chooseModelPlaceholder')}</option>
+        {models.map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+      </select>
+      <div className="flex gap-2">
+        <Button size="sm" variant="secondary" disabled={!candidate || !models.some(model => model.id === candidate) || testing || saving} onClick={() => void testCandidate()}>{t('settings.seasun.testModel')}</Button>
+        <Button size="sm" disabled={!candidate || !models.some(model => model.id === candidate) || saving || testing} onClick={() => void saveCandidate()}>{t('settings.seasun.saveModel')}</Button>
+      </div>
+      {testResult && <p role="status">{testResult.connectivity.success
+        ? t('settings.seasun.modelTestSuccess', { model: candidate })
+        : t('settings.seasun.modelTestFailed', { model: candidate, status: String(testResult.connectivity.httpStatus ?? '—') })}</p>}
+      {saveFailed && <p role="alert">{t('settings.seasun.modelSaveFailed')}</p>}
+    </div>}
     {(error || switchFailed) && <p role="alert" className="text-[var(--color-error)]">
       {t(error === 'cancel_unconfirmed' ? 'settings.seasun.cancelUnconfirmed' : 'settings.seasun.failed')}
     </p>}

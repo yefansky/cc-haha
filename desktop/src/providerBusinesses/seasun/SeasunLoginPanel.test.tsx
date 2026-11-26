@@ -23,10 +23,12 @@ describe('registered Seasun business UI', () => {
   let savedProvider: typeof provider
   let refreshError: string | undefined
   let autoRefresh: boolean
+  let modelTestStatus: number | undefined
+  let modelTestGate: Promise<void> | undefined
   const status = () => parseSeasunStatus({ phase: connected ? 'connected' : 'idle', identityConnected: connected, loggedIn: connected, modelAccess: access, providerId: connected ? provider.id : undefined, active: activeId === provider.id })
   beforeEach(() => {
     connected = false; access = 'unknown'; activeId = 'other-test'; requestPaths = []
-    savedProvider = structuredClone(provider); refreshError = undefined; autoRefresh = false
+    savedProvider = structuredClone(provider); refreshError = undefined; autoRefresh = false; modelTestStatus = undefined; modelTestGate = undefined
     useSeasunStore.setState(initialSeasun)
     useProviderStore.setState({ ...initialProviders, providers: [], activeId: null })
     useSettingsStore.setState({ locale: 'zh' })
@@ -42,6 +44,14 @@ describe('registered Seasun business UI', () => {
       if (url.pathname === `/api/providers/${provider.id}/refresh-models`) {
         if (refreshError) return Response.json({ error: refreshError, message: 'Refresh unavailable' }, { status: 401 })
         savedProvider = { ...savedProvider, modelCatalog: [{ id: 'new-seasun-model', capabilities: [] }] }
+        return Response.json({ provider: savedProvider })
+      }
+      if (url.pathname === `/api/providers/${provider.id}/test`) {
+        if (modelTestGate) await modelTestGate
+        return Response.json({ result: { connectivity: { success: !modelTestStatus, latencyMs: 1, httpStatus: modelTestStatus, modelUsed: JSON.parse(String(init?.body)).modelId } } })
+      }
+      if (url.pathname === `/api/providers/${provider.id}` && init?.method === 'PUT') {
+        savedProvider = { ...savedProvider, ...JSON.parse(String(init.body)) }
         return Response.json({ provider: savedProvider })
       }
       if (url.pathname === `/api/providers/${provider.id}/activate`) { activeId = provider.id; return Response.json({ ok: true }) }
@@ -76,6 +86,76 @@ describe('registered Seasun business UI', () => {
     expect(screen.queryByText('当前正在使用')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '设为默认' })).toBeEnabled()
     expect(requestPaths.some(path => path.includes('/seasun/start') || path.includes('/seasun/complete'))).toBe(false)
+  })
+
+  it('asks for a model, tests the explicit selection and saves without activating', async () => {
+    connected = true
+    savedProvider = { ...savedProvider, models: { main: '', haiku: '', sonnet: '', opus: '' } }
+    render(<ProviderBusinessSections />); await act(flush)
+    expect(screen.getByText(/尚未选择默认模型/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '测试所选模型' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '设为默认' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('选择默认模型'), { target: { value: models[1] } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '测试所选模型' })); await flush() })
+    expect(screen.getByText(`模型 ${models[1]} 连通成功。`)).toBeInTheDocument()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '保存为默认模型' })); await flush() })
+    expect(savedProvider.models.main).toBe(models[1])
+    expect(useProviderStore.getState().activeId).toBe('other-test')
+    expect(requestPaths.some(path => path.endsWith('/activate'))).toBe(false)
+  })
+
+  it('tests the selected model before saving and never saves a failing model', async () => {
+    connected = true; modelTestStatus = 503
+    render(<ProviderBusinessSections />); await act(flush)
+    fireEvent.change(screen.getByLabelText('选择默认模型'), { target: { value: models[1] } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '保存为默认模型' })); await flush() })
+    expect(screen.getByText(/HTTP 503/)).toHaveTextContent(`模型 ${models[1]}`)
+    expect(screen.getByLabelText('选择默认模型')).toHaveValue(models[1])
+    expect(savedProvider.models.main).toBe(models[0])
+    expect(requestPaths.some(path => path === `PUT /api/providers/${provider.id}`)).toBe(false)
+    modelTestStatus = undefined
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '保存为默认模型' })); await flush() })
+    expect(savedProvider.models.main).toBe(models[1])
+    expect(requestPaths.filter(path => path.endsWith('/test'))).toHaveLength(2)
+  })
+
+  it('locks the selection while save is testing it and saves that tested choice', async () => {
+    connected = true
+    let finish!: () => void
+    modelTestGate = new Promise<void>(resolve => { finish = resolve })
+    render(<ProviderBusinessSections />); await act(flush)
+    fireEvent.change(screen.getByLabelText('选择默认模型'), { target: { value: models[1] } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '保存为默认模型' })); await flush() })
+    expect(screen.getByLabelText('选择默认模型')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '测试所选模型' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '保存为默认模型' })).toBeDisabled()
+    expect(savedProvider.models.main).toBe(models[0])
+    await act(async () => { finish(); await flush() })
+    expect(savedProvider.models.main).toBe(models[1])
+  })
+
+  it('locks the candidate while a test is pending to prevent attributing a result to another model', async () => {
+    connected = true
+    let finish!: () => void
+    modelTestGate = new Promise<void>(resolve => { finish = resolve })
+    render(<ProviderBusinessSections />); await act(flush)
+    fireEvent.change(screen.getByLabelText('选择默认模型'), { target: { value: models[1] } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '测试所选模型' })); await flush() })
+    expect(screen.getByLabelText('选择默认模型')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '保存为默认模型' })).toBeDisabled()
+    await act(async () => { finish(); await flush() })
+    expect(screen.getByText(`模型 ${models[1]} 连通成功。`)).toBeInTheDocument()
+    expect(screen.getByLabelText('选择默认模型')).toBeEnabled()
+  })
+
+  it('shows model and upstream status without claiming a failure is a successful connection', async () => {
+    connected = true; modelTestStatus = 403
+    render(<ProviderBusinessSections />); await act(flush)
+    fireEvent.change(screen.getByLabelText('选择默认模型'), { target: { value: models[1] } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '测试所选模型' })); await flush() })
+    expect(screen.getByText(/HTTP 403/)).toHaveTextContent(`模型 ${models[1]}`)
+    expect(screen.queryByText(/连通成功/)).not.toBeInTheDocument()
+    expect(savedProvider.models.main).toBe(models[0])
   })
 
   it('keeps an identity connection when permissions are unassigned and does not claim model readiness', async () => {

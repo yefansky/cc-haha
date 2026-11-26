@@ -183,6 +183,10 @@ export function ProviderSettings() {
   }
 
   const handleTest = async (provider: SavedProvider) => {
+    if (!provider.models.main.trim()) {
+      setTestResults((r) => ({ ...r, [provider.id]: { loading: false, result: { connectivity: { success: false, latencyMs: 0, error: t('settings.providers.chooseModelHint') } } } }))
+      return
+    }
     setTestResults((r) => ({ ...r, [provider.id]: { loading: true } }))
     try {
       const result = await testProvider(provider.id)
@@ -372,7 +376,7 @@ export function ProviderSettings() {
                   actions={(
                     <>
                       {!isActive && (
-                        <Button variant="ghost" size="sm" onClick={() => handleActivate(provider.id)}>{t('settings.providers.setDefault')}</Button>
+                        <Button variant="ghost" size="sm" disabled={!provider.models.main.trim()} onClick={() => handleActivate(provider.id)}>{t('settings.providers.setDefault')}</Button>
                       )}
                       <Button variant="ghost" size="sm" onClick={() => handleTest(provider)} loading={test?.loading}>{t('settings.providers.test')}</Button>
                       <Button variant="ghost" size="sm" onClick={() => setEditingProvider(provider)}>{t('settings.providers.edit')}</Button>

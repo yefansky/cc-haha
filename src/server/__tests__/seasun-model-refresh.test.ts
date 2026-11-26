@@ -58,6 +58,8 @@ async function refresh(id: string) {
 test('login persists backend refresh credentials; a fresh service updates the directory through the real API without activation', async () => {
   const provider = await login()
   const service = new ProviderService()
+  expect(provider.models.main).toBe('')
+  await service.updateProvider(provider.id, { models: { main: 'kept', haiku: 'kept', sonnet: 'kept', opus: 'kept' } })
   expect(service.modelRefreshProviderIds([provider])).toEqual([provider.id])
   directory = [model('kept'), model('new-chat', ['grok'], ['chat']), model('new-claude', ['claude'], ['chat']), { ...model('disabled'), enabled: false }]
   const response = await refresh(provider.id)
@@ -77,7 +79,7 @@ test('expired access token renews once with the refresh token and persists rotat
   unauthorized = true
   directory = [model('new-default')]
   expect((await refresh(provider.id)).status).toBe(200)
-  expect((await new ProviderService().getProvider(provider.id)).models.main).toBe('new-default')
+  expect((await new ProviderService().getProvider(provider.id)).models.main).toBe('')
   expect(calls.filter(c => c.path.endsWith('/auth/refresh'))).toHaveLength(1)
   expect((await refresh(provider.id)).status).toBe(200)
   expect(calls.filter(c => c.path.endsWith('/auth/refresh'))).toHaveLength(1)
@@ -176,3 +178,31 @@ for (const raw of [[], null, [{ public_model: 'missing-flags' }]]) {
     expect((await new ProviderService().getProvider(provider.id)).modelCatalog).toEqual(provider.modelCatalog)
   })
 }
+
+
+test('refresh retains an explicit missing model instead of silently selecting a directory entry', async () => {
+  const provider = await login()
+  const service = new ProviderService()
+  await service.updateProvider(provider.id, { models: { main: 'removed', haiku: 'removed', sonnet: 'removed', opus: 'removed' } })
+  directory = [model('new-model')]
+  expect((await refresh(provider.id)).status).toBe(200)
+  const saved = await service.getProvider(provider.id)
+  expect(saved.models.main).toBe('removed')
+  expect(saved.modelCatalog?.map(m => m.id)).toEqual(['new-model'])
+})
+
+test('a provider without a selected model gives a selection error without contacting upstream', async () => {
+  const provider = await login()
+  const count = calls.length
+  const result = await new ProviderService().testProvider(provider.id)
+  expect(result.connectivity).toMatchObject({ success: false, error: 'MODEL_SELECTION_REQUIRED' })
+  expect(calls).toHaveLength(count)
+})
+
+
+test('activation with no default is rejected without changing the active provider', async () => {
+  const provider = await login()
+  const service = new ProviderService()
+  await expect(service.activateProvider(provider.id)).rejects.toThrow('Select a default model')
+  expect((await service.listProviders()).activeId).toBeNull()
+})

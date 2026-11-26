@@ -46,6 +46,7 @@ test('actual exchange contract saves one provider, keeps KSCC active and never c
   expect(index.activeId).toBe(kscc.id)
   expect(index.providers).toHaveLength(2)
   const provider = index.providers.find(value => value.presetId === 'seasun')!
+  expect(provider.models.main).toBe('')
   expect(provider.modelCatalog?.map(value => value.transport?.apiFormat)).toEqual(['openai_responses', 'openai_chat', 'anthropic'])
   expect(calls).toHaveLength(2)
   await auth.complete({ ...attempt, callbackUrl: callback })

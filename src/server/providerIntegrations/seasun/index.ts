@@ -17,11 +17,12 @@ export const seasunIntegration: ProviderIntegration = {
   },
   buildAuthorizedProvider(authorization, existing) {
     const catalog = authorization.modelCatalog ?? []
-    const selected = catalog.some(model => model.id === existing?.models.main) ? existing!.models.main : catalog[0]?.id
-    if (!selected) throw new Error('Seasun has no confirmed coding model')
+    // A directory entry does not prove this identity can call that model.
+    // Keep an explicit existing choice, including one that may need reselection.
+    const models = existing?.models ?? { main: '', haiku: '', sonnet: '', opus: '' }
     return { ...existing, name: 'Seasun Token Hub', apiKey: authorization.apiKey, baseUrl: SEASUN_GATEWAY,
       authStrategy: 'api_key', apiFormat: 'openai_responses', runtimeKind: 'anthropic_compatible',
-      models: { main: selected, haiku: selected, sonnet: selected, opus: selected }, modelCatalog: catalog,
+      models, modelCatalog: catalog,
     }
   },
 }

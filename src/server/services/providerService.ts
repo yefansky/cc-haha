@@ -222,12 +222,16 @@ export class ProviderService {
         throw ApiError.badRequest('Provider credentials changed during model refresh; retry')
       }
       const ids = new Set(modelCatalog.map(model => model.id))
-      const fallback = ids.has(current.models.main) ? current.models.main : modelCatalog[0]!.id
       const models = { ...current.models }
-      for (const slot of Object.keys(models) as Array<keyof typeof models>) {
-        if (models[slot] && !ids.has(models[slot]!)) models[slot] = fallback
+      // Seasun catalog availability does not establish model access for this identity.
+      // Keep explicit selections intact, and let the UI guide reselection when absent.
+      if (current.presetId !== 'seasun') {
+        const fallback = ids.has(current.models.main) ? current.models.main : modelCatalog[0]!.id
+        for (const slot of Object.keys(models) as Array<keyof typeof models>) {
+          if (models[slot] && !ids.has(models[slot]!)) models[slot] = fallback
+        }
+        if (!models.main) models.main = fallback
       }
-      if (!models.main) models.main = fallback
       const updated = { ...current, modelCatalog, models }
       SavedProviderSchema.parse(updated)
       index.providers[position] = updated
@@ -533,6 +537,9 @@ export class ProviderService {
         ? GROK_OFFICIAL_PROVIDER
         : index.providers.find((p) => p.id === id)
     if (!provider) throw ApiError.notFound(`Provider not found: ${id}`)
+    if (provider.presetId === 'seasun' && !provider.models.main.trim()) {
+      throw ApiError.badRequest('Select a default model before activating this provider')
+    }
 
     index.activeId = id
     await this.writeIndex(index)
@@ -772,7 +779,8 @@ export class ProviderService {
   ): Promise<ProviderTestResult> {
     const provider = await this.getProvider(id)
     const baseUrl = provider.baseUrl
-    const modelId = overrides?.modelId || provider.models.main
+    const modelId = (overrides?.modelId || provider.models.main).trim()
+    if (!modelId) return { connectivity: { success: false, latencyMs: 0, error: 'MODEL_SELECTION_REQUIRED' } }
     const apiFormat = provider.apiFormat ?? 'anthropic'
     const authStrategy = provider.authStrategy ?? getPresetAuthStrategy(provider.presetId)
     const presetDefaultEnv = getPresetDefaultEnv(provider.presetId)

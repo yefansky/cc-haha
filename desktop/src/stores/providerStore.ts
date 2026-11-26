@@ -146,7 +146,7 @@ function resolveRuntimeRefreshSelection(
     }
   }
 
-  if (!currentSelection && activeId === provider.id) {
+  if (!currentSelection && activeId === provider.id && provider.models.main.trim()) {
     return {
       providerId: provider.id,
       modelId: provider.models.main,
@@ -358,7 +358,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     const provider = get().providers.find((p) => p.id === id)
     if (!provider) return
-    await settings.setModel(provider.models.main)
+    if (provider.models.main.trim()) await settings.setModel(provider.models.main)
     await settings.fetchAll()
   },
 
